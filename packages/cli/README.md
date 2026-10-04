@@ -63,8 +63,8 @@ arista, `POST` bloqueante), **nunca `PUT`**: no toca el resto del grafo y cada c
 GitHub con `gh api --paginate` (necesita `gh` autenticado); los PRs del listado no cuentan como issues.
 
 - **Tarea `gh-<n>` nueva:** solo issues abiertos (con `--all`, también los cerrados como completados, ya
-  Listos; los cerrados como `not_planned` nunca). Título = el del issue sin el prefijo `algo: ` y con
-  mayúscula inicial; etapa `--stage`, o `construccion` si existe, o la primera; enlace = la URL del issue.
+  Listos; los cerrados como `not_planned` nunca; los de la etiqueta `epic` tampoco). Título = el del issue
+  sin el prefijo `algo: `, sin referencias (`desde #35`) y pasado por `legibleTitle` del import; etapa `--stage`, o `construccion` si existe, o la primera; enlace = la URL del issue.
 - **Tarea que ya existe:** nunca le cambia título, etapa, equipo ni misión (los cura la fábrica); el
   enlace, solo si no tiene.
 - **El estado solo avanza:** cerrado → Lista; abierto con un PR abierto que dice `closes|fixes|resolves|cierra|resuelve #n`
@@ -73,8 +73,8 @@ GitHub con `gh api --paginate` (necesita `gh` autenticado); los PRs del listado 
 - **Aristas** (solo si las dos tareas existen; nunca borra): «Parte de #n» → la épica `gh-n` necesita esta;
   «depende de #n», «blocked by #n» o «bloqueado por #n» → esta necesita `gh-n`. Repetida o con ciclo → aviso.
 - **`founder-input`** → decisión para el dueño: la pregunta es el título y las opciones salen de las líneas
-  `- **A (…):** texto`, `- **A:** texto` o `- A) texto` del cuerpo (máx. 6; sin ninguna, «Sí» / «No»). Si la
-  tarea ya tiene esa pregunta, abierta o respondida, no la repite (contrato #31).
+  `- **A (…):** texto`, `- **A:** texto` o `- A) texto` del cuerpo (máx. 6; sin ninguna, «Sí» / «No»). Solo
+  si la tarea no tiene ya una decisión, abierta o respondida y con el texto que sea (contrato #31).
 
 Salida: `Sincronicé N issues: X nuevas · Y actualizadas · Z sin cambios` y los avisos. Correrlo dos veces
 seguidas da `0 nuevas · 0 actualizadas` la segunda. `--dry-run` lee y cuenta sin escribir; `--json` da el

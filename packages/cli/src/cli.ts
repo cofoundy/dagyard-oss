@@ -347,7 +347,8 @@ Tarea nueva = issue abierto (con --all también los cerrados, ya Listos), en --s
 con el enlace al issue. A una tarea que ya existe nunca le cambia título, etapa, equipo ni misión; el enlace, solo si
 no tiene. El estado solo avanza: cerrado → Lista; abierto con un PR abierto que dice «closes #n» → En progreso.
 «Parte de #n» → la tarea n necesita esta; «depende de #n», «blocked by #n» o «bloqueado por #n» → esta necesita la n.
-La etiqueta founder-input abre una decisión con las opciones del cuerpo (- **A:** …, - A) …), una sola vez.
+La etiqueta founder-input abre una decisión con las opciones del cuerpo (- **A:** …, - A) …), solo si la tarea
+no tiene ya una decisión (abierta o respondida). La etiqueta epic no crea tarea.
 --dry-run lee pero no escribe nada.`,
     flags: ['github', 'label', 'stage', ...GLOBAL_FLAGS],
     bools: ['all', 'dry-run', 'json'],

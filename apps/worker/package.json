@@ -1,0 +1,26 @@
+{
+  "name": "@dagyard/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "API de Dagyard: Cloudflare Worker + D1 + un Durable Object por proyecto (tiempo real).",
+  "scripts": {
+    "build": "node scripts/build.mjs && wrangler deploy --dry-run --outdir dist",
+    "dev": "node scripts/build.mjs && wrangler dev",
+    "deploy": "node scripts/build.mjs && wrangler deploy",
+    "seed": "node scripts/seed.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/build.mjs && vitest run"
+  },
+  "dependencies": {
+    "@dagyard/model": "workspace:*",
+    "hono": "^4.13.13"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/workers-types": "^5.20261004.1",
+    "typescript": "5.9.3",
+    "vitest": "^4.1.11",
+    "wrangler": "^4.147.0"
+  }
+}

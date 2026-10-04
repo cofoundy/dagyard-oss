@@ -265,7 +265,18 @@ export interface OverviewSolution {
   visible: Set<string>;
   /** Vista general densa: los títulos se recortan a este número de líneas (completos al pasar el mouse o enfocar). */
   maxLines?: number;
+  /** Proyecto grande: solo lo que te espera o avanza lleva etiqueta fija; lo pendiente y lo listo son estrellas tenues. */
+  quiet?: boolean;
 }
+
+/** Más tareas que esto = proyecto grande (la demo tiene 20 y se ve entera). */
+export const BIG_PROJECT = 20;
+/** Proyecto grande: tope de etiquetas fijas en la vista general; el resto, al pasar el mouse, enfocar o volar a su etapa. */
+export const MAX_PINNED = 12;
+/** Estados que llevan etiqueta fija en un proyecto grande. */
+const PINNED: ReadonlySet<NodeStatus> = new Set(['blocked', 'working']);
+
+export const isBigProject = (graph: SceneGraph) => graph.nodes.length > BIG_PROJECT;
 
 /** Qué etiqueta gana cuando dos chocan: lo que espera al PM primero, lo terminado al final. */
 export const LABEL_PRIORITY: Record<NodeStatus, number> = { blocked: 3, working: 2, pending: 1, done: 0 };
@@ -275,6 +286,7 @@ export const LABEL_PRIORITY: Record<NodeStatus, number> = { blocked: 3, working:
  * luego la más baja primero (caben más) y luego el orden del layout. Cada caja es la unión de su proyección en todos
  * los ángulos dados, así que tampoco chocan con la respiración ni el paralaje. Los rótulos de etapa son obstáculos fijos.
  * Antes del reparto, cada etapa reserva su mejor título que quepa (si todos caben, el resultado es el mismo).
+ * Con `pinned` (proyecto grande) solo compiten las que te esperan o avanzan, y a lo sumo `MAX_PINNED`.
  */
 export function declutter(
   graph: SceneGraph,
@@ -283,13 +295,16 @@ export function declutter(
   vp: Viewport,
   sizer: Sizer,
   labelWidth: number,
-  opts: { onlyStage?: number; angles?: { theta: number; phi: number }[]; margin?: number } = {},
+  opts: { onlyStage?: number; angles?: { theta: number; phi: number }[]; margin?: number; pinned?: boolean } = {},
 ): Set<string> {
   const camera = scratchCamera(vp);
   const angles = opts.angles ?? overviewAngles();
   const m = opts.margin ?? 0;
   const status = new Map(graph.nodes.map((n) => [n.id, n.status]));
-  const ids = [...layout.positions.keys()].filter((id) => opts.onlyStage === undefined || layout.stageOf.get(id) === opts.onlyStage);
+  const ids = [...layout.positions.keys()].filter(
+    (id) => (opts.onlyStage === undefined || layout.stageOf.get(id) === opts.onlyStage) && (!opts.pinned || PINNED.has(status.get(id) ?? 'pending')),
+  );
+  const cap = opts.pinned ? MAX_PINNED : Infinity;
   const stages = layout.stages.filter((st) => opts.onlyStage === undefined || st.index === opts.onlyStage);
   const empty = (): Box => ({ x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity });
   const boxes = new Map(ids.map((id) => [id, empty()]));
@@ -322,6 +337,7 @@ export function declutter(
   const taken: Box[] = heads.filter((b) => Number.isFinite(b.x0));
   const visible = new Set<string>();
   const take = (id: string) => {
+    if (visible.size >= cap) return false;
     const b = boxes.get(id)!;
     if (taken.some((t) => b.x0 - m < t.x1 && t.x0 < b.x1 + m && b.y0 - m < t.y1 && t.y0 < b.y1 + m)) return false;
     taken.push(b);
@@ -428,10 +444,13 @@ export function solveOverview(graph: SceneGraph, vp: Viewport, safe: SafeArea, s
   const counts = new Map<number, number>();
   for (const n of graph.nodes) counts.set(n.stage, (counts.get(n.stage) ?? 0) + 1);
   const maxN = Math.max(0, ...counts.values());
-  const withVisible = (b: BaseSolution): OverviewSolution => ({ ...b, visible: declutter(graph, b.layout, b.fit.cam, vp, sizer, b.labelWidth) });
+  const quiet = isBigProject(graph);
+  const tag = (s: OverviewSolution): OverviewSolution => (quiet ? { ...s, quiet } : s);
+  const withVisible = (b: BaseSolution): OverviewSolution =>
+    tag({ ...b, visible: declutter(graph, b.layout, b.fit.cam, vp, sizer, b.labelWidth, { pinned: quiet }) });
 
   if (o === 'landscape') {
-    if (maxN > DENSE_STAGE) return solveDenseLandscape(graph, vp, safe, sizer, maxN);
+    if (maxN > DENSE_STAGE) return tag(solveDenseLandscape(graph, vp, safe, sizer, maxN, quiet));
     return withVisible(solveLandscape(graph, vp, safe, sizer));
   }
   // en pantallas angostas una fila de 4 deja etiquetas de 80 px: se parte desde 4
@@ -445,14 +464,19 @@ export function solveOverview(graph: SceneGraph, vp: Viewport, safe: SafeArea, s
   // De más a menos columnas: con menos, las filas crecen y el alto se aplasta; cuando los títulos visibles caen a menos
   // de la mitad del mejor, ya no remontan y se deja de probar.
   let best: OverviewSolution | null = null;
+  let bestPpu = 0;
   for (const per of DENSE_PORTRAIT_COLS.filter((k) => k === 3 || usable / k >= DENSE_MIN_COL_PX).reverse()) {
     const b = solvePortrait(graph, vp, safe, short, per, true);
-    const visible = declutter(graph, b.layout, b.fit.cam, vp, short, b.labelWidth, { margin: DENSE_MARGIN });
+    const visible = declutter(graph, b.layout, b.fit.cam, vp, short, b.labelWidth, { margin: DENSE_MARGIN, pinned: quiet });
     const c = { ...b, visible, maxLines: DENSE_LINES };
-    if (!best || betterDense(c, best)) best = c;
-    else if (visible.size < best.visible.size / 2) break;
+    // a igualdad de títulos (proyecto grande sin nada activo: ninguno), la rejilla de mayor escala
+    const ppu = pxPerUnit(b.fit.cam, vp);
+    if (!best || betterDense(c, best) || (!betterDense(best, c) && ppu > bestPpu)) {
+      best = c;
+      bestPpu = ppu;
+    } else if (visible.size < best.visible.size / 2) break;
   }
-  return best!;
+  return tag(best!);
 }
 
 function solvePortrait(graph: SceneGraph, vp: Viewport, safe: SafeArea, sizer: Sizer, maxPerRow: number, dense = false): BaseSolution {
@@ -528,7 +552,7 @@ function solveLandscape(graph: SceneGraph, vp: Viewport, safe: SafeArea, sizer: 
  * mayor escala.
  * Los títulos se miden recortados a `DENSE_LINES` líneas, que es como se pintan en la vista general.
  */
-function solveDenseLandscape(graph: SceneGraph, vp: Viewport, safe: SafeArea, full: Sizer, maxN: number): OverviewSolution {
+function solveDenseLandscape(graph: SceneGraph, vp: Viewport, safe: SafeArea, full: Sizer, maxN: number, pinned: boolean): OverviewSolution {
   const o: Orientation = 'landscape';
   const sizer = clampSizer(full, DENSE_LINES);
   const W = LABEL_WIDTH[o];
@@ -555,7 +579,7 @@ function solveDenseLandscape(graph: SceneGraph, vp: Viewport, safe: SafeArea, fu
       p = ppu;
       lw = lw2;
     }
-    const visible = declutter(graph, layout, fit.cam, vp, sizer, lw, { margin: DENSE_MARGIN });
+    const visible = declutter(graph, layout, fit.cam, vp, sizer, lw, { margin: DENSE_MARGIN, pinned });
     return { sol: { layout, fit, orientation: o, labelWidth: lw, visible, maxLines: DENSE_LINES }, ppu };
   };
   let best: ReturnType<typeof evaluate> | null = null;

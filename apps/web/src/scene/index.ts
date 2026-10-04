@@ -60,6 +60,8 @@ const COL: Record<NodeStatus, number> = { done: 0xf4eee2, working: 0x9fd3ff, blo
 const PULSE_COL: Record<Pulse, number> = { done: 0xffffff, working: 0x9fd3ff, blocked: 0xffb547, born: 0x9fd3ff };
 const SEGMENTS = 64;
 const PCOUNT = 160;
+/** Proyecto grande: brillo de las estrellas sin etiqueta fija (pendientes y listas) en la vista general. */
+const QUIET_DIM = 0.55;
 const FAR: Omit<CamState, 'tx' | 'ty' | 'tz' | 'ox' | 'oy'> = { r: 190, theta: -0.9, phi: 0.75 };
 const NO_WEBGL = 'Este navegador no tiene WebGL. Ábrelo en Chrome, Safari o Firefox de escritorio.';
 
@@ -722,7 +724,9 @@ export function createSky(opts: CreateSkyOptions): Sky {
       }
       const st = v.data.status;
       const inStage = stageSel === null || v.data.stage === stageSel;
-      const want = focusId ? (rel.has(v.id) ? 1 : 0.18) : mode === 'stage' && !inStage ? 0.35 : 1;
+      // proyecto grande: en la vista general lo pendiente y lo listo son estrellas tenues; brillan al pasar el mouse
+      const faint = solution?.quiet && mode !== 'stage' && v.id !== hoverId && (st === 'pending' || st === 'done') ? QUIET_DIM : 1;
+      const want = focusId ? (rel.has(v.id) ? 1 : 0.18) : mode === 'stage' && !inStage ? 0.35 : faint;
       v.dim += (want - v.dim) * Math.min(1, dt * 4);
       v.color.lerp(v.target, Math.min(1, dt * 2.5));
       v.flash = Math.max(0, v.flash - dt * 1.2);

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { EXIT, goalLine, progressArg, run } from '../src/cli.js';
-import type { Blocker } from '@dagyard/model';
+import { nextStartable, type Blocker, type DagNode, type Edge, type Stage } from '@dagyard/model';
 
 const KEY = 'clave-secreta-123';
 
@@ -22,7 +22,15 @@ let baseUrl = '';
 let seen: Seen[] = [];
 let blockers = new Map<string, Blocker>();
 let accessValues = new Map<string, string>();
-let nextGoal: string | null = '/goal Pagos con tarjeta';
+let stages: Stage[] = [];
+let nodes: DagNode[] = [];
+let edges: Edge[] = [];
+
+/** Un nodo del mock con defaults; `next` lo elige con `nextStartable` del modelo, como el Worker. */
+function mockNode(id: string, stage: string, status: DagNode['status'], goal: string | null = null): DagNode {
+  const at = '2026-10-04T00:00:00.000Z';
+  return { id, projectId: 'demo', stage, title: id, status, progress: 0, team: null, goal, reportUrl: null, createdAt: at, updatedAt: at };
+}
 
 function reply(res: ServerResponse, status: number, body?: unknown) {
   res.writeHead(status, { 'content-type': 'application/json' });
@@ -49,7 +57,7 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     return reply(res, 200, { project: { id: projectId }, nodes: [], edges: [], blockers: [...blockers.values()], messages: [], seq: 0 });
   }
   if (req.method === 'GET' && kind === 'next') {
-    return reply(res, 200, { node: nextGoal ? { id: 'pagos' } : null, goalLine: nextGoal });
+    return reply(res, 200, nextStartable(stages, nodes, edges));
   }
   if (req.method === 'POST' && kind === 'nodes' && !nodeId) return reply(res, 201, { ...(body as object), projectId });
   if (req.method === 'PATCH' && kind === 'nodes' && nodeId) {
@@ -117,7 +125,9 @@ beforeEach(() => {
   seen = [];
   blockers = new Map();
   accessValues = new Map();
-  nextGoal = '/goal Pagos con tarjeta';
+  stages = [{ id: 'diseno', name: 'Diseño' }, { id: 'construccion', name: 'Construcción' }];
+  nodes = [];
+  edges = [];
 });
 
 async function cli(argv: string[], env: Record<string, string> = {}) {
@@ -225,8 +235,16 @@ describe('msg', () => {
 });
 
 describe('next', () => {
-  it('imprime /goal en una sola línea física', async () => {
-    nextGoal = '/goal Pagos con tarjeta —\n  sigue el plan\ty cumple';
+  it('imprime el /goal del servidor en una sola línea física', async () => {
+    nodes = [
+      mockNode('flujo', 'diseno', 'done'),
+      mockNode('pagos', 'construccion', 'pending', 'Pagos con tarjeta —\n  sigue el plan\ty cumple'),
+      mockNode('reembolsos', 'construccion', 'pending'),
+    ];
+    edges = [
+      { projectId: 'demo', from: 'flujo', to: 'pagos' },
+      { projectId: 'demo', from: 'pagos', to: 'reembolsos' },
+    ];
     const r = await cli(['next', '--project', 'demo']);
     expect(r.code).toBe(0);
     expect(r.stdout).toBe('/goal Pagos con tarjeta — sigue el plan y cumple\n');
@@ -234,7 +252,8 @@ describe('next', () => {
   });
 
   it('exit 3 si no hay nada arrancable', async () => {
-    nextGoal = null;
+    nodes = [mockNode('flujo', 'diseno', 'working'), mockNode('pagos', 'construccion', 'pending')];
+    edges = [{ projectId: 'demo', from: 'flujo', to: 'pagos' }];
     const r = await cli(['next']);
     expect(r.code).toBe(EXIT.nothing);
     expect(r.stdout).toBe('');

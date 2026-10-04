@@ -45,7 +45,9 @@ const HELP_GLOBAL = `Opciones comunes (antes o después del comando):
   -p, --project <p>   proyecto (o DAGYARD_PROJECT, .dagyard.json o ~/.config/dagyard/project)
   --url <url>         servidor (o DAGYARD_URL, .dagyard.json o ~/.config/dagyard/url)
   -h, --help          esta ayuda
-.dagyard.json = {"project": "…", "url": "…"}, el primero subiendo desde la carpeta actual; se commitea.
+.dagyard.json = {"project": "…", "url": "…"}, el primero subiendo desde la carpeta actual (sin pasar de la
+raíz del repo ni de $HOME); se commitea. Su url recibe la key solo si es https y de confianza (la preview,
+dagyard.run, la de DAGYARD_URL o ~/.config/dagyard/url, o una línea de ~/.config/dagyard/trusted-urls).
 La API key sale solo de DAGYARD_KEY o ~/.config/dagyard/agent-key; nunca se imprime.`;
 
 const COMMANDS: Record<string, Command> = {
@@ -355,7 +357,9 @@ no tiene ya una decisión (abierta o respondida). La etiqueta epic no crea tarea
     async run({ io, args }) {
       need(args, []);
       const repo = required(args, 'github');
-      if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new UsageError(`--github va como owner/repo: «${repo}»`);
+      if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || repo.split('/').some((seg) => seg === '.' || seg.includes('..'))) {
+        throw new UsageError(`--github va como owner/repo: «${repo}»`);
+      }
       const label = optional(args, 'label');
       const stage = optional(args, 'stage');
       const report = await syncGithub(client(io, args), io.github ?? ghCliSource(), project(io, args), {
@@ -451,20 +455,22 @@ function leadingGlobals(argv: string[]): { globals: string[]; rest: string[] } {
   return { globals, rest: argv.slice(i) };
 }
 
-function config(io: Io) {
-  return loadConfig(io.env, io.cwd ?? process.cwd());
+/** `skipRepoUrl`: la url de `.dagyard.json` no hace falta (vino `--url`, o solo se pide el proyecto). */
+function config(io: Io, skipRepoUrl: boolean) {
+  return loadConfig(io.env, io.cwd ?? process.cwd(), { warn: io.stderr, skipRepoUrl });
 }
 
 function client(io: Io, args: ParsedArgs): DagyardClient {
-  const cfg = config(io);
-  const url = flag(args, 'url') ?? cfg.url;
+  const urlFlag = flag(args, 'url');
+  const cfg = config(io, urlFlag !== undefined);
+  const url = urlFlag ?? cfg.url;
   if (!url) throw new UsageError('falta el servidor: --url, DAGYARD_URL, .dagyard.json o ~/.config/dagyard/url');
   if (!cfg.key) throw new UsageError('falta la API key: DAGYARD_KEY o ~/.config/dagyard/agent-key');
   return new DagyardClient({ baseUrl: url, key: cfg.key, ...(io.fetch ? { fetch: io.fetch } : {}) });
 }
 
 function project(io: Io, args: ParsedArgs): string {
-  const p = flag(args, 'project') ?? config(io).project;
+  const p = flag(args, 'project') ?? config(io, true).project;
   if (!p) throw new UsageError('falta el proyecto: --project, DAGYARD_PROJECT, .dagyard.json o ~/.config/dagyard/project');
   return slugify(p);
 }

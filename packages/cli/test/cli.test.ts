@@ -149,10 +149,16 @@ beforeEach(() => {
 });
 
 /** `cwd` por defecto: una carpeta temporal vacía, así ningún `.dagyard.json` del repo se cuela en los tests. */
-async function cli(argv: string[], env: Record<string, string> = {}, cwd = mkdtempSync(join(tmpdir(), 'dagyard-cwd-'))) {
+async function cli(
+  argv: string[],
+  env: Record<string, string> = {},
+  cwd = mkdtempSync(join(tmpdir(), 'dagyard-cwd-')),
+  extra: { fetch?: typeof fetch } = {},
+) {
   let stdout = '';
   let stderr = '';
   const code = await run(argv, {
+    ...extra,
     cwd,
     stdout: (s) => (stdout += s),
     stderr: (s) => (stderr += s),
@@ -472,11 +478,12 @@ describe('.dagyard.json (#45)', () => {
     return { root, deep };
   }
 
-  it('lo busca subiendo desde el cwd y usa su project y url', async () => {
-    const { deep } = repoWith(JSON.stringify({ project: 'Dagyard', url: baseUrl }));
-    const r = await cli(['start', 'x'], { DAGYARD_URL: '', DAGYARD_PROJECT: '' }, deep);
+  it('lo busca subiendo desde el cwd y usa su project y url (de confianza)', async () => {
+    const { deep } = repoWith(JSON.stringify({ project: 'Dagyard', url: 'https://dagyard.run' }));
+    const r = await cli(['start', 'x'], { DAGYARD_URL: '', DAGYARD_PROJECT: '' }, deep, { fetch: capture.fetch });
     expect(r.code).toBe(EXIT.ok);
-    expect(last().path).toBe('/api/projects/dagyard/nodes/x');
+    expect(capture.urls).toEqual(['https://dagyard.run/api/projects/dagyard/nodes/x']);
+    expect(r.stderr).toBe('');
   });
 
   it('precedencia: flag > env > .dagyard.json > ~/.config/dagyard', async () => {
@@ -524,6 +531,115 @@ describe('.dagyard.json (#45)', () => {
   it('un .dagyard.json roto no impide la ayuda', async () => {
     const { deep } = repoWith('nope');
     expect((await cli(['--help'], {}, deep)).code).toBe(EXIT.ok);
+  });
+});
+
+/** fetch que solo anota a dónde iría (y con qué credencial): ninguna red. */
+const capture = {
+  urls: [] as string[],
+  auths: [] as string[],
+  fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+    capture.urls.push(String(input));
+    capture.auths.push(String((init?.headers as Record<string, string>)?.authorization));
+    return new Response(JSON.stringify({ id: 'x' }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch,
+};
+beforeEach(() => {
+  capture.urls = [];
+  capture.auths = [];
+});
+
+describe('.dagyard.json: la url recibe la key solo si es de confianza (#50)', () => {
+  function repoWith(url: string, cfg: Record<string, string> = {}) {
+    const root = mkdtempSync(join(tmpdir(), 'dagyard-repo-'));
+    writeFileSync(join(root, '.dagyard.json'), JSON.stringify({ project: 'p', url }));
+    const dir = mkdtempSync(join(tmpdir(), 'dagyard-cfg-'));
+    for (const [k, v] of Object.entries(cfg)) writeFileSync(join(dir, k), v);
+    return { root, env: { DAGYARD_URL: '', DAGYARD_PROJECT: '', DAGYARD_CONFIG_DIR: dir } };
+  }
+  const go = (r: ReturnType<typeof repoWith>) => cli(['start', 'x'], r.env, r.root, { fetch: capture.fetch });
+
+  it.each([
+    ['https://dagyard.cofoundy-dev.workers.dev'],
+    ['https://dagyard.run/'],
+  ])('las constantes de confianza: %s', async (url) => {
+    const r = await go(repoWith(url));
+    expect(r.code).toBe(EXIT.ok);
+    expect(capture.urls[0]).toMatch(/^https:\/\/dagyard\.(run|cofoundy-dev\.workers\.dev)\/api\//);
+  });
+
+  it.each([
+    ['https://evil.example'],
+    ['http://dagyard.run'],
+    ['https://dagyard.run.evil.example'],
+    ['https://dagyard.run@evil.example'],
+    ['https://dagyard.run:8443'],
+  ])('una url ajena (%s) se ignora con aviso y cae a ~/.config/dagyard/url', async (url) => {
+    const r = await go(repoWith(url, { url: 'https://mio.example' }));
+    expect(r.code).toBe(EXIT.ok);
+    expect(capture.urls).toEqual(['https://mio.example/api/projects/p/nodes/x']);
+    expect(r.stderr).toContain('.dagyard.json');
+    expect(r.stderr).toContain('trusted-urls');
+    expect(r.stderr).not.toContain(KEY);
+  });
+
+  it('ajena y sin nada más: falta el servidor, y la key no viaja a ningún lado', async () => {
+    const r = await go(repoWith('https://evil.example'));
+    expect(r.code).toBe(EXIT.usage);
+    expect(r.stderr).toContain('falta el servidor');
+    expect(capture.urls).toEqual([]);
+    expect(seen).toHaveLength(0);
+  });
+
+  it('el origen de ~/.config/dagyard/url es de confianza (con otra ruta)', async () => {
+    const r = await go(repoWith('https://mio.example/base', { url: 'https://mio.example' }));
+    expect(r.code).toBe(EXIT.ok);
+    expect(capture.urls[0]).toBe('https://mio.example/base/api/projects/p/nodes/x');
+    expect(r.stderr).toBe('');
+  });
+
+  it('las líneas de ~/.config/dagyard/trusted-urls también (comentarios y vacías se ignoran)', async () => {
+    const r = await go(repoWith('https://equipo.example', { 'trusted-urls': '# mías\n\nhttps://otro.example\nhttps://equipo.example/\n' }));
+    expect(r.code).toBe(EXIT.ok);
+    expect(capture.urls[0]).toBe('https://equipo.example/api/projects/p/nodes/x');
+  });
+
+  it('con --url o DAGYARD_URL la url del archivo ni se mira: sin aviso', async () => {
+    const a = await cli(['start', 'x', '--url', 'https://mio.example'], { DAGYARD_URL: '' }, repoWith('https://evil.example').root, { fetch: capture.fetch });
+    const b = await cli(['start', 'x'], { DAGYARD_URL: 'https://mio.example' }, repoWith('https://evil.example').root, { fetch: capture.fetch });
+    expect(a.stderr + b.stderr).toBe('');
+    expect(capture.urls.every((u) => u.startsWith('https://mio.example/'))).toBe(true);
+  });
+});
+
+describe('.dagyard.json: la búsqueda para en la raíz del repo o en $HOME (#50)', () => {
+  it('para en el primer directorio con .git (carpeta): el de más arriba no cuenta', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dagyard-up-'));
+    writeFileSync(join(root, '.dagyard.json'), JSON.stringify({ project: 'plantado' }));
+    mkdirSync(join(root, 'repo', '.git'), { recursive: true });
+    mkdirSync(join(root, 'repo', 'src'));
+    const r = await cli(['start', 'x'], { DAGYARD_PROJECT: '' }, join(root, 'repo', 'src'));
+    expect(r.code).toBe(EXIT.usage);
+    expect(r.stderr).toContain('falta el proyecto');
+  });
+
+  it('un .git archivo (worktree) también marca la raíz, y el .dagyard.json de esa raíz sí cuenta', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dagyard-up-'));
+    mkdirSync(join(root, 'wt', 'src'), { recursive: true });
+    writeFileSync(join(root, 'wt', '.git'), 'gitdir: /x\n');
+    writeFileSync(join(root, 'wt', '.dagyard.json'), JSON.stringify({ project: 'del-repo' }));
+    writeFileSync(join(root, '.dagyard.json'), JSON.stringify({ project: 'plantado' }));
+    await cli(['start', 'x'], { DAGYARD_PROJECT: '' }, join(root, 'wt', 'src'));
+    expect(last().path).toBe('/api/projects/del-repo/nodes/x');
+  });
+
+  it('para en $HOME', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dagyard-up-'));
+    writeFileSync(join(root, '.dagyard.json'), JSON.stringify({ project: 'plantado' }));
+    mkdirSync(join(root, 'home', 'a'), { recursive: true });
+    const r = await cli(['start', 'x'], { DAGYARD_PROJECT: '', HOME: join(root, 'home') }, join(root, 'home', 'a'));
+    expect(r.code).toBe(EXIT.usage);
+    expect(r.stderr).toContain('falta el proyecto');
   });
 });
 

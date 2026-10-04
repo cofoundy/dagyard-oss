@@ -1,0 +1,4 @@
+node_modules
+dist
+# El lockfile es el de la raíz del workspace (nucleo); este solo existe mientras apps/web se instala suelto.
+pnpm-lock.yaml

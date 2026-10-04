@@ -1,0 +1,104 @@
+// Modelo de la UI, espejo de docs/spec/v0.md §«Modelo de datos mínimo».
+// Cuando nucleo publique packages/model + docs/api.md, el único archivo que cambia es data/adapter.ts:
+// la UI y la escena siguen consumiendo estos tipos.
+
+export type NodeStatus = 'pending' | 'working' | 'blocked' | 'done';
+export type BlockerKind = 'decision' | 'review' | 'access';
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+}
+
+export interface Stage {
+  id: string;
+  name: string;
+}
+
+export interface DagNode {
+  id: string;
+  stageId: string;
+  title: string;
+  status: NodeStatus;
+  /** 0-1 */
+  progress: number;
+  /** Equipo o agente responsable, en lenguaje humano («Diseño»). */
+  team?: string;
+  goal?: string;
+  reportUrl?: string;
+}
+
+export interface Edge {
+  from: string;
+  to: string;
+}
+
+export type Resolution =
+  | { kind: 'decision'; option: string }
+  | { kind: 'review'; verdict: 'approve' | 'changes'; comment?: string }
+  | { kind: 'access'; value: string };
+
+export interface Blocker {
+  id: string;
+  nodeId: string;
+  kind: BlockerKind;
+  question: string;
+  options: string[];
+  /** Etiqueta humana del acceso pedido («Clave de la pasarela de pagos»). Solo `access`. */
+  label?: string;
+  /** Resumen legible de la resolución; nunca el valor de un acceso. */
+  resolution?: string;
+  resolvedBy?: string;
+  resolvedAt?: string;
+}
+
+export interface Message {
+  id: string;
+  nodeId: string;
+  from: string;
+  /** ≤280 caracteres */
+  text: string;
+  reportUrl?: string;
+  at: string;
+}
+
+export interface Snapshot {
+  project: ProjectSummary;
+  stages: Stage[];
+  nodes: DagNode[];
+  edges: Edge[];
+  blockers: Blocker[];
+  messages: Message[];
+  /** Último `seq` de evento incluido en el snapshot; el WS reanuda desde aquí. */
+  seq: number;
+}
+
+export type DagEvent =
+  | { seq: number; type: 'node.added'; node: DagNode }
+  | { seq: number; type: 'node.updated'; node: Partial<DagNode> & { id: string } }
+  | { seq: number; type: 'node.removed'; nodeId: string }
+  | { seq: number; type: 'edge.added'; edge: Edge }
+  | { seq: number; type: 'edge.removed'; edge: Edge }
+  | { seq: number; type: 'blocker.opened'; blocker: Blocker }
+  | { seq: number; type: 'blocker.resolved'; blocker: Blocker }
+  | { seq: number; type: 'message.posted'; message: Message };
+
+export interface DagyardApi {
+  /** Valida el token: lanza `UnauthorizedError` si no sirve. */
+  listProjects(): Promise<ProjectSummary[]>;
+  getSnapshot(projectId: string): Promise<Snapshot>;
+  resolveBlocker(blockerId: string, resolution: Resolution): Promise<Blocker>;
+  /** Devuelve la función para cerrar la suscripción. */
+  subscribe(
+    projectId: string,
+    sinceSeq: number,
+    handlers: { onEvent: (e: DagEvent) => void; onStatus?: (s: 'live' | 'reconnecting') => void },
+  ): () => void;
+}
+
+export class UnauthorizedError extends Error {
+  constructor() {
+    super('unauthorized');
+    this.name = 'UnauthorizedError';
+  }
+}

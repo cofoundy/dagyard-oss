@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -391,6 +391,32 @@ describe('import', () => {
     const r = await cli(['import', '--from', from, '--project', 'basalt', '--replace']);
     expect(r.code).toBe(EXIT.api);
     expect(r.stderr).toContain('conflict: El proyecto tiene una pregunta abierta para el dueño');
+  });
+
+  it('--titles en línea pone los títulos humanos en el PUT y lo cuenta', async () => {
+    const titles = JSON.stringify({ l1: 'Cada cliente con su propio espacio' });
+    const r = await cli(['import', '--from', from, '--project', 'basalt-pm', '--titles', titles]);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('Títulos de --titles: 1 de 23');
+    const body = last().body as { nodes: Array<{ id: string; title: string }> };
+    expect(body.nodes.find((n) => n.id === 'l1')?.title).toBe('Cada cliente con su propio espacio');
+  });
+
+  it('--titles desde archivo: un id desconocido avisa y el import sigue', async () => {
+    const f = join(mkdtempSync(join(tmpdir(), 'dagyard-titles-')), 'titulos.json');
+    writeFileSync(f, JSON.stringify({ 't-599': 'Avisos más claros', fantasma: 'No existe' }));
+    const r = await cli(['import', '--from', from, '--titles', f, '--dry-run']);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('Títulos de --titles: 1 de 23');
+    expect(r.stdout).toContain('no hay ninguna tarea «fantasma»');
+    expect(seen).toHaveLength(0);
+  });
+
+  it('--titles que no es un objeto JSON es error de uso (64) y no envía nada', async () => {
+    const r = await cli(['import', '--from', from, '--project', 'basalt-pm', '--titles', '{l1:']);
+    expect(r.code).toBe(EXIT.usage);
+    expect(r.stderr).toContain('--titles: no es JSON válido');
+    expect(seen).toHaveLength(0);
   });
 
   it('un error que no es 409 al crear se propaga tal cual', async () => {

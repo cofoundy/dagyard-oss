@@ -21,9 +21,21 @@ import {
   type ProjectSummary,
 } from '@dagyard/model';
 import { Hono, type Context } from 'hono';
-import { deleteCookie, setCookie } from 'hono/cookie';
-import { SESSION_COOKIE, authenticate, offeredProtocols, requireOwner, roleOfToken } from './auth.js';
-import { seal, sessionValue, unseal } from './crypto.js';
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
+import {
+  SESSION_COOKIE,
+  SESSION_TTL_S,
+  authenticate,
+  type Auth,
+  closeAllSessions,
+  closeSession,
+  offeredProtocols,
+  openSession,
+  originAllowed,
+  requireOwner,
+  roleOfToken,
+} from './auth.js';
+import { seal, unseal } from './crypto.js';
 import { db as dbOf } from './db.js';
 import type { AppEnv } from './env.js';
 import { ApiFailure, errorResponse, fail, notFound } from './http.js';
@@ -69,26 +81,53 @@ app.post('/api/session', async (c) => {
   const b = (await body(c)) as { token?: unknown } | null;
   const role = typeof b?.token === 'string' ? await roleOfToken(c.env, b.token.trim()) : null;
   if (role !== 'owner') return errorResponse('unauthorized', 'Ese token no es válido');
-  setCookie(c, SESSION_COOKIE, await sessionValue(c.env.OWNER_TOKEN), {
+  setCookie(c, SESSION_COOKIE, await openSession(c.env), {
     httpOnly: true,
     secure: true,
     sameSite: 'Lax',
     path: '/',
-    maxAge: 60 * 60 * 24 * 365,
+    maxAge: SESSION_TTL_S,
   });
   return c.body(null, 204);
 });
 
-app.delete('/api/session', (c) => {
+/**
+ * La cookie la manda el navegador solo, también desde un sitio hermano (`*.workers.dev` es el mismo
+ * «sitio»). El WebSocket con cookie exige un Origin permitido; una escritura con cookie y un Origin ajeno
+ * se rechaza (sin Origin pasa: un navegador siempre lo manda en una petición entre orígenes).
+ */
+function foreignOrigin(c: C, auth: Auth, live: boolean): boolean {
+  if (auth.via !== 'cookie') return false;
+  const origin = c.req.header('origin');
+  if (!live && (c.req.method === 'GET' || c.req.method === 'HEAD' || origin === undefined)) return false;
+  return !originAllowed(c.env, c.req.url, origin);
+}
+
+const FOREIGN = 'Ese origen no puede usar la sesión del navegador';
+
+/** Cierra la sesión de esta cookie en el servidor; con `?all=1`, todas (exige credencial de dueño). */
+app.delete('/api/session', async (c) => {
+  if (c.req.query('all') === '1') {
+    const auth = await authenticate(c);
+    if (!auth) return errorResponse('unauthorized', 'Falta una credencial válida');
+    if (foreignOrigin(c, auth, false)) return errorResponse('forbidden', FOREIGN);
+    if (auth.role !== 'owner') return errorResponse('forbidden', 'Cerrar todas las sesiones es solo del dueño');
+    await closeAllSessions(c.env);
+  } else {
+    const cookie = getCookie(c, SESSION_COOKIE);
+    if (cookie) await closeSession(c.env, cookie);
+  }
   deleteCookie(c, SESSION_COOKIE, { path: '/', secure: true });
   return c.body(null, 204);
 });
 
 app.use('/api/*', async (c, next) => {
   const live = /^\/api\/projects\/[^/]+\/live$/.test(c.req.path);
-  const role = await authenticate(c, { websocket: live });
-  if (!role) return errorResponse('unauthorized', 'Falta una credencial válida');
-  c.set('role', role);
+  const auth = await authenticate(c, { websocket: live });
+  if (!auth) return errorResponse('unauthorized', 'Falta una credencial válida');
+  if (foreignOrigin(c, auth, live)) return errorResponse('forbidden', FOREIGN);
+  c.set('role', auth.role);
+  if (auth.session) c.set('session', auth.session);
   await next();
 });
 
@@ -279,6 +318,10 @@ app.get('/api/projects/:pid/live', async (c) => {
   headers.set('x-dagyard-project', pid);
   headers.delete('x-dagyard-since');
   if (since !== undefined) headers.set('x-dagyard-since', since);
+  // hash de la sesión del navegador: el DO revalida el socket en cada evento (nunca viene del cliente)
+  headers.delete('x-dagyard-session');
+  const session = c.get('session');
+  if (session) headers.set('x-dagyard-session', session);
   // el token del subprotocolo no viaja más allá de la auth
   const offered = offeredProtocols(headers.get('sec-websocket-protocol') ?? undefined);
   if (offered.length) headers.set('sec-websocket-protocol', offered.filter((p) => !p.startsWith('token.')).join(', '));

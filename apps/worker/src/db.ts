@@ -109,4 +109,46 @@ export class Store extends DurableObject<Env> {
     const sql = this.ctx.storage.sql;
     return this.ctx.storage.transactionSync(() => queries.map((q) => sql.exec(q.sql, ...q.params).toArray() as Row[]));
   }
+
+  /* -------------------------------------------- sesiones del navegador (#12): solo el SHA-256 del id */
+
+  /** Abre una sesión y, de paso, purga las vencidas. */
+  openSession(idHash: string, ownerFp: string, ttlMs: number): void {
+    const now = Date.now();
+    const sql = this.ctx.storage.sql;
+    this.ctx.storage.transactionSync(() => {
+      sql.exec('DELETE FROM sessions WHERE expires_at <= ?', new Date(now).toISOString());
+      sql.exec(
+        'INSERT INTO sessions (id_hash, owner_fp, created_at, expires_at) VALUES (?, ?, ?, ?)',
+        idHash,
+        ownerFp,
+        new Date(now).toISOString(),
+        new Date(now + ttlMs).toISOString(),
+      );
+    });
+  }
+
+  /** ¿Sigue viva? Una sesión vencida o abierta con otro token de dueño se borra al verla. */
+  checkSession(idHash: string, ownerFp: string): boolean {
+    const sql = this.ctx.storage.sql;
+    const row = sql.exec<{ owner_fp: string; expires_at: string }>('SELECT owner_fp, expires_at FROM sessions WHERE id_hash = ?', idHash).toArray()[0];
+    if (!row) return false;
+    if (row.owner_fp === ownerFp && row.expires_at > new Date().toISOString()) return true;
+    sql.exec('DELETE FROM sessions WHERE id_hash = ?', idHash);
+    return false;
+  }
+
+  closeSession(idHash: string): void {
+    this.ctx.storage.sql.exec('DELETE FROM sessions WHERE id_hash = ?', idHash);
+  }
+
+  /** Cierra todas las sesiones; devuelve cuántas había. */
+  closeAllSessions(): number {
+    const sql = this.ctx.storage.sql;
+    return this.ctx.storage.transactionSync(() => {
+      const n = Number(sql.exec<{ n: number }>('SELECT COUNT(*) AS n FROM sessions').one().n);
+      sql.exec('DELETE FROM sessions');
+      return n;
+    });
+  }
 }

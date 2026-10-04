@@ -268,13 +268,15 @@ Sin --timeout espera para siempre. Exit 2 si vence.`,
     },
   },
   import: {
-    usage: 'dagyard import --from <ruta a .cofoundy/tasks> [--project <p>] [--name "…"] [--dry-run] [--json]',
-    summary: 'crea (o reemplaza) un proyecto desde las tareas del orchestrator',
+    usage: 'dagyard import --from <ruta a .cofoundy/tasks> [--project <p>] [--name "…"] [--replace] [--dry-run] [--json]',
+    summary: 'crea un proyecto nuevo desde las tareas del orchestrator',
     help: `deps y blockedBy se vuelven dependencias; status se normaliza a ${NODE_STATUSES.join(', ')}.
 Etapas: phase si todas las tareas lo traen; si no, por profundidad («Etapa 1», «Etapa 2», …).
+Si el proyecto ya existe no lo pisa: elige otro con --project o pasa --replace para reemplazarlo
+entero. El servidor rechaza el reemplazo (409) si el proyecto tiene preguntas abiertas para el dueño.
 --dry-run solo cuenta, no envía nada y no necesita servidor.`,
     flags: ['from', 'name', ...GLOBAL_FLAGS],
-    bools: ['dry-run', 'json'],
+    bools: ['dry-run', 'json', 'replace'],
     async run({ io, args }) {
       need(args, []);
       const from = required(args, 'from');
@@ -294,8 +296,19 @@ Etapas: phase si todas las tareas lo traen; si no, por profundidad («Etapa 1»,
       const check = parseProjectGraphInput(result.graph);
       if (!check.ok) throw new Error(`el grafo importado no pasa la validación del modelo: ${check.message}`);
       const dry = args.bools.has('dry-run');
-      if (!dry) await client(io, args).putProject(result.projectId, result.graph);
-      io.stdout(args.bools.has('json') ? `${JSON.stringify(result, null, 2)}\n` : formatImport(result, dry));
+      const replace = args.bools.has('replace');
+      if (!dry) {
+        const api = client(io, args);
+        if (!replace && (await api.projectExists(result.projectId))) {
+          throw new ApiRequestError(
+            409,
+            'conflict',
+            `el proyecto «${result.projectId}» ya existe y no lo piso; usa --project <otro> para crear uno nuevo o --replace para reemplazarlo entero`,
+          );
+        }
+        await api.putProject(result.projectId, result.graph);
+      }
+      io.stdout(args.bools.has('json') ? `${JSON.stringify(result, null, 2)}\n` : formatImport(result, dry, replace));
       return EXIT.ok;
     },
   },
@@ -440,11 +453,12 @@ function formatResolution(r: BlockerWaitResult): string {
   return `${first}\n${res?.note ? `nota: ${oneLine(res.note, 10_000)}\n` : ''}`;
 }
 
-function formatImport(r: ImportResult, dry: boolean): string {
+function formatImport(r: ImportResult, dry: boolean, replace: boolean): string {
   const s = r.stats;
   const how = s.stageSource === 'phase' ? 'por fase' : 'por profundidad';
+  const done = replace ? ' — reemplazado' : ' — importado';
   const lines = [
-    `Proyecto «${r.graph.name}» (${r.projectId})${dry ? ' — simulación, no se envió nada' : ' — importado'}`,
+    `Proyecto «${r.graph.name}» (${r.projectId})${dry ? ' — simulación, no se envió nada' : done}`,
     `${s.nodes} nodos · ${s.edges} aristas · ${s.stages.length} etapas (${how})`,
     ...s.stages.map((st) => `  ${st.name}: ${st.nodes}`),
     `Estados: ${s.status.pending} pendientes · ${s.status.working} en progreso · ${s.status.blocked} te esperan · ${s.status.done} listas`,

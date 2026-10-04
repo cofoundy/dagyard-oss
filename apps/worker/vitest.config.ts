@@ -11,6 +11,7 @@ export default defineConfig({
           OWNER_TOKEN: 'test-owner-token',
           AGENT_KEY: 'test-agent-key',
           VAULT_KEY: 'test-vault-key',
+          ALLOWED_ORIGINS: 'https://app.dagyard.test, https://otro.dagyard.test/',
         },
       },
     }),

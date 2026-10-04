@@ -1,5 +1,6 @@
 // Siembra la demo «Marketplace de reservas». Idempotente: PUT reemplaza el grafo entero.
-// Uso: node scripts/seed.mjs <url>   (la clave sale de ~/.config/dagyard/agent-key, nunca de argv)
+// La corre el dueño: si la demo ya tiene bloqueantes abiertos, un agente recibiría 409 al reemplazarla.
+// Uso: node scripts/seed.mjs <url>   (el token sale de ~/.config/dagyard/owner-token, nunca de argv)
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -10,12 +11,12 @@ if (!/^https?:\/\//.test(base)) {
   console.error('Uso: node scripts/seed.mjs <url>   p. ej. https://dagyard.<cuenta>.workers.dev');
   process.exit(2);
 }
-const keyPath = join(homedir(), '.config', 'dagyard', 'agent-key');
+const keyPath = join(homedir(), '.config', 'dagyard', 'owner-token');
 let key;
 try {
   key = readFileSync(keyPath, 'utf8').trim();
 } catch {
-  console.error(`No encuentro la clave del agente en ${keyPath}`);
+  console.error(`No encuentro el token del dueño en ${keyPath}`);
   process.exit(2);
 }
 

@@ -5,13 +5,17 @@
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { DagEvent, ServerFrame } from '@dagyard/model';
-import { WS_PROTOCOL, offeredProtocols } from './auth.js';
+import { WS_PROTOCOL, offeredProtocols, sessionAlive } from './auth.js';
 import { db } from './db.js';
 import type { Env } from './env.js';
 import { currentSeq, eventsSince } from './store.js';
 
 /** Si el cliente está más atrás que esto, recibe `resync` y vuelve a pedir el snapshot. */
 export const REPLAY_LIMIT = 500;
+/** Cuánto se confía en que una sesión del navegador sigue viva antes de volver a preguntarle al Store. */
+export const SESSION_RECHECK_MS = 30_000;
+/** Código de cierre de un socket cuya sesión del navegador se cerró, venció o es de un token rotado. */
+export const CLOSE_SESSION_ENDED = 4001;
 
 interface Attachment {
   pid: string;
@@ -19,6 +23,8 @@ interface Attachment {
   ready: boolean;
   /** seq hasta el que ya tiene todo (por el hello/la recuperación) */
   seen: number;
+  /** hash de la sesión del navegador si entró por cookie: se revalida antes de cada evento */
+  session?: string;
 }
 
 const frame = (f: ServerFrame) => JSON.stringify(f);
@@ -26,6 +32,8 @@ const frame = (f: ServerFrame) => JSON.stringify(f);
 export class ProjectRoom extends DurableObject<Env> {
   private lastSent: number | null | undefined = undefined;
   private queue: Promise<unknown> = Promise.resolve();
+  /** hash de sesión → hasta cuándo se da por viva sin preguntar (en memoria: se pierde al hibernar, y está bien) */
+  private aliveUntil = new Map<string, number>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -56,11 +64,12 @@ export class ProjectRoom extends DurableObject<Env> {
     if (req.headers.get('upgrade')?.toLowerCase() !== 'websocket' || !pid) return new Response('se esperaba un WebSocket', { status: 426 });
     const rawSince = req.headers.get('x-dagyard-since');
     const since = rawSince && /^\d+$/.test(rawSince) ? Number(rawSince) : null;
+    const session = req.headers.get('x-dagyard-session') ?? undefined;
 
     const { 0: client, 1: server } = new WebSocketPair();
     this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ pid, ready: false, seen: 0 } satisfies Attachment);
-    this.serial(() => this.greet(server, pid, since)).catch((err) => {
+    server.serializeAttachment({ pid, ready: false, seen: 0, session } satisfies Attachment);
+    this.serial(() => this.greet(server, pid, since, session)).catch((err) => {
       console.error(JSON.stringify({ msg: 'hello falló', pid, err: String(err) }));
       server.close(1011, 'error interno');
     });
@@ -70,7 +79,7 @@ export class ProjectRoom extends DurableObject<Env> {
     return new Response(null, { status: 101, webSocket: client, headers });
   }
 
-  private async greet(ws: WebSocket, pid: string, since: number | null): Promise<void> {
+  private async greet(ws: WebSocket, pid: string, since: number | null, session: string | undefined): Promise<void> {
     const seq = await currentSeq(db(this.env), pid);
     ws.send(frame({ type: 'hello', projectId: pid, seq }));
     // un since del futuro (p. ej. el proyecto se borró y se volvió a crear): el cliente debe recargar
@@ -80,7 +89,7 @@ export class ProjectRoom extends DurableObject<Env> {
       if (evs.length > REPLAY_LIMIT) ws.send(frame({ type: 'resync', seq }));
       else for (const event of evs) if (event.seq <= seq) ws.send(frame({ type: 'event', event }));
     }
-    ws.serializeAttachment({ pid, ready: true, seen: seq } satisfies Attachment);
+    ws.serializeAttachment({ pid, ready: true, seen: seq, session } satisfies Attachment);
     // Primer socket de esta instancia: lo anterior a `seq` ya lo tiene quien está conectado.
     if ((await this.getLastSent()) === null) await this.setLastSent(seq);
   }
@@ -102,9 +111,18 @@ export class ProjectRoom extends DurableObject<Env> {
       const contiguous = toSend.every((e, i) => e.seq === last! + 1 + i);
       // Una escritura concurrente se adelantó: lo que falta ya está commiteado en el Store.
       if (!contiguous) toSend = await eventsSince(db(this.env), pid, last, REPLAY_LIMIT);
+      const ended = await this.endedSessions(sockets);
       for (const ws of sockets) {
         const att = ws.deserializeAttachment() as Attachment | null;
         if (!att?.ready) continue;
+        if (att.session && ended.has(att.session)) {
+          try {
+            ws.close(CLOSE_SESSION_ENDED, 'sesión cerrada');
+          } catch {
+            // ya cerrado
+          }
+          continue;
+        }
         for (const event of toSend) {
           if (event.seq <= att.seen) continue;
           try {
@@ -116,6 +134,30 @@ export class ProjectRoom extends DurableObject<Env> {
       }
       await this.setLastSent(toSend[toSend.length - 1]!.seq);
     });
+  }
+
+  /**
+   * Sesiones del navegador que ya no sirven (cerradas, vencidas, token rotado) entre las de estos sockets.
+   * Una sesión vista viva hace menos de SESSION_RECHECK_MS no se vuelve a preguntar.
+   */
+  private async endedSessions(sockets: WebSocket[]): Promise<Set<string>> {
+    const now = Date.now();
+    const toCheck = new Set<string>();
+    for (const ws of sockets) {
+      const session = (ws.deserializeAttachment() as Attachment | null)?.session;
+      if (session && (this.aliveUntil.get(session) ?? 0) <= now) toCheck.add(session);
+    }
+    const ended = new Set<string>();
+    await Promise.all(
+      [...toCheck].map(async (session) => {
+        if (await sessionAlive(this.env, session)) this.aliveUntil.set(session, now + SESSION_RECHECK_MS);
+        else {
+          this.aliveUntil.delete(session);
+          ended.add(session);
+        }
+      }),
+    );
+    return ended;
   }
 
   /** El proyecto se borró: cierra los sockets y olvida el seq (un proyecto nuevo empieza en 1). */

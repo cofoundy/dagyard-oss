@@ -38,6 +38,7 @@ Formas de presentarla (el servidor prueba en este orden):
 1. Header `Authorization: Bearer <token>` — el CLI usa esta.
 2. Cookie `dagyard_session` (httpOnly, Secure, SameSite=Lax), que crea `POST /api/session`. La UI usa
    esta: el humano pega el token una vez y el navegador lo recuerda; el WebSocket la manda solo.
+   Solo vale como `owner`.
 3. Solo en el upgrade del WebSocket, para clientes sin cookie: subprotocolo
    `new WebSocket(url, ['dagyard', 'token.' + token])` (el servidor responde `Sec-WebSocket-Protocol: dagyard`
    y el token no queda en ninguna URL), o, como último recurso, la query `?token=<token>`.
@@ -51,9 +52,17 @@ Sin el secret `VAULT_KEY`, resolver un acceso o recibir su valor responde `500`:
 
 | Método y ruta | Body | Respuesta |
 |---|---|---|
-| `POST /api/session` | `{"token": "<owner-token>"}` | `204` + `Set-Cookie`. Token malo → `401` |
-| `DELETE /api/session` | — | `204` y borra la cookie |
+| `POST /api/session` | `{"token": "<owner-token>"}` | `204` + `Set-Cookie`. Token malo (o la clave del agente) → `401` |
+| `DELETE /api/session` | — | `204`: cierra **esa** sesión en el servidor y borra la cookie. Sin cookie, también `204` |
+| `DELETE /api/session?all=1` | — | `204`: cierra **todas** las sesiones. Exige credencial de dueño (cookie viva o Bearer): sin ella `401`, con la del agente `403` |
 | `GET /api/me` | — | `{"role": "owner" \| "agent"}` o `401` |
+
+Cada login abre una sesión nueva: la cookie lleva un id aleatorio de 256 bits (base64url) y el Durable
+Object `Store` guarda solo su SHA-256, con su vencimiento a los **30 días** (el mismo `Max-Age` de la
+cookie) y una huella del `OWNER_TOKEN`. Una sesión cerrada, vencida o abierta con un `OWNER_TOKEN` que
+ya se rotó responde `401` aunque alguien haya copiado la cookie; la UI vuelve a pedir la clave. Las
+vencidas se borran solas al abrir otra sesión o al intentar usarlas. Cerrar sesión no corta un
+WebSocket que ya estaba abierto: deja de servir al reconectar.
 
 ## Rutas
 
@@ -139,6 +148,13 @@ emite una escritura. Todas las escrituras de la API, vengan de la UI o del CLI, 
 
 **Conexión:** `GET /api/projects/:pid/live?since=<seq>` con `Upgrade: websocket`. Auth por cookie, subprotocolo
 `token.<token>` o `?token=`. Sin auth → `401` antes del upgrade.
+
+**Origin:** si la auth vino por la cookie, el upgrade exige un header `Origin` que sea el mismo origen
+que la URL pedida o uno de la var `ALLOWED_ORIGINS` del Worker (lista por comas, vacía por defecto en
+`wrangler.toml`); si no, o sin `Origin`, `403 forbidden`. En dev, si se pide a `localhost`/`127.0.0.1`,
+vale cualquier origen localhost. Bearer, subprotocolo y `?token=` no miran el `Origin` (un sitio ajeno no
+tiene el token). El proxy de Vite (`apps/web/vite.config.ts`) reescribe el `Origin` del upgrade al de su
+target, así la UI en dev funciona contra un Worker local o remoto.
 
 **Frames servidor → cliente** (JSON, tipo `ServerFrame`):
 

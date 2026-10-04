@@ -6,6 +6,8 @@ compatibility_flags = ["nodejs_compat"]
 
 [vars]
 VERSION = "dev"
+# Orígenes extra (por comas, p. ej. "https://app.dagyard.run") que pueden abrir el WebSocket con la cookie.
+ALLOWED_ORIGINS = ""
 
 [assets]
 directory = "./public"

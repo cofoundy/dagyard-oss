@@ -21,9 +21,20 @@ import {
   type ProjectSummary,
 } from '@dagyard/model';
 import { Hono, type Context } from 'hono';
-import { deleteCookie, setCookie } from 'hono/cookie';
-import { SESSION_COOKIE, authenticate, offeredProtocols, requireOwner, roleOfToken } from './auth.js';
-import { seal, sessionValue, unseal } from './crypto.js';
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
+import {
+  SESSION_COOKIE,
+  SESSION_TTL_S,
+  authenticate,
+  closeAllSessions,
+  closeSession,
+  offeredProtocols,
+  openSession,
+  originAllowed,
+  requireOwner,
+  roleOfToken,
+} from './auth.js';
+import { seal, unseal } from './crypto.js';
 import { db as dbOf } from './db.js';
 import type { AppEnv } from './env.js';
 import { ApiFailure, errorResponse, fail, notFound } from './http.js';
@@ -69,26 +80,40 @@ app.post('/api/session', async (c) => {
   const b = (await body(c)) as { token?: unknown } | null;
   const role = typeof b?.token === 'string' ? await roleOfToken(c.env, b.token.trim()) : null;
   if (role !== 'owner') return errorResponse('unauthorized', 'Ese token no es válido');
-  setCookie(c, SESSION_COOKIE, await sessionValue(c.env.OWNER_TOKEN), {
+  setCookie(c, SESSION_COOKIE, await openSession(c.env), {
     httpOnly: true,
     secure: true,
     sameSite: 'Lax',
     path: '/',
-    maxAge: 60 * 60 * 24 * 365,
+    maxAge: SESSION_TTL_S,
   });
   return c.body(null, 204);
 });
 
-app.delete('/api/session', (c) => {
+/** Cierra la sesión de esta cookie en el servidor; con `?all=1`, todas (exige credencial de dueño). */
+app.delete('/api/session', async (c) => {
+  if (c.req.query('all') === '1') {
+    const auth = await authenticate(c);
+    if (!auth) return errorResponse('unauthorized', 'Falta una credencial válida');
+    if (auth.role !== 'owner') return errorResponse('forbidden', 'Cerrar todas las sesiones es solo del dueño');
+    await closeAllSessions(c.env);
+  } else {
+    const cookie = getCookie(c, SESSION_COOKIE);
+    if (cookie) await closeSession(c.env, cookie);
+  }
   deleteCookie(c, SESSION_COOKIE, { path: '/', secure: true });
   return c.body(null, 204);
 });
 
 app.use('/api/*', async (c, next) => {
   const live = /^\/api\/projects\/[^/]+\/live$/.test(c.req.path);
-  const role = await authenticate(c, { websocket: live });
-  if (!role) return errorResponse('unauthorized', 'Falta una credencial válida');
-  c.set('role', role);
+  const auth = await authenticate(c, { websocket: live });
+  if (!auth) return errorResponse('unauthorized', 'Falta una credencial válida');
+  // la cookie la manda el navegador solo: en el WebSocket, el Origin tiene que ser de Dagyard (#14)
+  if (live && auth.via === 'cookie' && !originAllowed(c.env, c.req.url, c.req.header('origin'))) {
+    return errorResponse('forbidden', 'Ese origen no puede abrir el tiempo real con la sesión del navegador');
+  }
+  c.set('role', auth.role);
   await next();
 });
 

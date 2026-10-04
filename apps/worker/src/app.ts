@@ -232,8 +232,8 @@ app.delete('/api/projects/:pid', async (c) => {
     await run(c, { kind: 'deleteProject', pid });
   } finally {
     // Una página que se reconectó entre el reset y el borrado (también si el borrado quedó pero respondió
-    // `uncertain`). Si este segundo aviso se pierde, el room se corrige solo cuando el proyecto recreado
-    // va por detrás de lo ya repartido (#67 cubre el resto).
+    // `uncertain`). Si este segundo aviso se pierde, el room se corrige solo: el proyecto recreado es otra
+    // encarnación (su `created_at`) y cierra las páginas del muerto (#67).
     await room(c, pid)
       .reset()
       .catch((err) => console.error(JSON.stringify({ msg: 'reset tras borrar falló', pid, err: String(err) })));

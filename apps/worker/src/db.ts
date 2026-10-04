@@ -93,11 +93,24 @@ export class Store extends DurableObject<Env> {
     });
   }
 
+  private lastNow = 0;
+
+  /**
+   * La hora de cada escritura, estrictamente creciente: el `created_at` de un proyecto es su encarnación
+   * (#67) y borrar y recrear en el mismo milisegundo no puede repetirla. En memoria basta: reiniciar el DO
+   * tarda más que un milisegundo.
+   */
+  private tick(): string {
+    this.lastNow = Math.max(Date.now(), this.lastNow + 1);
+    return new Date(this.lastNow).toISOString();
+  }
+
   /** Una escritura completa (leer, validar, escribir, eventos y su clave de idempotencia) en una transacción. Ver writes.ts. */
   write(op: WriteOp, idem?: Idem): WriteResult {
     try {
-      const { value, events } = this.ctx.storage.transactionSync(() => runWrite(this.ctx.storage.sql, op, idem));
-      return { ok: true, value, events };
+      const now = this.tick();
+      const { value, events, incarnation } = this.ctx.storage.transactionSync(() => runWrite(this.ctx.storage.sql, op, idem, now));
+      return { ok: true, value, events, incarnation };
     } catch (err) {
       // ApiFailure revierte la transacción y viaja como dato (las clases no cruzan la RPC)
       if (err instanceof ApiFailure) return { ok: false, error: { code: err.code, message: err.message } };

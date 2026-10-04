@@ -1,14 +1,16 @@
 /**
  * Un Durable Object por proyecto: guarda los WebSockets (API de hibernación) y reparte los eventos
  * que le pasa el Worker después de cada escritura. El log de eventos vive en el DO `Store` (SQLite);
- * aquí solo se recuerda `lastSent`, el último seq repartido, para no saltarse ni repetir eventos.
+ * aquí solo se recuerda `lastSent`, el último seq repartido, para no saltarse ni repetir eventos, y la
+ * encarnación del proyecto a la que pertenece (su `created_at`): un proyecto borrado y recreado con el mismo
+ * id vuelve a empezar su seq, y sin la encarnación sus eventos se confundirían con los del muerto (#67).
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { DagEvent, ServerFrame } from '@dagyard/model';
 import { sessionAlive } from './auth.js';
 import { db } from './db.js';
 import type { Env } from './env.js';
-import { currentSeq, eventsSince } from './store.js';
+import { liveState } from './store.js';
 
 /** Si el cliente está más atrás que esto, recibe `resync` y vuelve a pedir el snapshot. */
 export const REPLAY_LIMIT = 500;
@@ -23,14 +25,27 @@ interface Attachment {
   ready: boolean;
   /** seq hasta el que ya tiene todo (por el hello/la recuperación) */
   seen: number;
+  /** encarnación del proyecto que saludó (su `created_at`); vacía hasta el hello */
+  incarnation?: string;
   /** hash de la sesión del navegador si entró por cookie: se revalida antes de cada evento */
   session?: string;
 }
 
 const frame = (f: ServerFrame) => JSON.stringify(f);
 
+/** Hasta dónde se repartió y de qué encarnación del proyecto. */
+type Sent = { seq: number; incarnation: string };
+
+const closeQuietly = (ws: WebSocket, code: number, reason: string) => {
+  try {
+    ws.close(code, reason);
+  } catch {
+    // ya cerrado
+  }
+};
+
 export class ProjectRoom extends DurableObject<Env> {
-  private lastSent: number | null | undefined = undefined;
+  private sent: Sent | null | undefined = undefined;
   private queue: Promise<unknown> = Promise.resolve();
   /** hash de sesión → hasta cuándo se da por viva sin preguntar (en memoria: se pierde al hibernar, y está bien) */
   private aliveUntil = new Map<string, number>();
@@ -47,15 +62,21 @@ export class ProjectRoom extends DurableObject<Env> {
     return run;
   }
 
-  private async getLastSent(): Promise<number | null> {
-    if (this.lastSent === undefined) this.lastSent = (await this.ctx.storage.get<number>('lastSent')) ?? null;
-    return this.lastSent;
+  private async getSent(): Promise<Sent | null> {
+    if (this.sent === undefined) {
+      const m = await this.ctx.storage.get<number | string>(['lastSent', 'incarnation']);
+      const seq = m.get('lastSent');
+      const incarnation = m.get('incarnation');
+      // sin encarnación (estado de antes de #67) es como empezar de cero
+      this.sent = typeof seq === 'number' && typeof incarnation === 'string' ? { seq, incarnation } : null;
+    }
+    return this.sent;
   }
 
-  private async setLastSent(v: number | null): Promise<void> {
-    this.lastSent = v;
-    if (v === null) await this.ctx.storage.delete('lastSent');
-    else await this.ctx.storage.put('lastSent', v);
+  private async setSent(v: Sent | null): Promise<void> {
+    this.sent = v;
+    if (v === null) await this.ctx.storage.delete(['lastSent', 'incarnation']);
+    else await this.ctx.storage.put({ lastSent: v.seq, incarnation: v.incarnation });
   }
 
   /** Upgrade ya autenticado por el Worker. Headers: `x-dagyard-project`, `x-dagyard-since`, `x-dagyard-session`, `x-dagyard-protocol`. */
@@ -71,7 +92,8 @@ export class ProjectRoom extends DurableObject<Env> {
     server.serializeAttachment({ pid, ready: false, seen: 0, session } satisfies Attachment);
     this.serial(() => this.greet(server, pid, since, session)).catch((err) => {
       console.error(JSON.stringify({ msg: 'hello falló', pid, err: String(err) }));
-      server.close(1011, 'error interno');
+      // p. ej. un reset() lo cerró mientras su hello esperaba en la fila
+      closeQuietly(server, 1011, 'error interno');
     });
     // si el cliente ofreció subprotocolos, hay que elegir uno o el navegador corta la conexión; lo eligió el Worker
     const protocol = req.headers.get('x-dagyard-protocol');
@@ -80,71 +102,73 @@ export class ProjectRoom extends DurableObject<Env> {
   }
 
   private async greet(ws: WebSocket, pid: string, since: number | null, session: string | undefined): Promise<void> {
-    const seq = await currentSeq(db(this.env), pid);
+    const { incarnation, seq, events } = await liveState(db(this.env), pid, since, REPLAY_LIMIT + 1);
+    // se borró entre la auth del Worker y este hello
+    if (incarnation === null) return closeQuietly(ws, 4004, 'proyecto eliminado');
     ws.send(frame({ type: 'hello', projectId: pid, seq }));
     // un since del futuro (p. ej. el proyecto se borró y se volvió a crear): el cliente debe recargar
     if (since !== null && since > seq) ws.send(frame({ type: 'resync', seq }));
     else if (since !== null && since < seq) {
-      const evs = await eventsSince(db(this.env), pid, since, REPLAY_LIMIT + 1);
-      if (evs.length > REPLAY_LIMIT) ws.send(frame({ type: 'resync', seq }));
-      else for (const event of evs) if (event.seq <= seq) ws.send(frame({ type: 'event', event }));
+      if (events.length > REPLAY_LIMIT) ws.send(frame({ type: 'resync', seq }));
+      else for (const event of events) if (event.seq <= seq) ws.send(frame({ type: 'event', event }));
     }
-    const last = await this.getLastSent();
-    // El Store va por detrás de lo ya repartido: el proyecto se borró (y quizá se recreó) sin que llegara
-    // el `reset`. Lo que está conectado es del proyecto muerto.
-    if (last !== null && last > seq) this.closeStale(ws);
-    ws.serializeAttachment({ pid, ready: true, seen: seq, session } satisfies Attachment);
-    // Primer socket de esta instancia: lo anterior a `seq` ya lo tiene quien está conectado.
-    if (last === null || last > seq) await this.setLastSent(seq);
+    const last = await this.getSent();
+    // Lo repartido es de otra encarnación: el proyecto se borró y se recreó sin que llegara el `reset`.
+    // Las páginas que la miran son del proyecto muerto.
+    if (last !== null && last.incarnation !== incarnation) this.closeStale(incarnation);
+    ws.serializeAttachment({ pid, ready: true, seen: seq, session, incarnation } satisfies Attachment);
+    // Primer socket de esta encarnación: lo anterior a `seq` ya lo tiene quien está conectado.
+    if (last === null || last.incarnation !== incarnation) await this.setSent({ seq, incarnation });
   }
 
-  /** Cierra las páginas ya saludadas (salvo `keep`): miran un proyecto que se borró. */
-  private closeStale(keep?: WebSocket): void {
+  /** Cierra las páginas ya saludadas que miran otra encarnación que `current`: la de un proyecto que se borró. */
+  private closeStale(current: string): void {
     for (const ws of this.ctx.getWebSockets()) {
-      if (ws === keep || !(ws.deserializeAttachment() as Attachment | null)?.ready) continue;
-      try {
-        ws.close(4004, 'proyecto eliminado');
-      } catch {
-        // ya cerrado
-      }
+      const att = ws.deserializeAttachment() as Attachment | null;
+      if (att?.ready && att.incarnation !== current) closeQuietly(ws, 4004, 'proyecto eliminado');
     }
   }
 
-  /** RPC desde el Worker tras cada escritura. */
-  async broadcast(pid: string, events: DagEvent[]): Promise<void> {
+  /**
+   * RPC desde el Worker tras cada escritura. `incarnation`: la del proyecto que la escribió (el `created_at`
+   * que devolvió el Store en la misma transacción).
+   */
+  async broadcast(pid: string, events: DagEvent[], incarnation: string): Promise<void> {
     await this.serial(async () => {
       const sockets = this.ctx.getWebSockets();
       if (!sockets.length) {
         // nadie mirando: el próximo `hello` arranca de cero
-        await this.setLastSent(null);
+        await this.setSent(null);
         return;
       }
       const incoming = [...events].sort((a, b) => a.seq - b.seq);
-      let last = await this.getLastSent();
-      // Eventos que no pasan de lo ya repartido: o una escritura concurrente ya los mandó, o el proyecto se
-      // borró y se recreó sin que llegara el `reset` (el Store quedó por detrás). En ese caso las páginas
-      // conectadas son del proyecto muerto: se cierran y el próximo `hello` arranca de cero.
-      if (last !== null && incoming[0]!.seq <= last && (await currentSeq(db(this.env), pid)) < last) {
-        this.closeStale();
-        await this.setLastSent(null);
-        return;
+      let sent = await this.getSent();
+      if (sent !== null && sent.incarnation !== incarnation) {
+        // Un aviso tardío de un proyecto ya borrado (las encarnaciones crecen con el reloj del Store): nadie
+        // conectado es de esa encarnación.
+        if (incarnation < sent.incarnation) return;
+        // El proyecto se borró y se recreó sin que llegara el `reset`: las páginas conectadas son del muerto.
+        // Las de la encarnación nueva todavía no saludaron; su `hello` arranca de cero.
+        this.closeStale(incarnation);
+        sent = null;
       }
-      if (last === null) last = incoming[0]!.seq - 1;
-      let toSend = incoming.filter((e) => e.seq > last!);
+      const last = sent?.seq ?? incoming[0]!.seq - 1;
+      let toSend = incoming.filter((e) => e.seq > last);
       if (!toSend.length) return;
-      const contiguous = toSend.every((e, i) => e.seq === last! + 1 + i);
-      // Una escritura concurrente se adelantó: lo que falta ya está commiteado en el Store.
-      if (!contiguous) toSend = await eventsSince(db(this.env), pid, last, REPLAY_LIMIT);
+      const contiguous = toSend.every((e, i) => e.seq === last + 1 + i);
+      if (!contiguous) {
+        // Una escritura concurrente se adelantó: lo que falta ya está commiteado en el Store, si sigue siendo
+        // esta encarnación y el Store lo tiene.
+        const state = await liveState(db(this.env), pid, last, REPLAY_LIMIT);
+        toSend = state.incarnation === incarnation ? state.events : [];
+        if (!toSend.length) return;
+      }
       const ended = await this.endedSessions(sockets);
       for (const ws of sockets) {
         const att = ws.deserializeAttachment() as Attachment | null;
-        if (!att?.ready) continue;
+        if (!att?.ready || att.incarnation !== incarnation) continue;
         if (att.session && ended.has(att.session)) {
-          try {
-            ws.close(CLOSE_SESSION_ENDED, 'sesión cerrada');
-          } catch {
-            // ya cerrado
-          }
+          closeQuietly(ws, CLOSE_SESSION_ENDED, 'sesión cerrada');
           continue;
         }
         for (const event of toSend) {
@@ -156,7 +180,7 @@ export class ProjectRoom extends DurableObject<Env> {
           }
         }
       }
-      await this.setLastSent(toSend[toSend.length - 1]!.seq);
+      await this.setSent({ seq: toSend[toSend.length - 1]!.seq, incarnation });
     });
   }
 
@@ -187,8 +211,8 @@ export class ProjectRoom extends DurableObject<Env> {
   /** El proyecto se borró: cierra los sockets y olvida el seq (un proyecto nuevo empieza en 1). */
   async reset(): Promise<void> {
     await this.serial(async () => {
-      for (const ws of this.ctx.getWebSockets()) ws.close(4004, 'proyecto eliminado');
-      await this.setLastSent(null);
+      for (const ws of this.ctx.getWebSockets()) closeQuietly(ws, 4004, 'proyecto eliminado');
+      await this.setSent(null);
     });
   }
 

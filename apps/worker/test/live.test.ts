@@ -152,8 +152,8 @@ describe('Durable Object', () => {
       ),
     );
     const stub = env.PROJECT_ROOM.get(env.PROJECT_ROOM.idFromName(pid));
-    await stub.broadcast(pid, [e2]);
-    await stub.broadcast(pid, [e1]); // ya repartido: no se repite
+    await stub.broadcast(pid, [e2], s.project.createdAt);
+    await stub.broadcast(pid, [e1], s.project.createdAt); // ya repartido: no se repite
     await live.waitFor((f) => f.type === 'event' && f.event.seq === e2.seq);
     await new Promise((r) => setTimeout(r, 50));
     expect(live.frames.filter((f): f is EventFrame => f.type === 'event').map((f) => f.event.seq)).toEqual([e1.seq, e2.seq]);

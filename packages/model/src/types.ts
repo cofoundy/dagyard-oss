@@ -255,7 +255,9 @@ export type ErrorCode =
   | 'invalid'
   | 'conflict'
   | 'cycle'
-  | 'internal';
+  | 'internal'
+  /** el servidor se está reiniciando (un deploy): reintentar con la misma `Idempotency-Key` es seguro */
+  | 'unavailable';
 
 export interface ApiError {
   error: { code: ErrorCode; message: string };

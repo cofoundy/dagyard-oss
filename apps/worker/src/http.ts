@@ -8,6 +8,7 @@ const STATUS: Record<ErrorCode, number> = {
   not_found: 404,
   conflict: 409,
   internal: 500,
+  unavailable: 503,
 };
 
 /** Error con la forma del contrato: `{"error": {"code", "message"}}`, mensaje en español. */

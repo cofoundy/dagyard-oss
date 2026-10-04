@@ -23,6 +23,21 @@
 | 404 | `not_found` | proyecto, nodo o bloqueante inexistente |
 | 409 | `conflict` | id repetido; resolver un bloqueante ya resuelto; cambiar el `status` de un nodo con un bloqueante abierto, o declararlo `done` en un `PUT`; un agente que haría desaparecer un bloqueante, abierto o resuelto (`PUT` que quita su tarea o `DELETE` del nodo); o un `PUT` con `If-None-Match: *` sobre un proyecto que ya existe |
 | 500 | `internal` | lo demás |
+| 503 | `unavailable` | el servidor se está reiniciando (un deploy). Repetir con la misma `Idempotency-Key` es seguro; sin clave, el mensaje dice si la escritura pudo quedar |
+
+### Idempotency-Key y reintentos
+
+Toda escritura (`POST`, `PUT`, `PATCH`, `DELETE`) acepta el header opcional `Idempotency-Key` (1 a 200
+caracteres visibles; el CLI manda un uuid nuevo por invocación y el mismo en cada reintento). El Store
+registra la clave en la misma transacción que la escritura, por proyecto: repetir la clave devuelve el
+mismo status y el mismo cuerpo que la primera vez, sin volver a escribir (sus eventos se vuelven a
+repartir, y el tiempo real ignora los que ya mandó). La misma clave con otra escritura → `409`. Una
+escritura que falló (4xx) no gasta la clave. Las claves se olvidan a las 24 h.
+
+Si un deploy reinicia el Store en medio de una escritura, el Worker la reintenta (≈1 s) solo cuando
+repetirla es seguro: trae clave, o es un `PATCH` o un `PUT` sin `If-None-Match: *`. Si no, o si se agotan
+los intentos, responde `503 unavailable` (nunca `500`). El CLI reintenta los `503` y los cortes de red dos
+veces (300 ms y 900 ms); los demás errores no se reintentan.
 
 ## Auth
 

@@ -7,7 +7,7 @@ import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env.js';
 import { ApiFailure } from './http.js';
 import { MIGRATIONS } from './schema.js';
-import { runWrite, type WriteOp, type WriteResult } from './writes.js';
+import { runWrite, type Idem, type WriteOp, type WriteResult } from './writes.js';
 
 export type SqlValue = string | number | null;
 export type Row = Record<string, unknown>;
@@ -93,10 +93,10 @@ export class Store extends DurableObject<Env> {
     });
   }
 
-  /** Una escritura completa (leer, validar, escribir, eventos) en una transacción. Ver writes.ts. */
-  write(op: WriteOp): WriteResult {
+  /** Una escritura completa (leer, validar, escribir, eventos y su clave de idempotencia) en una transacción. Ver writes.ts. */
+  write(op: WriteOp, idem?: Idem): WriteResult {
     try {
-      const { value, events } = this.ctx.storage.transactionSync(() => runWrite(this.ctx.storage.sql, op));
+      const { value, events } = this.ctx.storage.transactionSync(() => runWrite(this.ctx.storage.sql, op, idem));
       return { ok: true, value, events };
     } catch (err) {
       // ApiFailure revierte la transacción y viaja como dato (las clases no cruzan la RPC)

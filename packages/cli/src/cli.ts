@@ -466,7 +466,7 @@ function client(io: Io, args: ParsedArgs): DagyardClient {
   const url = urlFlag ?? cfg.url;
   if (!url) throw new UsageError('falta el servidor: --url, DAGYARD_URL, .dagyard.json o ~/.config/dagyard/url');
   if (!cfg.key) throw new UsageError('falta la API key: DAGYARD_KEY o ~/.config/dagyard/agent-key');
-  return new DagyardClient({ baseUrl: url, key: cfg.key, ...(io.fetch ? { fetch: io.fetch } : {}) });
+  return new DagyardClient({ baseUrl: url, key: cfg.key, ...(io.fetch ? { fetch: io.fetch } : {}), ...(io.sleep ? { sleep: io.sleep } : {}) });
 }
 
 function project(io: Io, args: ParsedArgs): string {

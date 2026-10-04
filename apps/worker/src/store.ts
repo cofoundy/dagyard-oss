@@ -1,10 +1,11 @@
 /** Lecturas de Dagyard sobre el Db (DO `Store`) y el puente de escrituras (writes.ts) con el tiempo real. */
 import { MESSAGES_IN_SNAPSHOT, type DagEvent, type DagNode, type Edge, type Project, type ProjectSnapshot } from '@dagyard/model';
+import { digest } from './crypto.js';
 import type { Db, Row } from './db.js';
 import type { Env } from './env.js';
 import { ApiFailure, notFound } from './http.js';
 import { BLOCKER_COLS, toBlocker, toEdge, toEvent, toMessage, toNode, toProject } from './rows.js';
-import type { WriteOp, WriteValues } from './writes.js';
+import type { Idem, WriteOp, WriteValues } from './writes.js';
 
 /* ------------------------------------------------------------------ lecturas */
 
@@ -75,15 +76,58 @@ export async function eventsSince(db: Db, pid: string, since: number, limit: num
 
 /* ------------------------------------------------------------------ escrituras */
 
+/** Error de la plataforma al hablar con un Durable Object (p. ej. un deploy lo reinició): ver la guía de Cloudflare. */
+type DoError = { retryable?: boolean; overloaded?: boolean };
+const doError = (err: unknown): DoError => (typeof err === 'object' && err !== null ? (err as DoError) : {});
+
+/** ¿El Durable Object no estuvo disponible? (no es un error del código ni del pedido) */
+export const isUnavailable = (err: unknown): boolean => doError(err).retryable === true || doError(err).overloaded === true;
+
+export const UNAVAILABLE = 'El servidor se está actualizando. Inténtalo de nuevo en unos segundos.';
+const UNSURE = 'El servidor se está actualizando y no sé si la escritura quedó: revisa antes de repetirla, o mándala con una Idempotency-Key.';
+
+/** Escrituras que se pueden repetir sin clave: dejan el mismo estado y responden lo mismo. */
+const repeatable = (op: WriteOp) => op.kind === 'patchNode' || op.kind === 'patchProject' || (op.kind === 'replaceGraph' && !op.exclusive);
+
+/** Esperas entre reintentos del RPC al Store (≈1 s en total: lo que tarda en volver tras un deploy). */
+export const STORE_RETRY_MS = [50, 250, 750];
+
+/** Huella de la escritura para su clave: el valor cifrado de un acceso cambia en cada intento (IV aleatorio), no cuenta. */
+const fingerprint = (op: WriteOp) => digest(JSON.stringify(op, (k, v) => (k === 'sealed' ? undefined : v)));
+
 /**
  * Corre una escritura en el Store (una transacción: ver writes.ts) y reparte sus eventos al
  * Durable Object del proyecto. Un error de dominio llega como dato y se relanza como ApiFailure.
+ * Si el Store no está disponible (un deploy lo reinicia), reintenta solo si repetir es seguro: la
+ * escritura es repetible o trae `key` (`Idempotency-Key`), que el Store registra en la misma transacción.
+ * Si no puede reintentar, responde `503 unavailable` en vez de `500`.
  */
-export async function write<K extends WriteOp['kind']>(env: Env, op: Extract<WriteOp, { kind: K }>): Promise<WriteValues[K]> {
-  const res = await env.STORE.get(env.STORE.idFromName('db')).write(op);
-  if (!res.ok) throw new ApiFailure(res.error.code, res.error.message);
-  await publish(env, op.pid, res.events as DagEvent[]);
-  return res.value as WriteValues[K];
+export async function write<K extends WriteOp['kind']>(
+  env: Env,
+  op: Extract<WriteOp, { kind: K }>,
+  key?: string,
+  retryMs: readonly number[] = STORE_RETRY_MS,
+): Promise<WriteValues[K]> {
+  const idem: Idem | undefined = key ? { key, fp: await fingerprint(op) } : undefined;
+  const safe = idem !== undefined || repeatable(op);
+  for (let attempt = 0; ; attempt++) {
+    let res;
+    try {
+      // un stub nuevo por intento: tras una excepción el anterior puede quedar roto
+      res = await env.STORE.get(env.STORE.idFromName('db')).write(op, idem);
+    } catch (err) {
+      if (!isUnavailable(err)) throw err;
+      const e = doError(err);
+      if (safe && e.retryable && !e.overloaded && attempt < retryMs.length) {
+        await new Promise((r) => setTimeout(r, retryMs[attempt]));
+        continue;
+      }
+      throw new ApiFailure('unavailable', safe ? UNAVAILABLE : UNSURE);
+    }
+    if (!res.ok) throw new ApiFailure(res.error.code, res.error.message);
+    await publish(env, op.pid, res.events as DagEvent[]);
+    return res.value as WriteValues[K];
+  }
 }
 
 /** Reparte a los sockets. Si falla, la escritura ya quedó: los clientes se recuperan con `?since=`. */

@@ -84,4 +84,17 @@ export const MIGRATIONS: string[][] = [
   ],
   // v3: detalle técnico de la tarea (#45): URL del issue o del PR
   [`ALTER TABLE nodes ADD COLUMN link TEXT`],
+  // v4: claves de idempotencia (#54): repetir una escritura con la misma `Idempotency-Key` devuelve lo guardado
+  [
+    `CREATE TABLE idempotency (
+       project_id TEXT NOT NULL,
+       key TEXT NOT NULL,
+       fp TEXT NOT NULL, -- huella de la escritura: la misma clave con otra escritura → 409
+       value TEXT NOT NULL, -- JSON del valor que devolvió la primera vez
+       events TEXT NOT NULL, -- JSON de sus eventos: se vuelven a repartir (el DO del proyecto ignora los ya enviados)
+       created_at TEXT NOT NULL,
+       PRIMARY KEY (project_id, key)
+     )`,
+    `CREATE INDEX idempotency_created ON idempotency(created_at)`,
+  ],
 ];

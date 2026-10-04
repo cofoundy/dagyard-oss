@@ -59,21 +59,31 @@ export class ApiRequestError extends Error {
   }
 }
 
+/** Esperas entre intentos ante un `503` o un error de red (≈1,2 s en total: lo que dura el corte de un deploy). */
+export const RETRY_DELAYS_MS = [300, 900];
+
 export interface ClientOptions {
   baseUrl: string;
   key: string;
   fetch?: typeof fetch;
+  /** esperas entre reintentos; `[]` = sin reintentos */
+  retryDelaysMs?: readonly number[];
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export class DagyardClient {
   private readonly baseUrl: string;
   private readonly key: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly retryDelaysMs: readonly number[];
+  private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(opts: ClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
     this.key = opts.key;
     this.fetchImpl = opts.fetch ?? fetch;
+    this.retryDelaysMs = opts.retryDelaysMs ?? RETRY_DELAYS_MS;
+    this.sleep = opts.sleep ?? ((ms) => new Promise<void>((r) => setTimeout(r, ms)));
   }
 
   /** `exclusive`: creación exclusiva (`If-None-Match: *`); si el proyecto ya existe, 409 sin tocarlo. */
@@ -124,6 +134,10 @@ export class DagyardClient {
     return (await res.json()) as T;
   }
 
+  /**
+   * Una invocación de la API. Toda escritura lleva una `Idempotency-Key` nueva, la misma en cada reintento:
+   * así reintentar un `503` o un corte de red (la escritura pudo quedar) nunca la duplica.
+   */
   private async request(method: string, path: string, body?: unknown, extra: Record<string, string> = {}): Promise<Response> {
     const headers: Record<string, string> = {
       ...extra,
@@ -131,6 +145,19 @@ export class DagyardClient {
       accept: 'application/json',
     };
     if (body !== undefined) headers['content-type'] = 'application/json';
+    if (method !== 'GET' && method !== 'HEAD') headers['idempotency-key'] = crypto.randomUUID();
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.attempt(method, path, headers, body);
+      } catch (err) {
+        const transient = err instanceof ApiRequestError && (err.status === 0 || err.status === 503);
+        if (!transient || attempt >= this.retryDelaysMs.length) throw err;
+        await this.sleep(this.retryDelaysMs[attempt]!);
+      }
+    }
+  }
+
+  private async attempt(method: string, path: string, headers: Record<string, string>, body?: unknown): Promise<Response> {
     let res: Response;
     try {
       res = await this.fetchImpl(`${this.baseUrl}${path}`, {

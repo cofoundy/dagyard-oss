@@ -114,6 +114,9 @@ class Tx {
   openBlockers(pid: string, nid: string): number {
     return Number(this.one("SELECT COUNT(*) AS n FROM blockers WHERE project_id = ? AND node_id = ? AND status = 'open'", pid, nid)!.n);
   }
+  projectOpenBlockers(pid: string): number {
+    return Number(this.one("SELECT COUNT(*) AS n FROM blockers WHERE project_id = ? AND status = 'open'", pid)!.n);
+  }
 
   insertNode(n: DagNode): void {
     this.all(
@@ -203,6 +206,7 @@ function newBlocker(pid: string, nodeId: string, input: BlockerInput, now: strin
 }
 
 const BLOCKED_BY_HAND = 'status: «blocked» lo pone un bloqueante, no se pone a mano';
+const pending = (n: number) => (n === 1 ? 'una pregunta abierta' : `${n} preguntas abiertas`);
 
 const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>) => WriteValues[K] } = {
   createProject(tx, { pid, name, stages }) {
@@ -215,6 +219,10 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
   replaceGraph(tx, { pid, graph: g, actor }) {
     const prevRow = tx.one('SELECT * FROM projects WHERE id = ?', pid);
     const prev = prevRow ? toProject(prevRow) : null;
+    // reemplazar borra los bloqueantes y los recrea con otros ids: solo el dueño puede hacerlo si hay abiertos
+    const open = prev && actor !== 'owner' ? tx.projectOpenBlockers(pid) : 0;
+    if (open > 0)
+      fail('conflict', `El proyecto tiene ${pending(open)} para el dueño; reemplazarlo las borraría. Espera a que las responda o pídele que lo reemplace él`);
     const stages = g.stages ? toStages(g.stages) : (prev?.stages ?? toStages(undefined));
     const blockedBy = new Set((g.blockers ?? []).map((b) => b.nodeId));
     const nodes = g.nodes.map((n, i) => {
@@ -315,6 +323,9 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
 
   removeNode(tx, { pid, nid, actor }) {
     const node = tx.node(pid, nid);
+    const open = actor !== 'owner' ? tx.openBlockers(pid, nid) : 0;
+    if (open > 0)
+      fail('conflict', `La tarea «${node.title}» tiene ${pending(open)} para el dueño; borrarla las haría desaparecer. Espera a que las responda o pídele que la borre él`);
     for (const [t, col] of [['messages', 'node_id'], ['blockers', 'node_id'], ['edges', 'from_id'], ['edges', 'to_id'], ['nodes', 'id']] as const)
       tx.all(`DELETE FROM ${t} WHERE project_id = ? AND ${col} = ?`, pid, node.id);
     tx.emit(pid, actor, { type: 'node.removed', payload: { nodeId: node.id } });

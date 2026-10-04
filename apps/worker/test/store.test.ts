@@ -2,6 +2,7 @@ import { runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { describe, expect, it } from 'vitest';
 import { Store, db } from '../src/db.js';
+import { MIGRATIONS } from '../src/schema.js';
 import { uniquePid } from './helpers.js';
 
 describe('Store (DO con SQLite, en vez de D1)', () => {
@@ -23,6 +24,6 @@ describe('Store (DO con SQLite, en vez de D1)', () => {
       new Store(state, env);
     });
     const rows = await db(env).prepare('SELECT version FROM _schema ORDER BY version').all<{ version: number }>();
-    expect(rows.results).toEqual([{ version: 1 }]);
+    expect(rows.results).toEqual(MIGRATIONS.map((_, i) => ({ version: i + 1 })));
   });
 });

@@ -6,7 +6,7 @@
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import type { BlockerInput, NodeInput, NodeStatus, ProjectGraphInput, StageInput } from '@dagyard/model';
+import type { NodeInput, NodeStatus, ProjectGraphInput, StageInput } from '@dagyard/model';
 import { LIMITS } from '@dagyard/model';
 import { slugify } from '@dagyard/model';
 import { humanize, legibleTitle, oneLine, parseTask, type ParsedTask } from './parse.js';
@@ -112,7 +112,7 @@ export function buildImport(files: TaskFile[], opts: ImportOptions = {}): Import
   }
 
   const depth = longestPathDepth(deps);
-  const statuses = tasks.map((t, i) => effectiveStatus(t, deps[i]!, tasks));
+  const statuses = tasks.map(effectiveStatus);
 
   const { stages, stageOf, source } = inferStages(tasks, depth);
 
@@ -131,11 +131,12 @@ export function buildImport(files: TaskFile[], opts: ImportOptions = {}): Import
     };
   });
 
-  // el servidor no acepta un «blocked» sin bloqueante (#35): cada tarea que te espera lleva su decisión. La
-  // pregunta sale solo del título, así re-importar el mismo directorio no la duplica
-  const blockers: Array<BlockerInput & { nodeId: string }> = nodes
-    .filter((n) => n.status === 'blocked')
-    .map((n) => ({ nodeId: n.id!, ...humanDecision(n.title) }));
+  // #35: el import no le pregunta nada al dueño por su cuenta (una pregunta del archivo se reabriría en cada
+  // --replace); avisa, y el agente la hace en vivo cuando de verdad la necesita
+  tasks.forEach((t, i) => {
+    if (asksHuman(t, deps[i]!, tasks))
+      warnings.push(`«${nodes[i]!.title}» pide algo a una persona; quedó Pendiente. Pregúntaselo en vivo con dagyard block`);
+  });
 
   const projectId = slugify(opts.projectId || opts.dirName || 'proyecto');
   const name = oneLine(opts.name ?? humanize(opts.dirName ?? projectId), LIMITS.name);
@@ -145,7 +146,7 @@ export function buildImport(files: TaskFile[], opts: ImportOptions = {}): Import
 
   return {
     projectId,
-    graph: { name, stages, nodes, ...(blockers.length ? { blockers } : {}) },
+    graph: { name, stages, nodes },
     stats: {
       nodes: nodes.length,
       edges: nodes.reduce((n, node) => n + (node.deps?.length ?? 0), 0),
@@ -158,23 +159,17 @@ export function buildImport(files: TaskFile[], opts: ImportOptions = {}): Import
 }
 
 /**
- * «blocked» en una tarea casi siempre quiere decir «espera a otra tarea»: eso es Pendiente, no
- * «Te espera» (que en la UI le pide algo al humano). Queda `blocked` si no espera a ninguna tarea
- * o si el status nombra a un humano (escalación, decisión, aprobación).
+ * El import nunca manda `blocked`: «Te espera» lo pone un bloqueante, y ese lo abre el agente en vivo con
+ * `dagyard block` (#35). Una tarea `blocked` en el archivo queda Pendiente.
  */
-function effectiveStatus(t: ParsedTask, myDeps: number[], tasks: ParsedTask[]): NodeStatus {
-  if (t.status !== 'blocked') return t.status;
-  if (t.needsHuman) return 'blocked';
-  return myDeps.some((d) => tasks[d]!.status !== 'done') ? 'pending' : 'blocked';
+function effectiveStatus(t: ParsedTask): NodeStatus {
+  return t.status === 'blocked' ? 'pending' : t.status;
 }
 
-/** La decisión que una tarea «Te espera» le pide al PM, en su idioma. */
-function humanDecision(title: string): BlockerInput {
-  return {
-    kind: 'decision',
-    question: oneLine(`«${title}» necesita tu decisión para seguir. ¿Sigue o la dejas en pausa?`, LIMITS.question),
-    options: ['Sigue', 'Déjala en pausa'],
-  };
+/** `blocked` que pide algo a una persona: el status lo nombra (escalación, decisión…) o no espera a ninguna tarea. */
+function asksHuman(t: ParsedTask, myDeps: number[], tasks: ParsedTask[]): boolean {
+  if (t.status !== 'blocked') return false;
+  return t.needsHuman || !myDeps.some((d) => tasks[d]!.status !== 'done');
 }
 
 /** Aristas de retroceso (DFS en orden de archivo) que hay que quitar para que sea un DAG. */

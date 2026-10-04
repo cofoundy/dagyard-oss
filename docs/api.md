@@ -114,10 +114,10 @@ archivo vuelve a hacer, el `409` lo dice: quítala de `blockers` o no cierres la
 
 `dagyard import` crea proyectos nuevos con un solo `PUT` exclusivo (`If-None-Match: *`): si el proyecto
 ya existe falla, y el «¿ya existe?» se decide en la misma transacción que escribe, así dos imports a la vez
-no se pisan. `--replace` manda el `PUT` sin ese header. Cada tarea que el import deja `blocked` (su status nombra a un humano
-o no espera a ninguna otra tarea) lleva un bloqueante `decision` con la pregunta ««<título>» necesita tu
-decisión para seguir. ¿Sigue o la dejas en pausa?» y las opciones `Sigue` / `Déjala en pausa`; como sale
-solo del título, re-importar no lo duplica.
+no se pisan. `--replace` manda el `PUT` sin ese header. El import nunca manda `blocked` ni `blockers`: una tarea `blocked` en el
+archivo queda `pending`, y si pide algo a una persona (su status nombra una escalación, decisión o aprobación,
+o no espera a ninguna otra tarea) deja un aviso en `warnings`; el agente hace la pregunta en vivo con
+`dagyard block` (una pregunta generada desde el archivo se reabriría en cada `--replace`).
 
 `next` elige, entre los nodos `pending` con todas sus dependencias `done`, el de la etapa más temprana y,
 a igualdad, el más antiguo (`nextStartable()` del modelo). `goalLine` es `/goal <goal o título>`.

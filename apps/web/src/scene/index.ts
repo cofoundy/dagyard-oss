@@ -409,7 +409,7 @@ export function createSky(opts: CreateSkyOptions): Sky {
   function stageCam(i: number): CamState | null {
     if (!solution) return null;
     const items = overviewItems(solution.layout, labels.sizer(), solution.labelWidth, i);
-    const angle = { theta: 0.3, phi: 1.3 };
+    const angle = { theta: 0.5, phi: 1.3 };
     const fit = fitItems(items, vp, safe, contentCenter(solution.layout, i), [angle]);
     return { ...fit.cam, r: Math.max(fit.cam.r, 14) };
   }
@@ -420,7 +420,7 @@ export function createSky(opts: CreateSkyOptions): Sky {
     const sw = vp.width - safe.left - safe.right;
     const sh = vp.height - safe.top - safe.bottom;
     const tx = safe.left + sw / 2;
-    const ty = portrait ? safe.top + sh * 0.26 : safe.top + sh / 2;
+    const ty = portrait ? safe.top + sh * 0.17 : safe.top + sh / 2;
     return { ox: vp.width / 2 - tx, oy: vp.height / 2 - ty };
   }
 
@@ -773,7 +773,7 @@ export function createSky(opts: CreateSkyOptions): Sky {
       let o: number;
       if (!vis) o = 0;
       else if (focusId) o = rel.has(v.id) ? 1 : 0.1;
-      else if (mode === 'stage') o = stageSel === v.data.stage ? 1 : 0.22;
+      else if (mode === 'stage') o = stageSel === v.data.stage ? 1 : 0.12;
       else o = v.data.status === 'done' ? 0.78 : 1;
       if (v.id === hoverId) o = Math.max(o, 1);
       o *= labelIn * Math.max(0, Math.min(1, v.born * 1.4)) * (v.dying >= 0 ? v.dying : 1);
@@ -783,8 +783,8 @@ export function createSky(opts: CreateSkyOptions): Sky {
       v3.set(st.header.x, st.header.y, st.header.z).project(camera);
       const vis = v3.z < 1;
       let o = vis ? 0.95 : 0;
-      if (focusId) o *= 0.25;
-      else if (mode === 'stage') o *= i === stageSel ? 1 : 0.3;
+      if (focusId) o *= 0.1;
+      else if (mode === 'stage') o *= i === stageSel ? 1 : 0.15;
       labels.placeStage(i, (v3.x * 0.5 + 0.5) * w, (-v3.y * 0.5 + 0.5) * h, o * labelIn);
     });
 
@@ -827,7 +827,8 @@ export function createSky(opts: CreateSkyOptions): Sky {
       stageSel = v.data.stage;
       mode = 'focus';
       const side = solution ? Math.sign(v.home.x - (solution.layout.stages[v.data.stage]?.center.x ?? 0)) || 1 : 1;
-      flyTo({ tx: v.home.x, ty: v.home.y, tz: v.home.z, r: 11, theta: 0.22 * side, phi: 1.28, ...centerOffset() }, 1.9);
+      const portrait = solution?.orientation === 'portrait';
+      flyTo({ tx: v.home.x, ty: v.home.y, tz: v.home.z, r: portrait ? 15 : 11, theta: 0.22 * side, phi: 1.28, ...centerOffset() }, 1.9);
     },
     setSafeArea(area: SafeArea) {
       if (area.top === safe.top && area.right === safe.right && area.bottom === safe.bottom && area.left === safe.left) return;

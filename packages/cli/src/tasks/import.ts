@@ -112,7 +112,7 @@ export function buildImport(files: TaskFile[], opts: ImportOptions = {}): Import
   }
 
   const depth = longestPathDepth(deps);
-  const statuses = tasks.map((t, i) => effectiveStatus(t, deps[i]!, tasks));
+  const statuses = tasks.map(effectiveStatus);
 
   const { stages, stageOf, source } = inferStages(tasks, depth);
 
@@ -129,6 +129,13 @@ export function buildImport(files: TaskFile[], opts: ImportOptions = {}): Import
       goal: t.goal ?? oneLine(`${title} — sigue ${tasksPath}/${t.file} y cumple su aceptación`, LIMITS.goal),
       deps: deps[i]!.map((d) => nodeIds[d]!),
     };
+  });
+
+  // #35: el import no le pregunta nada al dueño por su cuenta (una pregunta del archivo se reabriría en cada
+  // --replace); avisa, y el agente la hace en vivo cuando de verdad la necesita
+  tasks.forEach((t, i) => {
+    if (asksHuman(t, deps[i]!, tasks))
+      warnings.push(`«${nodes[i]!.title}» pide algo a una persona; quedó Pendiente. Pregúntaselo en vivo con dagyard block`);
   });
 
   const projectId = slugify(opts.projectId || opts.dirName || 'proyecto');
@@ -152,14 +159,17 @@ export function buildImport(files: TaskFile[], opts: ImportOptions = {}): Import
 }
 
 /**
- * «blocked» en una tarea casi siempre quiere decir «espera a otra tarea»: eso es Pendiente, no
- * «Te espera» (que en la UI le pide algo al humano). Queda `blocked` si no espera a ninguna tarea
- * o si el status nombra a un humano (escalación, decisión, aprobación).
+ * El import nunca manda `blocked`: «Te espera» lo pone un bloqueante, y ese lo abre el agente en vivo con
+ * `dagyard block` (#35). Una tarea `blocked` en el archivo queda Pendiente.
  */
-function effectiveStatus(t: ParsedTask, myDeps: number[], tasks: ParsedTask[]): NodeStatus {
-  if (t.status !== 'blocked') return t.status;
-  if (t.needsHuman) return 'blocked';
-  return myDeps.some((d) => tasks[d]!.status !== 'done') ? 'pending' : 'blocked';
+function effectiveStatus(t: ParsedTask): NodeStatus {
+  return t.status === 'blocked' ? 'pending' : t.status;
+}
+
+/** `blocked` que pide algo a una persona: el status lo nombra (escalación, decisión…) o no espera a ninguna tarea. */
+function asksHuman(t: ParsedTask, myDeps: number[], tasks: ParsedTask[]): boolean {
+  if (t.status !== 'blocked') return false;
+  return t.needsHuman || !myDeps.some((d) => tasks[d]!.status !== 'done');
 }
 
 /** Aristas de retroceso (DFS en orden de archivo) que hay que quitar para que sea un DAG. */

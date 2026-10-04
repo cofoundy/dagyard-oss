@@ -1,0 +1,15 @@
+{
+  "name": "dagyard",
+  "description": "Dagyard dentro de Claude Code",
+  "owner": {
+    "name": "Cofoundy",
+    "email": "info@cofoundy.dev"
+  },
+  "plugins": [
+    {
+      "name": "dagyard",
+      "source": "./",
+      "description": "La banda y el menú de Dagyard dentro de Claude Code"
+    }
+  ]
+}

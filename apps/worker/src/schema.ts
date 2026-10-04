@@ -72,4 +72,14 @@ export const MIGRATIONS: string[][] = [
        PRIMARY KEY (project_id, seq)
      )`,
   ],
+  // v2: sesiones del navegador (#12). La cookie lleva un id aleatorio; aquí solo su SHA-256.
+  [
+    `CREATE TABLE sessions (
+       id_hash TEXT PRIMARY KEY,
+       owner_fp TEXT NOT NULL, -- huella del OWNER_TOKEN con que se abrió: rotarlo invalida la sesión
+       created_at TEXT NOT NULL,
+       expires_at TEXT NOT NULL
+     )`,
+    `CREATE INDEX sessions_expires ON sessions(expires_at)`,
+  ],
 ];

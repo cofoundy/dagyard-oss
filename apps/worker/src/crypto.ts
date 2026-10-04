@@ -1,4 +1,4 @@
-/** Comparación en tiempo constante, cifrado AES-GCM de accesos y sesión firmada. */
+/** Comparación en tiempo constante, cifrado AES-GCM de accesos e ids de sesión. */
 const enc = new TextEncoder();
 
 async function sha256(s: string): Promise<ArrayBuffer> {
@@ -25,11 +25,18 @@ function unb64(s: string): Uint8Array<ArrayBuffer> {
   return out;
 }
 
-/** Valor de la cookie `dagyard_session`: HMAC del token de dueño, nunca el token mismo. */
-export async function sessionValue(ownerToken: string): Promise<string> {
-  const key = await crypto.subtle.importKey('raw', enc.encode(ownerToken), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  return b64(await crypto.subtle.sign('HMAC', key, enc.encode('dagyard-session-v1')));
+/** Id de una sesión del navegador: 256 bits aleatorios en base64url. Solo viaja en la cookie. */
+export function newSessionId(): string {
+  return b64(crypto.getRandomValues(new Uint8Array(32)));
 }
+
+/** SHA-256 en base64url: lo único que el Store guarda de un id de sesión (nunca el id). */
+export async function digest(s: string): Promise<string> {
+  return b64(await sha256(s));
+}
+
+/** Huella del token de dueño que se guarda con cada sesión: si se rota el token, las sesiones mueren. */
+export const ownerFingerprint = (ownerToken: string) => digest(`dagyard-owner-v1:${ownerToken}`);
 
 async function vaultKey(secret: string | undefined): Promise<CryptoKey> {
   // falla cerrado: sin clave no se cifra ni se descifra nada (nunca con una clave derivada de "")

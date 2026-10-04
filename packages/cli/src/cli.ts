@@ -271,7 +271,7 @@ Sin --timeout espera para siempre. Exit 2 si vence.`,
     usage: 'dagyard import --from <ruta a .cofoundy/tasks> [--project <p>] [--name "…"] [--replace] [--dry-run] [--json]',
     summary: 'crea un proyecto nuevo desde las tareas del orchestrator',
     help: `deps y blockedBy se vuelven dependencias; status se normaliza a ${NODE_STATUSES.join(', ')}.
-Etapas: phase si todas las tareas lo traen; si no, por profundidad («Etapa 1», «Etapa 2», …).
+Etapas: phase si todas las tareas lo traen; si no, por profundidad («Para empezar», «Después», «Luego», … «Al final»).
 Si el proyecto ya existe no lo pisa: elige otro con --project o pasa --replace para reemplazarlo
 entero. El servidor rechaza el reemplazo (409) si el proyecto tiene preguntas abiertas para el dueño.
 --dry-run solo cuenta, no envía nada y no necesita servidor.`,

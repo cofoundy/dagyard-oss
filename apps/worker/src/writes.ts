@@ -75,7 +75,7 @@ export interface WriteValues {
 }
 
 export type WriteResult =
-  | { ok: true; value: WriteValues[keyof WriteValues]; events: DagEvent[] }
+  | { ok: true; value: WriteValues[keyof WriteValues]; events: DagEvent[]; incarnation: string | null }
   | { ok: false; error: { code: Parameters<typeof fail>[0]; message: string } };
 
 const RESUME_TEXT = 'Gracias. Sigo desde donde me quedé.';
@@ -88,8 +88,10 @@ type V = string | number | null;
 /** SQL sincrónico dentro de la transacción. */
 class Tx {
   readonly events: DagEvent[] = [];
-  readonly now = new Date().toISOString();
-  constructor(private readonly sql: SqlStorage) {}
+  constructor(
+    private readonly sql: SqlStorage,
+    readonly now: string,
+  ) {}
 
   all(q: string, ...p: V[]): Row[] {
     return this.sql.exec(q, ...p).toArray() as Row[];
@@ -363,6 +365,8 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
     tx.project(pid);
     tx.clearGraph(pid);
     tx.all('DELETE FROM events WHERE project_id = ?', pid);
+    // una clave del proyecto borrado no reproduce sus eventos en uno recreado con el mismo id (#71)
+    tx.all('DELETE FROM idempotency WHERE project_id = ?', pid);
     tx.all('DELETE FROM projects WHERE id = ?', pid);
     return null;
   },
@@ -523,13 +527,21 @@ export const IDEM_TTL_MS = 24 * 60 * 60 * 1000;
  * clave se registra en la misma transacción que la escritura: si ya estaba (el reintento de una escritura
  * que sí quedó), devuelve el valor y los eventos guardados sin volver a escribir.
  */
-export function runWrite(sql: SqlStorage, op: WriteOp, idem?: Idem): { value: WriteValues[keyof WriteValues]; events: DagEvent[] } {
-  const tx = new Tx(sql);
+export function runWrite(
+  sql: SqlStorage,
+  op: WriteOp,
+  idem?: Idem,
+  now = new Date().toISOString(),
+): { value: WriteValues[keyof WriteValues]; events: DagEvent[]; incarnation: string | null } {
+  const tx = new Tx(sql, now);
+  // la encarnación del proyecto tras la escritura: su `created_at` (null si ya no existe). El room la usa para
+  // no confundir un proyecto borrado y recreado con el mismo id (#67).
+  const incarnation = () => (tx.one('SELECT created_at FROM projects WHERE id = ?', op.pid)?.created_at as string | undefined) ?? null;
   if (idem) {
     const prev = tx.one('SELECT fp, value, events FROM idempotency WHERE project_id = ? AND key = ?', op.pid, idem.key);
     if (prev) {
       if (prev.fp !== idem.fp) fail('conflict', 'Esa Idempotency-Key ya se usó con otra escritura; usa una clave nueva por escritura');
-      return { value: JSON.parse(prev.value as string), events: JSON.parse(prev.events as string) };
+      return { value: JSON.parse(prev.value as string), events: JSON.parse(prev.events as string), incarnation: incarnation() };
     }
   }
   const value = (ops[op.kind] as (tx: Tx, op: WriteOp) => WriteValues[keyof WriteValues])(tx, op);
@@ -540,5 +552,5 @@ export function runWrite(sql: SqlStorage, op: WriteOp, idem?: Idem): { value: Wr
       op.pid, idem.key, idem.fp, JSON.stringify(value), JSON.stringify(tx.events), tx.now,
     );
   }
-  return { value, events: tx.events };
+  return { value, events: tx.events, incarnation: incarnation() };
 }

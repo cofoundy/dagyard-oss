@@ -65,7 +65,7 @@ Formas de presentarla (el servidor prueba en este orden):
    WebSocket la manda solo. Solo vale como `owner`. El prefijo `__Host-` impide que otro subdominio
    plante una cookie con ese nombre.
 3. Solo en el upgrade del WebSocket, para clientes sin cookie: subprotocolo
-   `new WebSocket(url, ['dagyard', 'token.' + token])` (el servidor responde `Sec-WebSocket-Protocol: dagyard`
+   `new WebSocket(url, ['dagyard', 'token.' + token])` (el servidor responde `Sec-WebSocket-Protocol: dagyard`, o el mismo `token.<token>` si no se ofreció `dagyard`,
    y el token no queda en ninguna URL), o, como último recurso, la query `?token=<token>`.
 
 Qué puede cada rol: los dos leen y escriben el grafo y los mensajes. **Resolver un bloqueante es solo
@@ -211,7 +211,7 @@ Un Durable Object por proyecto guarda los WebSockets (API de hibernación) y rep
 emite una escritura. Todas las escrituras de la API, vengan de la UI o del CLI, pasan por ahí.
 
 **Conexión:** `GET /api/projects/:pid/live?since=<seq>` con `Upgrade: websocket`. Auth por cookie, subprotocolo
-`token.<token>` o `?token=`. Sin auth → `401` antes del upgrade.
+`token.<token>` (el 101 elige `dagyard` si se ofreció; si no, ese `token.<token>`) o `?token=`. Sin auth → `401` antes del upgrade.
 
 **Origin:** si la auth vino por la cookie, el upgrade exige un header `Origin` que sea el mismo origen
 que la URL pedida o uno de la var `ALLOWED_ORIGINS` del Worker (lista por comas, vacía por defecto en

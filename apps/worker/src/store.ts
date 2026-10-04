@@ -60,9 +60,23 @@ export async function snapshot(db: Db, pid: string): Promise<ProjectSnapshot> {
   };
 }
 
-export async function currentSeq(db: Db, pid: string): Promise<number> {
-  const r = await db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE project_id = ?').bind(pid).first<{ seq: number }>();
-  return Number(r?.seq ?? 0);
+/**
+ * Encarnación del proyecto (su `created_at`; null si no existe), su seq y, con `since`, hasta `limit` eventos
+ * posteriores: una sola lectura, así los eventos son de esa encarnación.
+ */
+export async function liveState(
+  db: Db,
+  pid: string,
+  since: number | null,
+  limit: number,
+): Promise<{ incarnation: string | null; seq: number; events: DagEvent[] }> {
+  const [p, q, e] = await db.batch<Row>([
+    db.prepare('SELECT created_at FROM projects WHERE id = ?').bind(pid),
+    db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE project_id = ?').bind(pid),
+    db.prepare('SELECT * FROM events WHERE project_id = ? AND seq > ? ORDER BY seq LIMIT ?').bind(pid, since ?? Number.MAX_SAFE_INTEGER, limit),
+  ]);
+  const incarnation = (p!.results[0]?.created_at as string | undefined) ?? null;
+  return { incarnation, seq: Number(q!.results[0]?.seq ?? 0), events: e!.results.map(toEvent) };
 }
 
 export async function eventsSince(db: Db, pid: string, since: number, limit: number): Promise<DagEvent[]> {
@@ -123,16 +137,16 @@ export async function write<K extends WriteOp['kind']>(
       continue;
     }
     if (!res.ok) throw new ApiFailure(res.error.code, res.error.message);
-    await publish(env, op.pid, res.events as DagEvent[]);
+    await publish(env, op.pid, res.events as DagEvent[], res.incarnation);
     return res.value as WriteValues[K];
   }
 }
 
 /** Reparte a los sockets. Si falla, la escritura ya quedó: los clientes se recuperan con `?since=`. */
-export async function publish(env: Env, pid: string, events: DagEvent[]): Promise<void> {
-  if (!events.length) return;
+export async function publish(env: Env, pid: string, events: DagEvent[], incarnation: string | null): Promise<void> {
+  if (!events.length || incarnation === null) return;
   try {
-    await env.PROJECT_ROOM.get(env.PROJECT_ROOM.idFromName(pid)).broadcast(pid, events);
+    await env.PROJECT_ROOM.get(env.PROJECT_ROOM.idFromName(pid)).broadcast(pid, events, incarnation);
   } catch (err) {
     console.error(JSON.stringify({ msg: 'broadcast falló', pid, seqs: events.map((e) => e.seq), err: String(err) }));
   }

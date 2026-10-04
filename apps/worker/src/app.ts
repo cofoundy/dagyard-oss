@@ -34,6 +34,7 @@ import {
   originAllowed,
   requireOwner,
   roleOfToken,
+  WS_PROTOCOL,
 } from './auth.js';
 import { hmac, seal, unseal } from './crypto.js';
 import { db as dbOf } from './db.js';
@@ -134,6 +135,7 @@ app.use('/api/*', async (c, next) => {
   if (!auth) return errorResponse('unauthorized', 'Falta una credencial válida');
   if (foreignOrigin(c, auth, live)) return errorResponse('forbidden', FOREIGN);
   c.set('role', auth.role);
+  c.set('via', auth.via);
   if (auth.session) c.set('session', auth.session);
   await next();
 });
@@ -230,8 +232,8 @@ app.delete('/api/projects/:pid', async (c) => {
     await run(c, { kind: 'deleteProject', pid });
   } finally {
     // Una página que se reconectó entre el reset y el borrado (también si el borrado quedó pero respondió
-    // `uncertain`). Si este segundo aviso se pierde, el room se corrige solo cuando el proyecto recreado
-    // va por detrás de lo ya repartido (#67 cubre el resto).
+    // `uncertain`). Si este segundo aviso se pierde, el room se corrige solo: el proyecto recreado es otra
+    // encarnación (su `created_at`) y cierra las páginas del muerto (#67).
     await room(c, pid)
       .reset()
       .catch((err) => console.error(JSON.stringify({ msg: 'reset tras borrar falló', pid, err: String(err) })));
@@ -360,8 +362,13 @@ app.get('/api/projects/:pid/live', async (c) => {
   headers.delete('x-dagyard-session');
   const session = c.get('session');
   if (session) headers.set('x-dagyard-session', session);
-  // el token del subprotocolo no viaja más allá de la auth
+  // el subprotocolo que responde el 101 lo elige el Worker: `dagyard` si se ofreció; si no, el `token.<k>` que
+  // autenticó (sin elegir uno, el cliente corta). El DO lo devuelve tal cual (nunca viene del cliente).
   const offered = offeredProtocols(headers.get('sec-websocket-protocol') ?? undefined);
+  const chosen = offered.includes(WS_PROTOCOL) ? WS_PROTOCOL : c.get('via') === 'protocol' ? offered.find((p) => p.startsWith('token.')) : undefined;
+  headers.delete('x-dagyard-protocol');
+  if (chosen) headers.set('x-dagyard-protocol', chosen);
+  // el token del subprotocolo no viaja más allá de la auth
   if (offered.length) headers.set('sec-websocket-protocol', offered.filter((p) => !p.startsWith('token.')).join(', '));
   return room(c, pid).fetch(new Request(c.req.raw.url, { headers }));
 });

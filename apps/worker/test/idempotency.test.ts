@@ -1,4 +1,4 @@
-import type { Message, ProjectSnapshot } from '@dagyard/model';
+import { demoProject, type Message, type ProjectSnapshot } from '@dagyard/model';
 import { env } from 'cloudflare:workers';
 import { describe, expect, it, vi } from 'vitest';
 import { db } from '../src/db.js';
@@ -6,7 +6,7 @@ import type { Env } from '../src/env.js';
 import { ApiFailure } from '../src/http.js';
 import { STORE_RETRY_MS, jitter, write } from '../src/store.js';
 import type { Idem, WriteOp } from '../src/writes.js';
-import { BASE, api, json, seedDemo } from './helpers.js';
+import { BASE, OWNER, api, json, openLive, seedDemo } from './helpers.js';
 import { SELF } from 'cloudflare:test';
 
 const msgPath = (s: ProjectSnapshot) => `/api/projects/${s.project.id}/nodes/${s.nodes[0]!.id}/messages`;
@@ -106,6 +106,28 @@ const NO_WAIT = [0, 0, 0];
 const idem = (fp = 'fp-de-prueba'): Idem => ({ key: crypto.randomUUID(), fp });
 const msgOp = (s: ProjectSnapshot, text: string, from?: string) =>
   ({ kind: 'postMessage', pid: s.project.id, nid: s.nodes[0]!.id, input: { text, ...(from && { from }) }, actor: 'agent' }) as const;
+
+describe('Idempotency-Key tras borrar y recrear el proyecto (#71)', () => {
+  it('una clave usada en el proyecto borrado no reproduce lo del muerto: el reintento escribe de verdad', async () => {
+    const s = await seedDemo();
+    const pid = s.project.id;
+    const key = crypto.randomUUID();
+    const text = 'Ya conecté la pasarela.';
+    const old = await json<Message>(await api(msgPath(s), { method: 'POST', body: { text }, headers: keyed(key) }), 201);
+    expect((await api(`/api/projects/${pid}`, { method: 'DELETE', headers: OWNER })).status).toBe(204);
+    const r = await json<ProjectSnapshot>(await api(`/api/projects/${pid}`, { method: 'PUT', body: demoProject() }), 200);
+    const live = await openLive(pid);
+    await live.waitFor((f) => f.type === 'hello');
+
+    const again = await json<Message>(await api(msgPath(r), { method: 'POST', body: { text }, headers: keyed(key) }), 201);
+    expect(again.id).not.toBe(old.id);
+    expect(await messagesOf(pid, text)).toEqual([again]);
+    // la página del proyecto nuevo recibe el evento real, no uno fantasma del muerto
+    const f = await live.waitFor((x) => x.type === 'event' && x.event.type === 'message.posted', 2000);
+    expect(f.type === 'event' && f.event).toMatchObject({ seq: r.seq + 1, payload: { message: again } });
+    live.ws.close();
+  });
+});
 
 describe('write(): el Store no disponible (#54)', () => {
   it('con clave, un reset después de commitear se reintenta y no duplica el mensaje', async () => {

@@ -1,4 +1,5 @@
-import { demoProject, type DagEvent, type ServerFrame } from '@dagyard/model';
+import { demoProject, type DagEvent, type ProjectSnapshot, type ServerFrame } from '@dagyard/model';
+import { env } from 'cloudflare:workers';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ProjectRoom } from '../src/room.js';
 import { OWNER, api, json, openLive, seedDemo, type Live } from './helpers.js';
@@ -20,7 +21,7 @@ async function projectAhead(): Promise<{ pid: string; seq: number; old: Live }> 
   return { pid, seq: s.seq, old };
 }
 
-const recreate = async (pid: string) => json(await api(`/api/projects/${pid}`, { method: 'PUT', body: demoProject() }), 200);
+const recreate = async (pid: string) => json<ProjectSnapshot>(await api(`/api/projects/${pid}`, { method: 'PUT', body: demoProject() }), 200);
 
 /** El primer mensaje del proyecto recreado llega en vivo a una página nueva. */
 async function expectLive(pid: string, seq: number): Promise<void> {
@@ -85,5 +86,57 @@ describe('borrar y recrear un proyecto con el mismo id (#61)', () => {
     expect(await gone).toBe(4004);
     expect(old.frames.filter(isMessage).map((f) => f.event.seq)).toEqual([seq + 1, seq + 2, seq + 3]);
     await expectLive(pid, seq);
+  });
+});
+
+describe('la encarnación del proyecto, no su seq, decide qué páginas son del proyecto muerto (#67)', () => {
+  const room = (pid: string) => env.PROJECT_ROOM.get(env.PROJECT_ROOM.idFromName(pid));
+  const fake = (pid: string, seq: number): DagEvent => ({ seq, projectId: pid, type: 'node.removed', actor: 'agent', at: new Date().toISOString(), payload: { nodeId: `x${seq}` } });
+
+  it('recreado sin ningún reset y ya a la par del viejo: la página vieja se cierra y no recibe nada del nuevo', async () => {
+    const s = await seedDemo();
+    const pid = s.project.id;
+    const old = await openLive(pid);
+    await old.waitFor((f) => f.type === 'hello');
+    const gone = closed(old.ws);
+    vi.spyOn(ProjectRoom.prototype, 'reset').mockResolvedValue(undefined);
+    expect((await api(`/api/projects/${pid}`, { method: 'DELETE', headers: OWNER })).status).toBe(204);
+
+    // el proyecto nuevo llega exactamente al seq que ya tenía el viejo
+    expect((await recreate(pid)).seq).toBe(s.seq);
+    expect(await gone).toBe(4004);
+    await expectLive(pid, s.seq);
+    expect(old.frames.filter((f) => f.type === 'event')).toEqual([]);
+  });
+
+  it('un broadcast tardío del proyecto viejo no se reparte como del nuevo', async () => {
+    const s = await seedDemo();
+    const pid = s.project.id;
+    vi.spyOn(ProjectRoom.prototype, 'reset').mockResolvedValue(undefined);
+    expect((await api(`/api/projects/${pid}`, { method: 'DELETE', headers: OWNER })).status).toBe(204);
+    const r = await recreate(pid);
+    expect(r.project.createdAt).not.toBe(s.project.createdAt);
+    const live = await openLive(pid);
+    await live.waitFor((f) => f.type === 'hello');
+
+    // contiguo al seq del nuevo, pero de la encarnación anterior
+    await room(pid).broadcast(pid, [fake(pid, r.seq + 1)], s.project.createdAt);
+    await json(await api(`/api/projects/${pid}/nodes/pagos/messages`, { method: 'POST', body: { text: 'proyecto nuevo' } }), 201);
+    const f = await live.waitFor(isMessage);
+    expect(f.event.seq).toBe(r.seq + 1);
+    expect(live.frames.filter((x) => x.type === 'event')).toHaveLength(1);
+    live.ws.close();
+  });
+
+  it('un broadcast no contiguo cuyo hueco el Store no tiene no lanza', async () => {
+    const s = await seedDemo();
+    const pid = s.project.id;
+    const live = await openLive(pid);
+    await live.waitFor((f) => f.type === 'hello');
+    await expect(room(pid).broadcast(pid, [fake(pid, s.seq + 5)], s.project.createdAt)).resolves.toBeUndefined();
+    // el room sigue sano: lo siguiente de verdad llega
+    await json(await api(`/api/projects/${pid}/nodes/pagos/messages`, { method: 'POST', body: { text: 'sigue' } }), 201);
+    expect((await live.waitFor(isMessage)).event.seq).toBe(s.seq + 1);
+    live.ws.close();
   });
 });

@@ -1,4 +1,5 @@
 import type { Role } from '@dagyard/model';
+import type { AuthVia } from './auth.js';
 import type { Store } from './db.js';
 import type { ProjectRoom } from './room.js';
 import type { Idem } from './writes.js';
@@ -17,5 +18,5 @@ export interface Env {
   VAULT_KEY: string;
 }
 
-/** `session`: hash del id de la sesión del navegador, si la auth vino por cookie. `idem`: la `Idempotency-Key` del pedido y su huella. */
-export type AppEnv = { Bindings: Env; Variables: { role: Role; session?: string; idem?: Idem } };
+/** `via`: por dónde llegó la credencial. `session`: hash del id de la sesión del navegador, si la auth vino por cookie. `idem`: la `Idempotency-Key` del pedido y su huella. */
+export type AppEnv = { Bindings: Env; Variables: { role: Role; via: AuthVia; session?: string; idem?: Idem } };

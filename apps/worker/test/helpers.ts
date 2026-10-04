@@ -33,6 +33,8 @@ export async function seedDemo(pid = uniquePid(DEMO_PROJECT_ID)): Promise<Projec
 }
 
 export interface Live {
+  /** la respuesta 101 del upgrade (headers incluidos) */
+  res: Response;
   ws: WebSocket;
   frames: ServerFrame[];
   waitFor<F extends ServerFrame>(pred: (f: ServerFrame) => f is F, ms?: number): Promise<F>;
@@ -58,5 +60,5 @@ export async function openLive(pid: string, query = '', headers: Record<string, 
       await new Promise((r) => setTimeout(r, 10));
     }
   };
-  return { ws, frames, waitFor } as Live;
+  return { res, ws, frames, waitFor } as Live;
 }

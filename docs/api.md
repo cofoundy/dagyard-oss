@@ -21,7 +21,7 @@
 | 401 | `unauthorized` | sin credencial o credencial inválida |
 | 403 | `forbidden` | credencial válida, rol equivocado (p. ej. un agente que intenta resolver) |
 | 404 | `not_found` | proyecto, nodo o bloqueante inexistente |
-| 409 | `conflict` | id repetido; resolver un bloqueante ya resuelto; cambiar el `status` de un nodo con un bloqueante abierto; un agente que haría desaparecer un bloqueante, abierto o resuelto (`PUT` que quita su tarea o `DELETE` del nodo); o un `PUT` con `If-None-Match: *` sobre un proyecto que ya existe |
+| 409 | `conflict` | id repetido; resolver un bloqueante ya resuelto; cambiar el `status` de un nodo con un bloqueante abierto, o declararlo `done` en un `PUT`; un agente que haría desaparecer un bloqueante, abierto o resuelto (`PUT` que quita su tarea o `DELETE` del nodo); o un `PUT` con `If-None-Match: *` sobre un proyecto que ya existe |
 | 500 | `internal` | lo demás |
 
 ## Auth
@@ -82,7 +82,7 @@ Sin auth: solo `GET /api/health` → `200 {"ok": true, "version": "<sha corto>"}
 | `GET /api/projects` | — | `{"projects": ProjectSummary[]}` (con conteos por estado y bloqueantes abiertos) |
 | `POST /api/projects` | `ProjectInput` (`name`, `id?`, `stages?`) | `201 Project`. Sin `stages` usa las 5 por defecto |
 | `GET /api/projects/:pid` | — | `ProjectSnapshot` (ver abajo) |
-| `PUT /api/projects/:pid` | `ProjectGraphInput` | `200 ProjectSnapshot`. Crea el proyecto o **reemplaza** el grafo entero (idempotente). Lo usan la semilla (con el token del dueño) y `dagyard import`. Con `If-None-Match: *` solo crea: `409` si el proyecto ya existe, sin tocarlo. Si quien llama es `agent` conserva los bloqueantes del proyecto (ver abajo) y responde `409` si el grafo nuevo quita una tarea que tiene alguno. Emite `project.replaced` |
+| `PUT /api/projects/:pid` | `ProjectGraphInput` | `200 ProjectSnapshot`. Crea el proyecto o **reemplaza** el grafo entero (idempotente). Lo usan la semilla (con el token del dueño) y `dagyard import`. Con `If-None-Match: *` solo crea: `409` si el proyecto ya existe, sin tocarlo. Si quien llama es `agent` conserva los bloqueantes, los mensajes y la antigüedad de las tareas (ver abajo) y responde `409` si el grafo nuevo quita una tarea que tiene alguno. Emite `project.replaced` |
 | `PATCH /api/projects/:pid` | `{"name"?, "stages"?}` | `200 Project`. Emite `project.updated` |
 | `DELETE /api/projects/:pid` | — | `204`. Solo `owner` |
 | `GET /api/projects/:pid/next` | — | `NextResult`: `{"node": DagNode \| null, "goalLine": "/goal …" \| null}` |
@@ -99,8 +99,16 @@ encontrando. Las tareas que tienen un bloqueante abierto quedan `blocked` las de
 bloqueante del body igual a uno conservado **abierto** (misma tarea, `kind`, `question`, `options` y
 `accessLabel`) no se duplica: re-importar el mismo archivo es idempotente. Uno igual a uno ya **resuelto**
 entra como bloqueante nuevo y abierto (re-preguntar nunca se descarta en silencio), y la respuesta anterior
-se conserva al lado. Si el grafo nuevo quita una tarea que tiene algún bloqueante, `409` y no se toca nada. El dueño reemplaza el grafo entero siempre (sus bloqueantes se recrean desde el
-body con otros ids).
+se conserva al lado. Si el grafo nuevo quita una tarea que tiene algún bloqueante, `409` y no se toca nada.
+Ese mismo `PUT` conserva tal cual (id, firma y fecha) los mensajes de las tareas que siguen, incluido el
+«Gracias. Sigo desde donde me quedé.» de cada respuesta, y el `createdAt` de cada tarea que ya existía, así
+`next` no cambia de orden al re-importar. Un mensaje del body igual a uno conservado (misma tarea, `from`,
+`text` y `reportUrl`) no se duplica; los mensajes de una tarea quitada se van con ella. El dueño reemplaza
+el grafo entero siempre (sus bloqueantes y mensajes se recrean desde el body con otros ids y fecha nueva).
+
+Con cualquier llamante, una tarea declarada `done` que quedaría `blocked` (por un bloqueante abierto
+conservado o del mismo body) responde `409` sin tocar nada, igual que el `PATCH`: no se cierra una tarea
+con una pregunta abierta.
 
 `dagyard import` crea proyectos nuevos con un solo `PUT` exclusivo (`If-None-Match: *`): si el proyecto
 ya existe falla, y el «¿ya existe?» se decide en la misma transacción que escribe, así dos imports a la vez

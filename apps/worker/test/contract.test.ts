@@ -1,4 +1,4 @@
-import { demoProject, type BlockerWaitResult, type ProjectGraphInput, type ProjectSnapshot } from '@dagyard/model';
+import { demoProject, type BlockerWaitResult, type NextResult, type ProjectGraphInput, type ProjectSnapshot } from '@dagyard/model';
 import { describe, expect, it } from 'vitest';
 import { AGENT, OWNER, api, json, seedDemo, uniquePid } from './helpers.js';
 
@@ -171,5 +171,87 @@ describe('PUT con If-None-Match: *', () => {
     const s = await json<ProjectSnapshot>(await put(pid, small(), { ...AGENT, 'if-none-match': '*' }), 200);
     expect(s.project.id).toBe(pid);
     expect(s.nodes).toHaveLength(2);
+  });
+});
+
+// #32: el PUT de un agente no borra la conversación ni reinicia la antigüedad de las tareas que siguen
+describe('el PUT de un agente conserva mensajes y antigüedad', () => {
+  const next = (pid: string) => api(`/api/projects/${pid}/next`).then((r) => json<NextResult>(r, 200));
+
+  it('resolver un bloqueante → PUT de agente idéntico → el mensaje del sistema sigue y next no cambia', async () => {
+    const pid = uniquePid();
+    const g: ProjectGraphInput = { name: 'Orden', nodes: [{ id: 'z', stage: 'diseno', title: 'Z' }, ...small().nodes], blockers: small().blockers };
+    await json(await put(pid, g), 200);
+    // «a2» llega después: es más nueva que «z», así que next elige «z» aunque «a2» gane por id
+    await new Promise((r) => setTimeout(r, 5));
+    await json(await api(`/api/projects/${pid}/nodes`, { method: 'POST', body: { id: 'a2', stage: 'diseno', title: 'A2' } }), 201);
+    const s = await snap(pid);
+    await resolve(pid, s.blockers[0]!.id, { value: 'sk_live_123' });
+    const before = await snap(pid);
+    const system = before.messages.find((m) => m.text === 'Gracias. Sigo desde donde me quedé.')!;
+    expect(system).toBeDefined();
+    expect((await next(pid)).node?.id).toBe('z');
+
+    // el mismo grafo, ya sin la pregunta respondida: «b» sigue trabajando
+    const nodes = [...g.nodes, { id: 'a2', stage: 'diseno', title: 'A2' }].map((n) => (n.id === 'b' ? { ...n, status: 'working' as const } : n));
+    const g2: ProjectGraphInput = { ...g, nodes, blockers: [] };
+    const after = await json<ProjectSnapshot>(await put(pid, g2), 200);
+    expect(after.messages).toContainEqual(system);
+    for (const n of before.nodes) expect(after.nodes.find((x) => x.id === n.id)?.createdAt).toBe(n.createdAt);
+    expect((await next(pid)).node?.id).toBe('z');
+  });
+
+  it('re-importar el mismo archivo no duplica sus mensajes y los conserva con su id', async () => {
+    const s = await seedDemo();
+    const pid = s.project.id;
+    expect(s.messages).toHaveLength(8);
+    const again = await json<ProjectSnapshot>(await put(pid, demoProject()), 200);
+    expect(again.messages).toEqual(s.messages);
+
+    // un mensaje nuevo del archivo sí entra; los de una tarea quitada se van
+    const g = demoProject();
+    g.messages = [...g.messages!, { nodeId: 'registro', text: 'Ya mandé el correo de bienvenida.' }];
+    g.nodes = g.nodes.filter((n) => n.id !== 'entrevistas').map((n) => ({ ...n, deps: n.deps?.filter((d) => d !== 'entrevistas') }));
+    g.messages = g.messages.filter((m) => m.nodeId !== 'entrevistas');
+    const after = await json<ProjectSnapshot>(await put(pid, g), 200);
+    expect(after.messages.map((m) => m.id)).toEqual(expect.arrayContaining(s.messages.filter((m) => m.nodeId !== 'entrevistas').map((m) => m.id)));
+    expect(after.messages.some((m) => m.nodeId === 'entrevistas')).toBe(false);
+    expect(after.messages.filter((m) => m.text === 'Ya mandé el correo de bienvenida.')).toHaveLength(1);
+    expect(after.messages).toHaveLength(8);
+  });
+
+  it('el PUT del dueño sigue recreando todo', async () => {
+    const s = await seedDemo();
+    const owner = await json<ProjectSnapshot>(await put(s.project.id, demoProject(), OWNER), 200);
+    expect(owner.messages).toHaveLength(8);
+    expect(owner.messages.some((m) => s.messages.some((x) => x.id === m.id))).toBe(false);
+  });
+});
+
+// #33: una tarea con una pregunta abierta no se cierra, igual que en PATCH
+describe('un PUT no deja una tarea blocked al 100 %', () => {
+  it('agente: «done» en una tarea con un bloqueante abierto conservado → 409 sin tocar nada', async () => {
+    const pid = uniquePid();
+    const s = await json<ProjectSnapshot>(await put(pid, small()), 200);
+    const g = small();
+    g.nodes = g.nodes.map((n) => (n.id === 'b' ? { ...n, status: 'done' as const } : n));
+    g.blockers = [];
+    const r = await json(await put(pid, g), 409);
+    expect(r.error.code).toBe('conflict');
+    expect(r.error.message).toMatch(/«B».*pregunta abierta/);
+    const after = await snap(pid);
+    expect(after.seq).toBe(s.seq);
+    expect(after.nodes.find((n) => n.id === 'b')).toMatchObject({ status: 'blocked', progress: 0 });
+  });
+
+  it('cualquier actor: «done» con un bloqueante del mismo body → 409', async () => {
+    const g = small();
+    g.nodes = g.nodes.map((n) => (n.id === 'b' ? { ...n, status: 'done' as const } : n));
+    for (const headers of [AGENT, OWNER]) {
+      const pid = uniquePid();
+      const r = await json(await put(pid, g, headers), 409);
+      expect(r.error.code).toBe('conflict');
+      expect((await api(`/api/projects/${pid}`)).status).toBe(404);
+    }
   });
 });

@@ -146,6 +146,11 @@ class Tx {
     const cols = ['id', 'project_id', 'node_id', 'kind', 'question', 'options', 'access_label', 'status', 'resolution', 'resolved_by', 'resolved_at', 'access_value', 'created_at'];
     this.all(`INSERT INTO blockers (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`, ...cols.map((c) => r[c] as V));
   }
+  /** Reinserta un mensaje tal cual estaba: id, firma y fecha incluidos. */
+  restoreMessage(r: Row): void {
+    const cols = ['id', 'project_id', 'node_id', 'from_name', 'text', 'report_url', 'created_at'];
+    this.all(`INSERT INTO messages (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`, ...cols.map((c) => r[c] as V));
+  }
   insertMessage(m: Message): void {
     this.all(
       'INSERT INTO messages (id, project_id, node_id, from_name, text, report_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -227,6 +232,8 @@ function held({ open, resolved }: { open: number; resolved: number }): { what: s
 /** Clave de un bloqueante para no duplicarlo al re-importar: misma tarea, tipo, pregunta, opciones y etiqueta. */
 const blockerKey = (nodeId: unknown, kind: unknown, question: unknown, options: string, accessLabel: unknown) =>
   JSON.stringify([nodeId, kind, question, options, accessLabel ?? null]);
+/** Clave de un mensaje para no duplicarlo al re-importar: misma tarea, firma, texto e informe. */
+const messageKey = (nodeId: unknown, from: unknown, text: unknown, reportUrl: unknown) => JSON.stringify([nodeId, from, text, reportUrl ?? null]);
 
 const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>) => WriteValues[K] } = {
   createProject(tx, { pid, name, stages }) {
@@ -241,11 +248,23 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
     if (prevRow && exclusive) fail('conflict', `Ya existe un proyecto «${pid}»; no lo piso`);
     const prev = prevRow ? toProject(prevRow) : null;
     const stages = g.stages ? toStages(g.stages) : (prev?.stages ?? toStages(undefined));
+    // el PUT de un agente sobre un proyecto existente conserva lo que no le toca reescribir; el dueño recrea todo
+    const keep = prev !== null && actor !== 'owner';
     const nodes = g.nodes.map((n, i) => newNode(pid, n, stages, tx.now, `nodes[${i}].`));
     const byId = new Map(nodes.map((n) => [n.id, n]));
+    // una tarea que sigue conserva su antigüedad: `next` desempata por `createdAt`
+    if (keep)
+      for (const r of tx.all('SELECT id, created_at FROM nodes WHERE project_id = ?', pid)) {
+        const node = byId.get(r.id as string);
+        if (node) node.createdAt = r.created_at as string;
+      }
     // resolver es solo del dueño: el PUT de un agente conserva cada bloqueante (abierto o respondido) con su
     // id, su respuesta y su valor, así un `wait` en curso los sigue encontrando. Quitar su tarea → 409.
-    const kept = prev && actor !== 'owner' ? tx.all('SELECT * FROM blockers WHERE project_id = ? ORDER BY rowid', pid) : [];
+    const kept = keep ? tx.all('SELECT * FROM blockers WHERE project_id = ? ORDER BY rowid', pid) : [];
+    // los mensajes de las tareas que siguen se conservan con su id y su fecha; los de una tarea quitada se van
+    const keptMessages = keep
+      ? tx.all('SELECT * FROM messages WHERE project_id = ? ORDER BY rowid', pid).filter((m) => byId.has(m.node_id as string))
+      : [];
     const orphan = kept.find((b) => !byId.has(b.node_id as string));
     if (orphan) {
       const nid = orphan.node_id as string;
@@ -263,6 +282,11 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
     nodes.forEach((node, i) => {
       if (node.status === 'blocked' && !blockedBy.has(node.id))
         fail('invalid', `nodes[${i}].status: «blocked» lo pone un bloqueante; agrégalo en blockers`);
+      // como en PATCH: una tarea con una pregunta abierta no se cierra (quedaría bloqueada al 100 %)
+      if (node.status === 'done' && blockedBy.has(node.id)) {
+        const n = keptOpen.filter((b) => b.node_id === node.id).length + fresh.filter((b) => b.nodeId === node.id).length;
+        fail('conflict', `nodes[${i}].status: la tarea «${node.title}» tiene ${pending(n)} para el dueño; no puede quedar «done» hasta que ${n === 1 ? 'la responda' : 'las responda'}`);
+      }
       // una tarea con un bloqueante abierto está bloqueada, la declare así o no
       if (blockedBy.has(node.id)) node.status = 'blocked';
     });
@@ -278,16 +302,23 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
     for (const e of edges) tx.insertEdge(e);
     for (const b of kept) tx.restoreBlocker(b);
     for (const b of fresh) tx.insertBlocker(newBlocker(pid, b.nodeId, b, tx.now));
-    for (const m of g.messages ?? [])
-      tx.insertMessage({
-        id: randomId('m_'),
-        projectId: pid,
-        nodeId: m.nodeId,
-        from: m.from ?? signature(byId.get(m.nodeId)!),
-        text: m.text,
-        reportUrl: m.reportUrl ?? null,
-        createdAt: tx.now,
-      });
+    // uno del body idéntico a uno conservado no se duplica: re-importar el mismo archivo es idempotente
+    const unclaimed = new Map<string, number>();
+    for (const m of keptMessages) {
+      const k = messageKey(m.node_id, m.from_name, m.text, m.report_url);
+      unclaimed.set(k, (unclaimed.get(k) ?? 0) + 1);
+    }
+    for (const m of keptMessages) tx.restoreMessage(m);
+    for (const m of g.messages ?? []) {
+      const from = m.from ?? signature(byId.get(m.nodeId)!);
+      const k = messageKey(m.nodeId, from, m.text, m.reportUrl);
+      const left = unclaimed.get(k) ?? 0;
+      if (left > 0) {
+        unclaimed.set(k, left - 1);
+        continue;
+      }
+      tx.insertMessage({ id: randomId('m_'), projectId: pid, nodeId: m.nodeId, from, text: m.text, reportUrl: m.reportUrl ?? null, createdAt: tx.now });
+    }
     tx.emit(pid, actor, { type: 'project.replaced', payload: { project } });
     return null;
   },

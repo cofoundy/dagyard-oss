@@ -13,11 +13,18 @@ export async function roleOfToken(env: Env, token: string): Promise<Role | null>
   return owner ? 'owner' : agent ? 'agent' : null;
 }
 
+export const WS_PROTOCOL = 'dagyard';
+
+/** Subprotocolos ofrecidos en el upgrade: `['dagyard', 'token.<token>']`. */
+export function offeredProtocols(header: string | undefined): string[] {
+  return (header ?? '').split(',').map((p) => p.trim()).filter(Boolean);
+}
+
 /**
  * Orden del contrato: `Authorization: Bearer`, cookie `dagyard_session` y, solo en el upgrade del
- * WebSocket, `?token=`.
+ * WebSocket, el subprotocolo `token.<token>` o, como último recurso, `?token=`.
  */
-export async function authenticate(c: Context<AppEnv>, opts: { allowQuery?: boolean } = {}): Promise<Role | null> {
+export async function authenticate(c: Context<AppEnv>, opts: { websocket?: boolean } = {}): Promise<Role | null> {
   const env = c.env;
   if (!env.OWNER_TOKEN || !env.AGENT_KEY) return null;
   const header = c.req.header('authorization');
@@ -27,7 +34,10 @@ export async function authenticate(c: Context<AppEnv>, opts: { allowQuery?: bool
   }
   const cookie = getCookie(c, SESSION_COOKIE);
   if (cookie) return (await safeEqual(cookie, await sessionValue(env.OWNER_TOKEN))) ? 'owner' : null;
-  const q = opts.allowQuery ? c.req.query('token') : undefined;
+  if (!opts.websocket) return null;
+  const sub = offeredProtocols(c.req.header('sec-websocket-protocol')).find((p) => p.startsWith('token.'));
+  if (sub) return roleOfToken(env, sub.slice('token.'.length));
+  const q = c.req.query('token');
   if (q) return roleOfToken(env, q);
   return null;
 }

@@ -75,6 +75,32 @@ describe('tiempo real', () => {
     live.ws.close();
   });
 
+  it('auth por subprotocolo token.<token>: el servidor elige `dagyard` y el frame llega', async () => {
+    const s = await seedDemo();
+    const pid = s.project.id;
+    const res = await SELF.fetch(`${BASE}/api/projects/${pid}/live`, {
+      headers: { upgrade: 'websocket', 'sec-websocket-protocol': 'dagyard, token.test-owner-token' },
+    });
+    expect(res.status).toBe(101);
+    expect(res.headers.get('sec-websocket-protocol')).toBe('dagyard');
+    const ws = res.webSocket!;
+    ws.accept();
+    const frames: ServerFrame[] = [];
+    ws.addEventListener('message', (e) => {
+      frames.push(JSON.parse(e.data as string));
+    });
+    await json(await api(`/api/projects/${pid}/nodes/pagos/messages`, { method: 'POST', body: { text: 'por subprotocolo' } }), 201);
+    const end = Date.now() + 5000;
+    while (!frames.some(isEvent('message.posted')) && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
+    expect(frames.map((f) => f.type)).toEqual(['hello', 'event']);
+    ws.close();
+
+    const bad = await SELF.fetch(`${BASE}/api/projects/${pid}/live`, { headers: { upgrade: 'websocket', 'sec-websocket-protocol': 'dagyard, token.nope' } });
+    expect(bad.status).toBe(401);
+    // el subprotocolo no autentica rutas que no son el WebSocket
+    await json(await api(`/api/projects/${pid}`, { headers: { 'sec-websocket-protocol': 'dagyard, token.test-owner-token' } }), 401);
+  });
+
   it('sin auth → 401 antes del upgrade; proyecto inexistente → 404', async () => {
     const s = await seedDemo();
     const res = await SELF.fetch(`${BASE}/api/projects/${s.project.id}/live`, { headers: { upgrade: 'websocket' } });

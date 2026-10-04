@@ -5,6 +5,7 @@
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { DagEvent, ServerFrame } from '@dagyard/model';
+import { WS_PROTOCOL, offeredProtocols } from './auth.js';
 import type { Env } from './env.js';
 import { currentSeq, eventsSince } from './store.js';
 
@@ -62,7 +63,10 @@ export class ProjectRoom extends DurableObject<Env> {
       console.error(JSON.stringify({ msg: 'hello falló', pid, err: String(err) }));
       server.close(1011, 'error interno');
     });
-    return new Response(null, { status: 101, webSocket: client });
+    // si el cliente ofreció subprotocolos, hay que elegir uno o el navegador corta la conexión
+    const offered = offeredProtocols(req.headers.get('sec-websocket-protocol') ?? undefined);
+    const headers = offered.includes(WS_PROTOCOL) ? { 'sec-websocket-protocol': WS_PROTOCOL } : undefined;
+    return new Response(null, { status: 101, webSocket: client, headers });
   }
 
   private async greet(ws: WebSocket, pid: string, since: number | null): Promise<void> {

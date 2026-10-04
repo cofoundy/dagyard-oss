@@ -27,7 +27,7 @@ import {
 } from '@dagyard/model';
 import { Hono, type Context } from 'hono';
 import { deleteCookie, setCookie } from 'hono/cookie';
-import { SESSION_COOKIE, authenticate, requireOwner, roleOfToken } from './auth.js';
+import { SESSION_COOKIE, authenticate, offeredProtocols, requireOwner, roleOfToken } from './auth.js';
 import { randomId, seal, sessionValue, unseal } from './crypto.js';
 import type { AppEnv } from './env.js';
 import { ApiFailure, errorResponse, fail, notFound } from './http.js';
@@ -129,7 +129,7 @@ app.delete('/api/session', (c) => {
 
 app.use('/api/*', async (c, next) => {
   const live = /^\/api\/projects\/[^/]+\/live$/.test(c.req.path);
-  const role = await authenticate(c, { allowQuery: live });
+  const role = await authenticate(c, { websocket: live });
   if (!role) return errorResponse('unauthorized', 'Falta una credencial válida');
   c.set('role', role);
   await next();
@@ -550,5 +550,8 @@ app.get('/api/projects/:pid/live', async (c) => {
   headers.set('x-dagyard-project', pid);
   headers.delete('x-dagyard-since');
   if (since !== undefined) headers.set('x-dagyard-since', since);
+  // el token del subprotocolo no viaja más allá de la auth
+  const offered = offeredProtocols(headers.get('sec-websocket-protocol') ?? undefined);
+  if (offered.length) headers.set('sec-websocket-protocol', offered.filter((p) => !p.startsWith('token.')).join(', '));
   return room(c, pid).fetch(new Request(c.req.raw.url, { headers }));
 });

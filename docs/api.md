@@ -126,11 +126,16 @@ a igualdad, el más antiguo (`nextStartable()` del modelo). `goalLine` es `/goal
 
 | Método y ruta | Body | Respuesta |
 |---|---|---|
-| `POST /api/projects/:pid/nodes` | `NodeInput` (`stage`, `title`, `id?`, `status?`, `progress?`, `team?`, `goal?`, `reportUrl?`, `deps?`) | `201 DagNode`. Emite `node.added` + un `edge.added` por cada dep |
-| `PATCH /api/projects/:pid/nodes/:nid` | `NodePatch` | `200 DagNode`. Emite `node.updated` |
+| `POST /api/projects/:pid/nodes` | `NodeInput` (`stage`, `title`, `id?`, `status?`, `progress?`, `team?`, `goal?`, `reportUrl?`, `link?`, `deps?`) | `201 DagNode`. Emite `node.added` + un `edge.added` por cada dep |
+| `PATCH /api/projects/:pid/nodes/:nid` | `NodePatch` (`stage?`, `title?`, `status?`, `progress?`, `team?`, `goal?`, `reportUrl?`, `link?`) | `200 DagNode`. Emite `node.updated` |
 | `DELETE /api/projects/:pid/nodes/:nid` | — | `204`. Borra sus aristas, bloqueantes y mensajes. `409` si quien llama es `agent` y el nodo tiene ≥1 bloqueante (abierto o resuelto). Emite `node.removed` |
 | `POST /api/projects/:pid/edges` | `{"from", "to"}` | `201 Edge`; `400 cycle` si cierra un ciclo; `409` si ya existe. Emite `edge.added` |
 | `DELETE /api/projects/:pid/edges?from=<id>&to=<id>` | — | `204`. Emite `edge.removed` |
+
+`link` es el detalle técnico de la tarea: la URL (http o https) del issue o del PR. Es opcional
+(`null` por defecto, `null` en un `PATCH` lo borra) y la UI lo ofrece en la ficha como «Detalle técnico»,
+debajo del informe, sin mostrar la URL. El `PUT` del grafo lo toma del body como los demás campos de la
+tarea: una tarea sin `link` en el body queda sin él.
 
 Reglas del servidor al escribir un nodo:
 

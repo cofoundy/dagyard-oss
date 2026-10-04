@@ -9,4 +9,4 @@ Secrets del Worker (`wrangler secret bulk`): `OWNER_TOKEN`, `AGENT_KEY`, `VAULT_
 `~/.config/dagyard/{owner-token,agent-key,vault-key}` (chmod 600). Nunca en un commit, issue ni en Basalt.
 El token de Cloudflare del entorno no tiene permiso de D1: el estado vive en Durable Objects con SQLite (#9).
 
-Verificá: `curl -s -o /dev/null -w '%{http_code}' <url>/api/health` → 200; `curl -s -o /dev/null -w '%{http_code}' <url>/api/projects` → 401.
+Verifica: `curl -s -o /dev/null -w '%{http_code}' <url>/api/health` → 200; `curl -s -o /dev/null -w '%{http_code}' <url>/api/projects` → 401.

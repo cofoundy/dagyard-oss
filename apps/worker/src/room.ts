@@ -5,7 +5,7 @@
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { DagEvent, ServerFrame } from '@dagyard/model';
-import { WS_PROTOCOL, offeredProtocols, sessionAlive } from './auth.js';
+import { sessionAlive } from './auth.js';
 import { db } from './db.js';
 import type { Env } from './env.js';
 import { currentSeq, eventsSince } from './store.js';
@@ -58,7 +58,7 @@ export class ProjectRoom extends DurableObject<Env> {
     else await this.ctx.storage.put('lastSent', v);
   }
 
-  /** Upgrade ya autenticado por el Worker. Headers: `x-dagyard-project`, `x-dagyard-since`. */
+  /** Upgrade ya autenticado por el Worker. Headers: `x-dagyard-project`, `x-dagyard-since`, `x-dagyard-session`, `x-dagyard-protocol`. */
   async fetch(req: Request): Promise<Response> {
     const pid = req.headers.get('x-dagyard-project');
     if (req.headers.get('upgrade')?.toLowerCase() !== 'websocket' || !pid) return new Response('se esperaba un WebSocket', { status: 426 });
@@ -73,9 +73,9 @@ export class ProjectRoom extends DurableObject<Env> {
       console.error(JSON.stringify({ msg: 'hello falló', pid, err: String(err) }));
       server.close(1011, 'error interno');
     });
-    // si el cliente ofreció subprotocolos, hay que elegir uno o el navegador corta la conexión
-    const offered = offeredProtocols(req.headers.get('sec-websocket-protocol') ?? undefined);
-    const headers = offered.includes(WS_PROTOCOL) ? { 'sec-websocket-protocol': WS_PROTOCOL } : undefined;
+    // si el cliente ofreció subprotocolos, hay que elegir uno o el navegador corta la conexión; lo eligió el Worker
+    const protocol = req.headers.get('x-dagyard-protocol');
+    const headers = protocol ? { 'sec-websocket-protocol': protocol } : undefined;
     return new Response(null, { status: 101, webSocket: client, headers });
   }
 

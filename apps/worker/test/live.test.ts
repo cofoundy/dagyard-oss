@@ -102,6 +102,28 @@ describe('tiempo real', () => {
     await json(await api(`/api/projects/${pid}`, { headers: { 'sec-websocket-protocol': 'dagyard, token.test-owner-token' } }), 401);
   });
 
+  it('solo el subprotocolo token.<token> (sin `dagyard`): el servidor elige ese token y llega el hello (#69)', async () => {
+    const s = await seedDemo();
+    const pid = s.project.id;
+    const live = await openLive(pid, '', { 'sec-websocket-protocol': 'token.test-agent-key' });
+    expect(live.res.headers.get('sec-websocket-protocol')).toBe('token.test-agent-key');
+    expect(await live.waitFor((f) => f.type === 'hello')).toEqual({ type: 'hello', projectId: pid, seq: s.seq });
+    live.ws.close();
+  });
+
+  it('un x-dagyard-protocol que manda el cliente se ignora (#69)', async () => {
+    const s = await seedDemo();
+    const pid = s.project.id;
+    const forged = { 'x-dagyard-protocol': 'malo' };
+    const both = await openLive(pid, '', { ...forged, 'sec-websocket-protocol': 'dagyard, token.test-agent-key' });
+    expect(both.res.headers.get('sec-websocket-protocol')).toBe('dagyard');
+    both.ws.close();
+    // con Bearer el subprotocolo no autenticó: no hay token validado que devolver
+    const bearer = await openLive(pid, '', { ...AGENT, ...forged });
+    expect(bearer.res.headers.get('sec-websocket-protocol')).toBeNull();
+    bearer.ws.close();
+  });
+
   it('sin auth → 401 antes del upgrade; proyecto inexistente → 404', async () => {
     const s = await seedDemo();
     const res = await SELF.fetch(`${BASE}/api/projects/${s.project.id}/live`, { headers: { upgrade: 'websocket' } });

@@ -61,7 +61,7 @@ class StoreDb implements Db {
   }
   async batch<T = Row>(stmts: Stmt[]): Promise<Array<{ results: T[] }>> {
     if (!stmts.length) return [];
-    const rows = (await this.ns.get(this.ns.idFromName('main')).batch(stmts.map((s) => s.query))) as T[][];
+    const rows = (await this.ns.get(this.ns.idFromName('db')).batch(stmts.map((s) => s.query))) as T[][];
     return rows.map((results) => ({ results }));
   }
 }

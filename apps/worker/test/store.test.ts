@@ -19,7 +19,7 @@ describe('Store (DO con SQLite, en vez de D1)', () => {
   it('la migración se aplica una sola vez aunque el DO se vuelva a construir', async () => {
     await db(env).prepare('SELECT 1').first();
     // otra instancia sobre el mismo storage (lo que pasa tras un desalojo): vuelve a correr la migración
-    await runInDurableObject(env.STORE.get(env.STORE.idFromName('main')), (_i, state) => {
+    await runInDurableObject(env.STORE.get(env.STORE.idFromName('db')), (_i, state) => {
       new Store(state, env);
     });
     const rows = await db(env).prepare('SELECT version FROM _schema ORDER BY version').all<{ version: number }>();

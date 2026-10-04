@@ -1,75 +1,10 @@
-/** Lecturas y escrituras de Dagyard sobre el Db (DO `Store`). Cada escritura va en un solo `batch()` con sus eventos. */
-import {
-  MESSAGES_IN_SNAPSHOT,
-  type Blocker,
-  type BlockerResolution,
-  type DagEvent,
-  type DagEventType,
-  type DagNode,
-  type Edge,
-  type Message,
-  type Project,
-  type ProjectSnapshot,
-  type Role,
-} from '@dagyard/model';
-import { db as dbOf, type Db, type Row, type Stmt } from './db.js';
+/** Lecturas de Dagyard sobre el Db (DO `Store`) y el puente de escrituras (writes.ts) con el tiempo real. */
+import { MESSAGES_IN_SNAPSHOT, type DagEvent, type DagNode, type Edge, type Project, type ProjectSnapshot } from '@dagyard/model';
+import type { Db, Row } from './db.js';
 import type { Env } from './env.js';
-import { notFound } from './http.js';
-
-const s = (v: unknown) => v as string;
-const ns = (v: unknown) => (v ?? null) as string | null;
-
-export const toProject = (r: Row): Project => ({
-  id: s(r.id),
-  name: s(r.name),
-  stages: JSON.parse(s(r.stages)),
-  createdAt: s(r.created_at),
-  updatedAt: s(r.updated_at),
-});
-
-export const toNode = (r: Row): DagNode => ({
-  id: s(r.id),
-  projectId: s(r.project_id),
-  stage: s(r.stage),
-  title: s(r.title),
-  status: r.status as DagNode['status'],
-  progress: Number(r.progress),
-  team: ns(r.team),
-  goal: ns(r.goal),
-  reportUrl: ns(r.report_url),
-  createdAt: s(r.created_at),
-  updatedAt: s(r.updated_at),
-});
-
-export const toEdge = (r: Row): Edge => ({ projectId: s(r.project_id), from: s(r.from_id), to: s(r.to_id) });
-
-/** Nunca lee `access_value`: el valor no sale por aquí. */
-export const toBlocker = (r: Row): Blocker => ({
-  id: s(r.id),
-  projectId: s(r.project_id),
-  nodeId: s(r.node_id),
-  kind: r.kind as Blocker['kind'],
-  question: s(r.question),
-  options: JSON.parse(s(r.options)),
-  accessLabel: ns(r.access_label),
-  status: r.status as Blocker['status'],
-  resolution: r.resolution ? (JSON.parse(s(r.resolution)) as BlockerResolution) : null,
-  resolvedBy: ns(r.resolved_by) as Role | null,
-  resolvedAt: ns(r.resolved_at),
-  createdAt: s(r.created_at),
-});
-
-export const toMessage = (r: Row): Message => ({
-  id: s(r.id),
-  projectId: s(r.project_id),
-  nodeId: s(r.node_id),
-  from: s(r.from_name),
-  text: s(r.text),
-  reportUrl: ns(r.report_url),
-  createdAt: s(r.created_at),
-});
-
-const BLOCKER_COLS = 'id, project_id, node_id, kind, question, options, access_label, status, resolution, resolved_by, resolved_at, created_at';
+import { ApiFailure, notFound } from './http.js';
+import { BLOCKER_COLS, toBlocker, toEdge, toEvent, toMessage, toNode, toProject } from './rows.js';
+import type { WriteOp, WriteValues } from './writes.js';
 
 /* ------------------------------------------------------------------ lecturas */
 
@@ -82,25 +17,8 @@ export async function requireProject(db: Db, pid: string): Promise<Project> {
   return (await getProject(db, pid)) ?? notFound(`El proyecto «${pid}»`);
 }
 
-export async function getNode(db: Db, pid: string, nid: string): Promise<DagNode | null> {
-  const r = await db.prepare('SELECT * FROM nodes WHERE project_id = ? AND id = ?').bind(pid, nid).first<Row>();
-  return r ? toNode(r) : null;
-}
-
-export async function requireNode(db: Db, pid: string, nid: string): Promise<DagNode> {
-  return (await getNode(db, pid, nid)) ?? notFound(`La tarea «${nid}»`);
-}
-
 export async function getBlockerRow(db: Db, pid: string, bid: string): Promise<Row | null> {
   return db.prepare('SELECT * FROM blockers WHERE project_id = ? AND id = ?').bind(pid, bid).first<Row>();
-}
-
-export async function openBlockerCount(db: Db, pid: string, nid: string): Promise<number> {
-  const r = await db
-    .prepare("SELECT COUNT(*) AS n FROM blockers WHERE project_id = ? AND node_id = ? AND status = 'open'")
-    .bind(pid, nid)
-    .first<{ n: number }>();
-  return r?.n ?? 0;
 }
 
 const nodesQ = (db: Db, pid: string) =>
@@ -152,91 +70,20 @@ export async function eventsSince(db: Db, pid: string, since: number, limit: num
     .prepare('SELECT * FROM events WHERE project_id = ? AND seq > ? ORDER BY seq LIMIT ?')
     .bind(pid, since, limit)
     .all<Row>();
-  return results.map(
-    (r) =>
-      ({
-        seq: Number(r.seq),
-        projectId: s(r.project_id),
-        type: r.type as DagEventType,
-        actor: r.actor as Role,
-        at: s(r.at),
-        payload: JSON.parse(s(r.payload)),
-      }) as DagEvent,
-  );
+  return results.map(toEvent);
 }
 
 /* ------------------------------------------------------------------ escrituras */
 
-export function insertNode(db: Db, n: DagNode): Stmt {
-  return db
-    .prepare(
-      `INSERT INTO nodes (project_id, id, stage, title, status, progress, team, goal, report_url, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .bind(n.projectId, n.id, n.stage, n.title, n.status, n.progress, n.team, n.goal, n.reportUrl, n.createdAt, n.updatedAt);
-}
-
-export function updateNode(db: Db, n: DagNode): Stmt {
-  return db
-    .prepare(
-      `UPDATE nodes SET stage = ?, title = ?, status = ?, progress = ?, team = ?, goal = ?, report_url = ?, updated_at = ?
-       WHERE project_id = ? AND id = ?`,
-    )
-    .bind(n.stage, n.title, n.status, n.progress, n.team, n.goal, n.reportUrl, n.updatedAt, n.projectId, n.id);
-}
-
-export function insertEdge(db: Db, e: Edge): Stmt {
-  return db.prepare('INSERT INTO edges (project_id, from_id, to_id) VALUES (?, ?, ?)').bind(e.projectId, e.from, e.to);
-}
-
-export function insertBlocker(db: Db, b: Blocker): Stmt {
-  return db
-    .prepare(
-      `INSERT INTO blockers (id, project_id, node_id, kind, question, options, access_label, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
-    )
-    .bind(b.id, b.projectId, b.nodeId, b.kind, b.question, JSON.stringify(b.options), b.accessLabel, b.createdAt);
-}
-
-export function insertMessage(db: Db, m: Message): Stmt {
-  return db
-    .prepare('INSERT INTO messages (id, project_id, node_id, from_name, text, report_url, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .bind(m.id, m.projectId, m.nodeId, m.from, m.text, m.reportUrl, m.createdAt);
-}
-
-/** Borra el contenido del grafo (hijos primero, sin depender de las FK). */
-export function clearGraph(db: Db, pid: string): Stmt[] {
-  return ['messages', 'blockers', 'edges', 'nodes'].map((t) => db.prepare(`DELETE FROM ${t} WHERE project_id = ?`).bind(pid));
-}
-
-type EventSpec = { [K in DagEventType]: { type: K; payload: Extract<DagEvent, { type: K }>['payload'] } }[DagEventType];
-
-const INSERT_EVENT = `INSERT INTO events (project_id, seq, type, actor, at, payload)
-  SELECT ?1, COALESCE(MAX(seq), 0) + 1, ?2, ?3, ?4, ?5 FROM events WHERE project_id = ?1
-  RETURNING seq`;
-
 /**
- * Ejecuta `writes` y los eventos en un solo batch (transacción): el `seq` se asigna dentro, así
- * que es atómico y monotónico. Después le pasa los eventos al Durable Object del proyecto.
+ * Corre una escritura en el Store (una transacción: ver writes.ts) y reparte sus eventos al
+ * Durable Object del proyecto. Un error de dominio llega como dato y se relanza como ApiFailure.
  */
-export async function commit(
-  env: Env,
-  pid: string,
-  actor: Role,
-  now: string,
-  writes: Stmt[],
-  events: EventSpec[],
-): Promise<DagEvent[]> {
-  const db = dbOf(env);
-  const touch = db.prepare('UPDATE projects SET updated_at = ? WHERE id = ?').bind(now, pid);
-  const evs = events.map((e) => db.prepare(INSERT_EVENT).bind(pid, e.type, actor, now, JSON.stringify(e.payload)));
-  const res = await db.batch<{ seq: number }>([...writes, touch, ...evs]);
-  const base = writes.length + 1;
-  const out = events.map(
-    (e, i) => ({ seq: Number(res[base + i]!.results[0]!.seq), projectId: pid, actor, at: now, ...e }) as DagEvent,
-  );
-  await publish(env, pid, out);
-  return out;
+export async function write<K extends WriteOp['kind']>(env: Env, op: Extract<WriteOp, { kind: K }>): Promise<WriteValues[K]> {
+  const res = await env.STORE.get(env.STORE.idFromName('db')).write(op);
+  if (!res.ok) throw new ApiFailure(res.error.code, res.error.message);
+  await publish(env, op.pid, res.events as DagEvent[]);
+  return res.value as WriteValues[K];
 }
 
 /** Reparte a los sockets. Si falla, la escritura ya quedó: los clientes se recuperan con `?since=`. */

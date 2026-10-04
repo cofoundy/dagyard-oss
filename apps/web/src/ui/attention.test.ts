@@ -10,6 +10,7 @@ import {
   BASE_FAVICON_HREF,
   alertFaviconSvg,
   faviconHref,
+  isLooking,
   newlyOpened,
   noticeBody,
   noticeTitle,
@@ -110,6 +111,16 @@ describe('pedido nuevo', () => {
     expect(newlyOpened(snap, reduce(snap, ghost), ghost)).toBeNull();
     const done = ev({ ...fresh, resolvedAt: '2026-10-04T00:00:00.000Z', resolution: 'Aprobado' });
     expect(newlyOpened(snap, reduce(snap, done), done)).toBeNull();
+  });
+});
+
+describe('¿la estás mirando?', () => {
+  it('solo con la pestaña al frente y la ventana con foco', () => {
+    const doc = (hidden: boolean, focused: boolean) => ({ hidden, hasFocus: () => focused }) as unknown as Document;
+    expect(isLooking(doc(false, true))).toBe(true);
+    expect(isLooking(doc(true, true))).toBe(false);
+    expect(isLooking(doc(false, false))).toBe(false);
+    expect(isLooking(doc(true, false))).toBe(false);
   });
 });
 

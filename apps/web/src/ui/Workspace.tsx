@@ -9,6 +9,7 @@ import { ProjectStore, type StoreChange, type StoreState } from '../data/store';
 import { UnauthorizedError, type Blocker, type ProjectSummary, type Resolution } from '../data/types';
 import { nodeById, openBlockers, stageIndex, toSceneGraph } from '../data/view';
 import {
+  isLooking,
   newlyOpened,
   notifyPermission,
   requestNotifyPermission,
@@ -141,7 +142,8 @@ export function Workspace({ api, sky, handlers, demo, onUnauthorized, onLogout }
   const onChange = useRef<(c: StoreChange) => void>(() => {});
   onChange.current = ({ prev, next, event }) => {
     const opened = newlyOpened(prev, next, event);
-    if (opened && !notices.current.has(opened.blocker.id)) {
+    // Solo si no estás mirando: con la página al frente ya están el aviso en pantalla y la cuenta del HUD.
+    if (opened && !notices.current.has(opened.blocker.id) && !isLooking(document)) {
       const notice = showNotice(
         {
           blockerId: opened.blocker.id,

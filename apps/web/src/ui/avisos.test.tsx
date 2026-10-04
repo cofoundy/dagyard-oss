@@ -74,7 +74,15 @@ class Flaky extends FixtureApi {
   }
 }
 
+/** Si la página está a la vista: pestaña al frente (`document.hidden`) y ventana con foco (`hasFocus`). */
+function viewing({ hidden, focused }: { hidden: boolean; focused: boolean }) {
+  vi.spyOn(document, 'hidden', 'get').mockReturnValue(hidden);
+  vi.spyOn(document, 'hasFocus').mockReturnValue(focused);
+}
+
 beforeEach(() => {
+  // Por defecto no la estás mirando (otra pestaña al frente): es cuando el aviso del navegador tiene sentido.
+  viewing({ hidden: true, focused: false });
   scene.opts = null;
   scene.calls = [];
   document.head.innerHTML = '<link rel="icon" href="/favicon.svg" type="image/svg+xml" />';
@@ -210,6 +218,29 @@ describe('aviso del navegador', () => {
     act(() => api.message(P, 'pagos-con-tarjeta', 'Ya conecté la pasarela.'));
     await settle(2);
     expect(shown).toHaveLength(1);
+  });
+
+  it('con la página a la vista no avisa (ya están el aviso en pantalla y la cuenta); con la pestaña de fondo o sin foco, sí', async () => {
+    const { shown } = installNotification('granted');
+    viewing({ hidden: false, focused: true });
+    const api = await mount();
+    act(() => void api.block(P, 'avisos-por-whatsapp', 'review', '¿Te parece bien el texto del aviso?'));
+    await until(() => document.title === '(4) Dagyard', 'sube la cuenta igual');
+    await settle(2);
+    expect(shown).toHaveLength(0);
+    expect(text()).toContain('necesita tu revisión');
+
+    // Pestaña de fondo.
+    viewing({ hidden: true, focused: false });
+    act(() => void api.block(P, 'reservas-y-calendario', 'decision', '¿Cuál?', { options: ['A', 'B'] }));
+    await until(() => shown.length === 1, 'avisa con la pestaña de fondo');
+    expect(shown[0]!.title).toBe('Te espera: Reservas y calendario');
+
+    // Pestaña al frente pero la ventana sin foco (estás en otra app).
+    viewing({ hidden: false, focused: false });
+    act(() => void api.block(P, 'panel-del-proveedor', 'decision', '¿Cuál?', { options: ['A', 'B'] }));
+    await until(() => shown.length === 2, 'avisa sin foco');
+    expect(shown[1]!.title).toBe('Te espera: Panel del proveedor');
   });
 
   it('lo que llega al volver a sincronizar no avisa (ya estaba), pero sí sube la cuenta', async () => {

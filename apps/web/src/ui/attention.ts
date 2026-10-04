@@ -102,6 +102,14 @@ export interface BlockerNotice {
   projectName: string;
 }
 
+/**
+ * ¿Estás mirando la página? Pestaña al frente y ventana con el foco. Si la miras, ya tienes el aviso en
+ * pantalla y la cuenta del HUD: un aviso del sistema encima sería ruido.
+ */
+export function isLooking(doc: Document): boolean {
+  return !doc.hidden && doc.hasFocus();
+}
+
 /** Texto del aviso del navegador: «Te espera: Modelo de comisiones». */
 export function noticeTitle(taskTitle: string): string {
   return `${COPY.noticeTitle}: ${taskTitle}`;

@@ -2,7 +2,8 @@
  * `.cofoundy/tasks` → `ProjectGraphInput` (lo que recibe `PUT /api/projects/:id`).
  * Dependencias = `deps` ∪ `blockedBy`, solo ids que existen en el directorio. Etapas = `phase:` si
  * todas las tareas lo traen; si no, la profundidad topológica con nombre humano («Para empezar»,
- * «Después», «Luego», …, «Al final»), con tope de 12. Títulos: `legibleTitle` (D10, #21).
+ * «Después», «Luego», …, «Al final»), con tope de 12. Títulos: los de `titles` si vienen (#30); si no,
+ * `legibleTitle` (D10, #21).
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -22,6 +23,8 @@ export interface ImportStats {
   stageSource: 'phase' | 'depth';
   stages: Array<{ id: string; name: string; nodes: number }>;
   status: Record<NodeStatus, number>;
+  /** cuántos títulos vinieron de `titles`; solo si se pasó */
+  titled?: number;
 }
 
 export interface ImportResult {
@@ -41,6 +44,11 @@ export interface ImportOptions {
   dirName?: string;
   /** cómo se nombra el directorio en el `goal` (default `.cofoundy/tasks`) */
   tasksPath?: string;
+  /**
+   * id de nodo (o id de la tarea, p. ej. `T-314-A`) → título humano que redactó quien importa (#30). Reemplaza a
+   * `legibleTitle`; claves desconocidas o títulos que no sirven van a `warnings`, nunca abortan.
+   */
+  titles?: Record<string, unknown>;
 }
 
 /** `parseProjectGraphInput` acepta hasta 12 etapas. */
@@ -116,9 +124,11 @@ export function buildImport(files: TaskFile[], opts: ImportOptions = {}): Import
 
   const { stages, stageOf, source } = inferStages(tasks, depth);
 
+  const given = opts.titles ? givenTitles(opts.titles, tasks, nodeIds, warnings) : null;
+
   const tasksPath = (opts.tasksPath ?? '.cofoundy/tasks').replace(/\/+$/, '');
   const nodes: NodeInput[] = tasks.map((t, i) => {
-    const title = legibleTitle(t.title, t.summary);
+    const title = given?.get(i) ?? legibleTitle(t.title, t.summary);
     return {
       id: nodeIds[i]!,
       stage: stageOf[i]!,
@@ -153,9 +163,74 @@ export function buildImport(files: TaskFile[], opts: ImportOptions = {}): Import
       stageSource: source,
       stages: stages.map((s) => ({ id: s.id!, name: s.name, nodes: stageOf.filter((x) => x === s.id).length })),
       status,
+      ...(given ? { titled: given.size } : {}),
     },
     warnings,
   };
+}
+
+/**
+ * `--titles`: JSON en línea (empieza con `{`) o la ruta a un archivo JSON. Tiene que ser un objeto; lo demás
+ * (claves y valores) lo revisa `buildImport` y avisa sin abortar.
+ */
+export function readTitles(raw: string): Record<string, unknown> {
+  let text = raw;
+  if (!raw.trim().startsWith('{')) {
+    try {
+      text = readFileSync(raw, 'utf8');
+    } catch {
+      throw new Error(`«${raw}» no es un objeto JSON ni un archivo que pueda leer`);
+    }
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new Error(`no es JSON válido (${err instanceof Error ? err.message : String(err)})`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('se esperaba un objeto { "id de nodo": "título" }');
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/** índice de tarea → título dado. La clave vale como id de nodo o id de la tarea (se compara su slug). */
+function givenTitles(
+  titles: Record<string, unknown>,
+  tasks: ParsedTask[],
+  nodeIds: string[],
+  warnings: string[],
+): Map<number, string> {
+  const byKey = new Map<string, number>();
+  nodeIds.forEach((id, i) => byKey.set(id, i));
+  tasks.forEach((t, i) => {
+    const k = slugify(t.id);
+    if (k && !byKey.has(k)) byKey.set(k, i);
+  });
+  const out = new Map<number, string>();
+  const keyOf = new Map<number, string>();
+  for (const [key, value] of Object.entries(titles)) {
+    const i = byKey.get(key) ?? byKey.get(slugify(key));
+    if (i === undefined) {
+      warnings.push(`--titles: no hay ninguna tarea «${key}»; se ignoró`);
+      continue;
+    }
+    const title = typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+    const keep = `quedó «${legibleTitle(tasks[i]!.title, tasks[i]!.summary)}»`;
+    if (!title) {
+      warnings.push(`--titles: el título de «${key}» no es un texto con contenido; ${keep}`);
+      continue;
+    }
+    const len = [...title].length;
+    if (len > LIMITS.title) {
+      warnings.push(`--titles: el título de «${key}» tiene ${len} caracteres (máximo ${LIMITS.title}); ${keep}`);
+      continue;
+    }
+    if (out.has(i)) warnings.push(`--titles: «${keyOf.get(i)}» y «${key}» son la misma tarea; quedó el de «${key}»`);
+    out.set(i, title);
+    keyOf.set(i, key);
+  }
+  return out;
 }
 
 /**

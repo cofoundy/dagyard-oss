@@ -3,7 +3,7 @@ import { assertKnownFlags, flag, parseArgs, UsageError, type ParsedArgs } from '
 import { loadConfig } from './config.js';
 import type { BlockerInput, BlockerKind, BlockerWaitResult, NodeInput, NodePatch, NodeStatus } from '@dagyard/model';
 import { BLOCKER_KINDS, LIMITS, NODE_STATUSES, parseProjectGraphInput, slugify } from '@dagyard/model';
-import { buildImport, projectNameFromDir, readTasksDir, type ImportResult } from './tasks/import.js';
+import { buildImport, projectNameFromDir, readTasksDir, readTitles, type ImportResult } from './tasks/import.js';
 import { oneLine } from './tasks/parse.js';
 
 export const VERSION = '0.1.0';
@@ -268,7 +268,7 @@ Sin --timeout espera para siempre. Exit 2 si vence.`,
     },
   },
   import: {
-    usage: 'dagyard import --from <ruta a .cofoundy/tasks> [--project <p>] [--name "…"] [--replace] [--dry-run] [--json]',
+    usage: 'dagyard import --from <ruta a .cofoundy/tasks> [--project <p>] [--name "…"] [--titles <json>] [--replace] [--dry-run] [--json]',
     summary: 'crea un proyecto nuevo desde las tareas del orchestrator',
     help: `deps y blockedBy se vuelven dependencias; status se normaliza a ${NODE_STATUSES.join(', ')}.
 Etapas: phase si todas las tareas lo traen; si no, por profundidad («Para empezar», «Después», «Luego», … «Al final»).
@@ -276,8 +276,11 @@ Si el proyecto ya existe no lo pisa (el servidor lo decide al crear): elige otro
 --replace para reemplazarlo. Con la clave de agente, el reemplazo conserva las preguntas y respuestas
 del dueño y el servidor lo rechaza (409) si el grafo nuevo quita una tarea que tiene alguna; con el token
 del dueño, --replace las borra y las recrea desde el archivo.
+--titles pone los títulos en lenguaje de PM: un objeto JSON { "id de nodo": "título" }, en línea o la ruta a un
+archivo .json. Reemplazan a los que se sacan de las tareas; ids desconocidos o títulos de más de ${LIMITS.title}
+caracteres solo avisan.
 --dry-run solo cuenta, no envía nada y no necesita servidor.`,
-    flags: ['from', 'name', ...GLOBAL_FLAGS],
+    flags: ['from', 'name', 'titles', ...GLOBAL_FLAGS],
     bools: ['dry-run', 'json', 'replace'],
     async run({ io, args }) {
       need(args, []);
@@ -290,10 +293,18 @@ del dueño, --replace las borra y las recrea desde el archivo.
       }
       if (!files.length) throw new UsageError(`no hay tareas (*.md) en ${from}`);
       const name = flag(args, 'name');
+      const titlesRaw = flag(args, 'titles');
+      let titles;
+      try {
+        titles = titlesRaw === undefined ? undefined : readTitles(titlesRaw);
+      } catch (err) {
+        throw new UsageError(`--titles: ${err instanceof Error ? err.message : String(err)}`);
+      }
       const result = buildImport(files, {
         dirName: projectNameFromDir(from),
         ...(flag(args, 'project') ? { projectId: flag(args, 'project')! } : {}),
         ...(name ? { name } : {}),
+        ...(titles ? { titles } : {}),
       });
       const check = parseProjectGraphInput(result.graph);
       if (!check.ok) throw new Error(`el grafo importado no pasa la validación del modelo: ${check.message}`);
@@ -467,6 +478,7 @@ function formatImport(r: ImportResult, dry: boolean, replace: boolean): string {
     ...s.stages.map((st) => `  ${st.name}: ${st.nodes}`),
     `Estados: ${s.status.pending} pendientes · ${s.status.working} en progreso · ${s.status.blocked} te esperan · ${s.status.done} listas`,
   ];
+  if (s.titled !== undefined) lines.push(`Títulos de --titles: ${s.titled} de ${s.nodes}`);
   if (r.warnings.length) {
     lines.push(`Avisos (${r.warnings.length}):`, ...r.warnings.map((w) => `  - ${w}`));
   }

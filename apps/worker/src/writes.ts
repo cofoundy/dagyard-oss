@@ -36,7 +36,8 @@ export type EventSpec = { [K in DagEventType]: { type: K; payload: Extract<DagEv
 /** Lo que el Worker le pide al Store. Todo viene ya validado en forma por `@dagyard/model`. */
 export type WriteOp =
   | { kind: 'createProject'; pid: string; name: string; stages?: StageInput[] }
-  | { kind: 'replaceGraph'; pid: string; graph: ProjectGraphInput; actor: Role }
+  /** `exclusive` (`If-None-Match: *`): solo crea; si el proyecto ya existe, `409` sin tocarlo */
+  | { kind: 'replaceGraph'; pid: string; graph: ProjectGraphInput; actor: Role; exclusive?: boolean }
   | { kind: 'patchProject'; pid: string; name?: string; stages?: StageInput[]; actor: Role }
   | { kind: 'deleteProject'; pid: string }
   | { kind: 'addNode'; pid: string; input: NodeInput; actor: Role }
@@ -114,8 +115,13 @@ class Tx {
   openBlockers(pid: string, nid: string): number {
     return Number(this.one("SELECT COUNT(*) AS n FROM blockers WHERE project_id = ? AND node_id = ? AND status = 'open'", pid, nid)!.n);
   }
-  projectOpenBlockers(pid: string): number {
-    return Number(this.one("SELECT COUNT(*) AS n FROM blockers WHERE project_id = ? AND status = 'open'", pid)!.n);
+  /** Bloqueantes de la tarea, abiertos y ya respondidos: lo que un agente no puede hacer desaparecer. */
+  heldBlockers(pid: string, nid: string): { open: number; resolved: number } {
+    const r = this.one(
+      "SELECT COUNT(*) FILTER (WHERE status = 'open') AS open, COUNT(*) FILTER (WHERE status = 'resolved') AS resolved FROM blockers WHERE project_id = ? AND node_id = ?",
+      pid, nid,
+    )!;
+    return { open: Number(r.open), resolved: Number(r.resolved) };
   }
 
   insertNode(n: DagNode): void {
@@ -134,6 +140,11 @@ class Tx {
        VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
       b.id, b.projectId, b.nodeId, b.kind, b.question, JSON.stringify(b.options), b.accessLabel, b.createdAt,
     );
+  }
+  /** Reinserta un bloqueante tal cual estaba: id, respuesta y valor cifrado incluidos. */
+  restoreBlocker(r: Row): void {
+    const cols = ['id', 'project_id', 'node_id', 'kind', 'question', 'options', 'access_label', 'status', 'resolution', 'resolved_by', 'resolved_at', 'access_value', 'created_at'];
+    this.all(`INSERT INTO blockers (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`, ...cols.map((c) => r[c] as V));
   }
   insertMessage(m: Message): void {
     this.all(
@@ -207,6 +218,14 @@ function newBlocker(pid: string, nodeId: string, input: BlockerInput, now: strin
 
 const BLOCKED_BY_HAND = 'status: «blocked» lo pone un bloqueante, no se pone a mano';
 const pending = (n: number) => (n === 1 ? 'una pregunta abierta' : `${n} preguntas abiertas`);
+/** «una pregunta abierta para el dueño y 2 respuestas del dueño»; y el pronombre que la retoma. */
+function held({ open, resolved }: { open: number; resolved: number }): { what: string; them: string } {
+  const answers = resolved === 1 ? 'una respuesta' : `${resolved} respuestas`;
+  const parts = [open ? `${pending(open)} para el dueño` : '', resolved ? `${answers} del dueño` : ''].filter(Boolean);
+  return { what: parts.join(' y '), them: open + resolved === 1 ? 'la' : 'las' };
+}
+/** Clave de un bloqueante para no duplicarlo al re-importar: misma tarea, mismo tipo, misma pregunta. */
+const blockerKey = (nodeId: unknown, kind: unknown, question: unknown) => JSON.stringify([nodeId, kind, question]);
 
 const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>) => WriteValues[K] } = {
   createProject(tx, { pid, name, stages }) {
@@ -216,24 +235,35 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
     return project;
   },
 
-  replaceGraph(tx, { pid, graph: g, actor }) {
+  replaceGraph(tx, { pid, graph: g, actor, exclusive }) {
     const prevRow = tx.one('SELECT * FROM projects WHERE id = ?', pid);
+    if (prevRow && exclusive) fail('conflict', `Ya existe un proyecto «${pid}»; no lo piso`);
     const prev = prevRow ? toProject(prevRow) : null;
-    // reemplazar borra los bloqueantes y los recrea con otros ids: solo el dueño puede hacerlo si hay abiertos
-    const open = prev && actor !== 'owner' ? tx.projectOpenBlockers(pid) : 0;
-    if (open > 0)
-      fail('conflict', `El proyecto tiene ${pending(open)} para el dueño; reemplazarlo las borraría. Espera a que las responda o pídele que lo reemplace él`);
     const stages = g.stages ? toStages(g.stages) : (prev?.stages ?? toStages(undefined));
-    const blockedBy = new Set((g.blockers ?? []).map((b) => b.nodeId));
-    const nodes = g.nodes.map((n, i) => {
-      const node = newNode(pid, n, stages, tx.now, `nodes[${i}].`);
-      if (node.status === 'blocked' && !blockedBy.has(node.id))
-        fail('invalid', `nodes[${i}].status: «blocked» lo pone un bloqueante; agrégalo en blockers`);
-      // una tarea con un bloqueante abierto está bloqueada, la declare así o no
-      if (blockedBy.has(node.id)) node.status = 'blocked';
-      return node;
-    });
+    const nodes = g.nodes.map((n, i) => newNode(pid, n, stages, tx.now, `nodes[${i}].`));
     const byId = new Map(nodes.map((n) => [n.id, n]));
+    // resolver es solo del dueño: el PUT de un agente conserva cada bloqueante (abierto o respondido) con su
+    // id, su respuesta y su valor, así un `wait` en curso los sigue encontrando. Quitar su tarea → 409.
+    const kept = prev && actor !== 'owner' ? tx.all('SELECT * FROM blockers WHERE project_id = ? ORDER BY rowid', pid) : [];
+    const orphan = kept.find((b) => !byId.has(b.node_id as string));
+    if (orphan) {
+      const nid = orphan.node_id as string;
+      const h = held(tx.heldBlockers(pid, nid));
+      fail('conflict', `La tarea «${tx.node(pid, nid).title}» tiene ${h.what}; quitarla del proyecto ${h.them} haría desaparecer. Déjala en el grafo o pídele al dueño que reemplace el proyecto él`);
+    }
+    const keptKeys = new Set(kept.map((b) => blockerKey(b.node_id, b.kind, b.question)));
+    // re-importar el mismo archivo no duplica un bloqueante que ya está (ni reabre uno ya respondido)
+    const fresh = (g.blockers ?? []).filter((b) => !keptKeys.has(blockerKey(b.nodeId, b.kind, b.question)));
+    const keptOpen = kept.filter((b) => b.status === 'open').map((b) => b.node_id as string);
+    const declared = new Set([...(g.blockers ?? []).map((b) => b.nodeId), ...keptOpen]);
+    const blockedBy = new Set([...fresh.map((b) => b.nodeId), ...keptOpen]);
+    nodes.forEach((node, i) => {
+      if (node.status === 'blocked' && !declared.has(node.id))
+        fail('invalid', `nodes[${i}].status: «blocked» lo pone un bloqueante; agrégalo en blockers`);
+      // una tarea con un bloqueante abierto está bloqueada, la declare así o no; si el suyo ya se respondió, sigue
+      if (blockedBy.has(node.id)) node.status = 'blocked';
+      else if (node.status === 'blocked') node.status = 'working';
+    });
     const edges: Edge[] = g.nodes.flatMap((n, i) => [...new Set(n.deps ?? [])].map((d) => ({ projectId: pid, from: d, to: nodes[i]!.id })));
     const project: Project = { id: pid, name: g.name, stages, createdAt: prev?.createdAt ?? tx.now, updatedAt: tx.now };
     tx.all(
@@ -244,7 +274,8 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
     tx.clearGraph(pid);
     for (const n of nodes) tx.insertNode(n);
     for (const e of edges) tx.insertEdge(e);
-    for (const b of g.blockers ?? []) tx.insertBlocker(newBlocker(pid, b.nodeId, b, tx.now));
+    for (const b of kept) tx.restoreBlocker(b);
+    for (const b of fresh) tx.insertBlocker(newBlocker(pid, b.nodeId, b, tx.now));
     for (const m of g.messages ?? [])
       tx.insertMessage({
         id: randomId('m_'),
@@ -323,9 +354,12 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
 
   removeNode(tx, { pid, nid, actor }) {
     const node = tx.node(pid, nid);
-    const open = actor !== 'owner' ? tx.openBlockers(pid, nid) : 0;
-    if (open > 0)
-      fail('conflict', `La tarea «${node.title}» tiene ${pending(open)} para el dueño; borrarla las haría desaparecer. Espera a que las responda o pídele que la borre él`);
+    // resolver es solo del dueño: un agente no hace desaparecer ni sus preguntas abiertas ni sus respuestas
+    const h = actor !== 'owner' ? tx.heldBlockers(pid, nid) : { open: 0, resolved: 0 };
+    if (h.open + h.resolved > 0) {
+      const { what, them } = held(h);
+      fail('conflict', `La tarea «${node.title}» tiene ${what}; borrarla ${them} haría desaparecer. Pídele al dueño que la borre él`);
+    }
     for (const [t, col] of [['messages', 'node_id'], ['blockers', 'node_id'], ['edges', 'from_id'], ['edges', 'to_id'], ['nodes', 'id']] as const)
       tx.all(`DELETE FROM ${t} WHERE project_id = ? AND ${col} = ?`, pid, node.id);
     tx.emit(pid, actor, { type: 'node.removed', payload: { nodeId: node.id } });

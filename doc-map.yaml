@@ -1,0 +1,10 @@
+docs:
+  - doc: docs/api.md
+    sources: [packages/model/src/types.ts, apps/worker/src/app.ts, apps/worker/src/writes.ts]
+    level: 2
+  - doc: docs/dogfooding.md
+    sources: [packages/cli/src, .dagyard.json]
+    level: 2
+  - doc: CLAUDE.md
+    sources: [package.json, docs/dogfooding.md]
+    level: 1

@@ -26,6 +26,8 @@ export interface DagNode {
   team?: string;
   goal?: string;
   reportUrl?: string;
+  /** Detalle técnico (issue o PR). La ficha lo ofrece como «Detalle técnico», sin mostrar la URL. */
+  link?: string;
 }
 
 export interface Edge {

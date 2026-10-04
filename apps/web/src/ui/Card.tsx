@@ -1,5 +1,5 @@
 // La ficha de una tarea: estado, lo que te pide (decisión, revisión o acceso), lo que te escribieron,
-// el informe en Basalt y sus vecinos en el plan. A la derecha en escritorio, hoja inferior en móvil.
+// el informe en Basalt, el detalle técnico y sus vecinos en el plan. A la derecha en escritorio, hoja inferior en móvil.
 
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { Blocker, DagNode, Resolution, Snapshot } from '../data/types';
@@ -133,6 +133,12 @@ function CardBody({ snapshot, node, onClose, onFocus, onResolve }: CardProps & {
       {node.reportUrl && (
         <a className="report" href={node.reportUrl} target="_blank" rel="noopener noreferrer">
           <span>{COPY.report}</span>
+          <span>{COPY.open} ↗</span>
+        </a>
+      )}
+      {node.link && (
+        <a className="report" href={node.link} target="_blank" rel="noopener noreferrer">
+          <span>{COPY.technical}</span>
           <span>{COPY.open} ↗</span>
         </a>
       )}

@@ -9,7 +9,7 @@ import { UnauthorizedError, type DagEvent } from './types';
 const T = '2026-10-04T06:00:00.000Z';
 const wnode = (id: string, extra: Partial<WireNode> = {}): WireNode => ({
   id, projectId: 'p', stage: 'diseno', title: 'Modelo de comisiones', status: 'blocked', progress: 0,
-  team: 'Diseño', goal: null, reportUrl: null, createdAt: T, updatedAt: T, ...extra,
+  team: 'Diseño', goal: null, reportUrl: null, link: null, createdAt: T, updatedAt: T, ...extra,
 });
 const wblocker = (extra: Partial<WireBlocker> = {}): WireBlocker => ({
   id: 'b_1', projectId: 'p', nodeId: 'modelo-de-comisiones', kind: 'decision', question: '¿A quién le cobramos?',

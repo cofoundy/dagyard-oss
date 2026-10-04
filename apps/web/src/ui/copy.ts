@@ -112,6 +112,7 @@ export const COPY = {
   notStarted: 'Todavía no empieza. Arranca sola cuando esté listo lo que necesita.',
   waitsYou: 'espera tu respuesta',
   report: 'Informe en Basalt',
+  technical: 'Detalle técnico',
   open: 'Abrir',
   yourAnswers: 'Tus respuestas',
   messages: 'Lo que te escribieron',

@@ -126,9 +126,9 @@ class Tx {
 
   insertNode(n: DagNode): void {
     this.all(
-      `INSERT INTO nodes (project_id, id, stage, title, status, progress, team, goal, report_url, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      n.projectId, n.id, n.stage, n.title, n.status, n.progress, n.team, n.goal, n.reportUrl, n.createdAt, n.updatedAt,
+      `INSERT INTO nodes (project_id, id, stage, title, status, progress, team, goal, report_url, link, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      n.projectId, n.id, n.stage, n.title, n.status, n.progress, n.team, n.goal, n.reportUrl, n.link, n.createdAt, n.updatedAt,
     );
   }
   insertEdge(e: Edge): void {
@@ -158,7 +158,7 @@ class Tx {
     );
   }
   /** Actualiza solo las columnas pedidas y devuelve el nodo tal como quedó. */
-  updateNode(pid: string, nid: string, cols: Partial<Record<'stage' | 'title' | 'status' | 'progress' | 'team' | 'goal' | 'report_url', V>>, where = ''): DagNode | null {
+  updateNode(pid: string, nid: string, cols: Partial<Record<'stage' | 'title' | 'status' | 'progress' | 'team' | 'goal' | 'report_url' | 'link', V>>, where = ''): DagNode | null {
     const keys = Object.keys(cols) as Array<keyof typeof cols>;
     const set = [...keys.map((k) => `${k} = ?`), 'updated_at = ?'].join(', ');
     const r = this.one(
@@ -199,6 +199,7 @@ function newNode(pid: string, input: NodeInput, stages: Stage[], now: string, at
     team: input.team ?? null,
     goal: input.goal ?? null,
     reportUrl: input.reportUrl ?? null,
+    link: input.link ?? null,
     createdAt: now,
     updatedAt: now,
   };
@@ -393,6 +394,7 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
     if (patch.team !== undefined) cols.team = patch.team;
     if (patch.goal !== undefined) cols.goal = patch.goal;
     if (patch.reportUrl !== undefined) cols.report_url = patch.reportUrl;
+    if (patch.link !== undefined) cols.link = patch.link;
     const status = patch.status ?? prev.status;
     if (status === 'done') cols.progress = 1;
     else if (patch.status === 'working' && prev.status === 'pending') cols.progress = patch.progress ?? 0;

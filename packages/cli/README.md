@@ -14,13 +14,17 @@ Proyecto y servidor, en este orden: la flag (`--project`/`-p`, `--url`, antes o 
 `~/.config/dagyard/{project,url}`.
 
 `.dagyard.json` va en la raíz del repo y se commitea; el CLI usa el primero que encuentra subiendo desde la
-carpeta actual. Así un agente en cualquier repo sabe a qué proyecto de Dagyard pertenece:
+carpeta actual, sin pasar de la raíz del repo (el primer `.git`, carpeta o archivo) ni de `$HOME`. Así un
+agente en cualquier repo sabe a qué proyecto de Dagyard pertenece:
 
 ```json
 { "project": "dagyard", "url": "https://dagyard.cofoundy-dev.workers.dev" }
 ```
 
-Si no es JSON válido, el CLI lo dice con la ruta del archivo. **La key nunca sale de ahí** (aunque la
+Como el archivo viene con el repo, su `url` recibe la key solo si es https y su origen es de confianza:
+`https://dagyard.cofoundy-dev.workers.dev`, `https://dagyard.run`, el de `DAGYARD_URL` o
+`~/.config/dagyard/url`, o una línea de `~/.config/dagyard/trusted-urls`. Si no, el CLI la ignora con un aviso
+en stderr y sigue con lo demás. Si no es JSON válido, el CLI lo dice con la ruta del archivo. **La key nunca sale de ahí** (aunque la
 pongas, se ignora): solo de `DAGYARD_KEY` o `~/.config/dagyard/agent-key`, y nunca se imprime (los errores
 la tapan con `***`).
 
@@ -66,8 +70,9 @@ GitHub con `gh api --paginate` (necesita `gh` autenticado); los PRs del listado 
   Listos; los cerrados como `not_planned` nunca; los de la etiqueta `epic` tampoco). Título = el del issue
   sin el prefijo `algo: `, sin referencias (`desde #35`) y pasado por `legibleTitle` del import; etapa `--stage`, o `construccion` si existe, o la primera; enlace = la URL del issue.
 - **Tarea que ya existe:** nunca le cambia título, etapa, equipo ni misión (los cura la fábrica); el
-  enlace, solo si no tiene.
-- **El estado solo avanza:** cerrado → Lista; abierto con un PR abierto que dice `closes|fixes|resolves|cierra|resuelve #n`
+  enlace, solo si no tiene. Si su enlace es de otro issue (otro repo u otro número; su PR en este repo sí
+  vale), la salta con un aviso.
+- **El estado solo avanza:** cerrado como completado → Lista (como duplicado o no planeado, no); abierto con un PR abierto que dice `closes|fixes|resolves|cierra|resuelve #n`
   (título o cuerpo, sin distinguir mayúsculas) y tarea Pendiente → En progreso. Una tarea con una pregunta
   abierta no cambia de estado: aviso, no error.
 - **Aristas** (solo si las dos tareas existen; nunca borra): «Parte de #n» → la épica `gh-n` necesita esta;

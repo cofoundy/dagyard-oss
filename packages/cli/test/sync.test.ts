@@ -149,6 +149,8 @@ const fakeSource: GithubSource = {
   },
 };
 
+const ghUrl = (n: number) => `https://github.com/cofoundy/dagyard/issues/${n}`;
+
 function issue(n: number, title: string, extra: Partial<GhIssue> = {}): GhIssue {
   return {
     number: n,
@@ -323,10 +325,10 @@ describe('sync: nodos que ya existen (los cura la fábrica)', () => {
   });
 
   it('el estado solo avanza: cerrado → Lista; con PR abierto y Pendiente → En progreso', async () => {
-    nodes.set('gh-1', node('gh-1', { link: 'x' }));
-    nodes.set('gh-2', node('gh-2', { link: 'x' }));
-    nodes.set('gh-3', node('gh-3', { link: 'x', status: 'working' }));
-    nodes.set('gh-4', node('gh-4', { link: 'x', status: 'done' }));
+    nodes.set('gh-1', node('gh-1', { link: ghUrl(1) }));
+    nodes.set('gh-2', node('gh-2', { link: ghUrl(2) }));
+    nodes.set('gh-3', node('gh-3', { link: ghUrl(3), status: 'working' }));
+    nodes.set('gh-4', node('gh-4', { link: ghUrl(4), status: 'done' }));
     ghIssues = [
       issue(1, 'Uno', { state: 'closed', stateReason: 'completed' }),
       issue(2, 'Dos'),
@@ -342,7 +344,7 @@ describe('sync: nodos que ya existen (los cura la fábrica)', () => {
   });
 
   it('un cerrado como not_planned no marca Lista el nodo', async () => {
-    nodes.set('gh-1', node('gh-1', { link: 'x' }));
+    nodes.set('gh-1', node('gh-1', { link: ghUrl(1) }));
     ghIssues = [issue(1, 'Uno', { state: 'closed', stateReason: 'not_planned' })];
     await sync();
     expect(nodes.get('gh-1')?.status).toBe('pending');
@@ -390,6 +392,53 @@ describe('sync: nodos que ya existen (los cura la fábrica)', () => {
   });
 });
 
+describe('sync: choques y cierres que no cuentan (#50)', () => {
+  it('un nodo cuyo enlace apunta a otro repo se salta con aviso: ni estado, ni aristas, ni cuenta', async () => {
+    nodes.set('gh-1', node('gh-1', { link: 'https://github.com/otra/cosa/issues/1' }));
+    ghIssues = [issue(1, 'Uno', { state: 'closed', stateReason: 'completed' }), issue(2, 'Dos', { body: 'depende de #1' })];
+    const r = await sync();
+    expect(r.code).toBe(EXIT.ok);
+    expect(nodes.get('gh-1')?.status).toBe('pending');
+    expect(edges).toEqual([]);
+    expect(r.stdout).toContain('Sincronicé 1 issues: 1 nuevas');
+    expect(r.stdout).toMatch(/Avisos[\s\S]*gh-1[\s\S]*otra\/cosa/);
+    expect(writes().map((c) => c.path)).toEqual(['/api/projects/dagyard/nodes']);
+  });
+
+  it('un enlace a OTRO issue del mismo repo también es choque', async () => {
+    nodes.set('gh-1', node('gh-1', { link: ghUrl(77) }));
+    ghIssues = [issue(1, 'Uno', { state: 'closed', stateReason: 'completed' })];
+    const r = await sync();
+    expect(nodes.get('gh-1')?.status).toBe('pending');
+    expect(r.stdout).toContain('Avisos');
+  });
+
+  it('un enlace al PR del mismo repo no es choque: se sincroniza', async () => {
+    nodes.set('gh-1', node('gh-1', { link: 'https://github.com/cofoundy/dagyard/pull/9' }));
+    ghIssues = [issue(1, 'Uno', { state: 'closed', stateReason: 'completed' })];
+    await sync();
+    expect(nodes.get('gh-1')).toMatchObject({ status: 'done', link: 'https://github.com/cofoundy/dagyard/pull/9' });
+  });
+
+  it('cerrado como duplicate no es completado: no marca Lista ni se crea con --all', async () => {
+    nodes.set('gh-1', node('gh-1', { link: ghUrl(1) }));
+    ghIssues = [
+      issue(1, 'Uno', { state: 'closed', stateReason: 'duplicate' }),
+      issue(2, 'Dos', { state: 'closed', stateReason: 'duplicate' }),
+    ];
+    await sync(['--all']);
+    expect(nodes.get('gh-1')?.status).toBe('pending');
+    expect(nodes.has('gh-2')).toBe(false);
+  });
+
+  it('cerrado con state_reason null (issues viejos) sí es completado', async () => {
+    nodes.set('gh-1', node('gh-1', { link: ghUrl(1) }));
+    ghIssues = [issue(1, 'Uno', { state: 'closed', stateReason: null })];
+    await sync();
+    expect(nodes.get('gh-1')?.status).toBe('done');
+  });
+});
+
 describe('sync: aristas', () => {
   it('«Parte de #n» → la épica necesita sus partes; «depende de / blocked by / bloqueado por #n» → n antes', async () => {
     ghIssues = [
@@ -406,7 +455,7 @@ describe('sync: aristas', () => {
 
   it('solo si ambos nodos existen; nunca borra', async () => {
     edges.push({ projectId: 'dagyard', from: 'gh-1', to: 'otro' });
-    nodes.set('gh-1', node('gh-1', { link: 'x' }));
+    nodes.set('gh-1', node('gh-1', { link: ghUrl(1) }));
     nodes.set('otro', node('otro'));
     ghIssues = [issue(1, 'Uno', { body: 'depende de #999' })];
     await sync();
@@ -450,7 +499,7 @@ describe('sync: founder-input → decisión', () => {
   });
 
   it('no re-pregunta lo que el dueño ya respondió (contrato #31)', async () => {
-    nodes.set('gh-7', node('gh-7', { link: 'x', status: 'working' }));
+    nodes.set('gh-7', node('gh-7', { link: ghUrl(7), status: 'working' }));
     blockers.push(blocker('gh-7', '¿Seguimos?', 'resolved'));
     ghIssues = [issue(7, '¿Seguimos?', { labels: ['founder-input'] })];
     const r = await sync();
@@ -460,8 +509,8 @@ describe('sync: founder-input → decisión', () => {
   });
 
   it('si el nodo ya tiene CUALQUIER decisión (abierta o resuelta, con otro texto), no abre otra', async () => {
-    nodes.set('gh-7', node('gh-7', { link: 'x', status: 'working' }));
-    nodes.set('gh-25', node('gh-25', { link: 'x', status: 'blocked' }));
+    nodes.set('gh-7', node('gh-7', { link: ghUrl(7), status: 'working' }));
+    nodes.set('gh-25', node('gh-25', { link: ghUrl(25), status: 'blocked' }));
     blockers.push(blocker('gh-7', 'Pregunta curada por la fábrica', 'resolved'));
     blockers.push(blocker('gh-25', '¿Abrimos el código ya?', 'open'));
     ghIssues = [
@@ -475,7 +524,7 @@ describe('sync: founder-input → decisión', () => {
   });
 
   it('un bloqueante que no es decisión (revisión o acceso) no cuenta: la decisión se abre', async () => {
-    nodes.set('gh-7', node('gh-7', { link: 'x', status: 'working' }));
+    nodes.set('gh-7', node('gh-7', { link: ghUrl(7), status: 'working' }));
     blockers.push({ ...blocker('gh-7', 'Revisa el flujo', 'resolved'), kind: 'review' });
     ghIssues = [issue(7, '¿Seguimos?', { labels: ['founder-input'] })];
     await sync();
@@ -483,7 +532,7 @@ describe('sync: founder-input → decisión', () => {
   });
 
   it('un issue cerrado no abre pregunta', async () => {
-    nodes.set('gh-7', node('gh-7', { link: 'x', status: 'done' }));
+    nodes.set('gh-7', node('gh-7', { link: ghUrl(7), status: 'done' }));
     ghIssues = [issue(7, '¿Seguimos?', { labels: ['founder-input'], state: 'closed', stateReason: 'completed' })];
     await sync();
     expect(blockers).toHaveLength(0);
@@ -557,6 +606,9 @@ describe('sync: errores de uso', () => {
     expect(code).toBe(EXIT.usage);
     expect(out).toContain('--github');
     expect((await sync(['--github', 'solo-un-nombre'])).code).toBe(EXIT.usage);
+    for (const bad of ['cofoundy/..', '../dagyard', 'cofoundy/a..b', './x']) {
+      expect((await sync(['--github', bad])).code).toBe(EXIT.usage);
+    }
     expect(calls).toHaveLength(0);
   });
 

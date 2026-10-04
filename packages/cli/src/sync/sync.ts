@@ -8,6 +8,8 @@
  * - El estado solo avanza: cerrado (completado) → `done`; abierto con un PR abierto que lo cierra y nodo
  *   `pending` → `working`. Con un bloqueante abierto el servidor responde 409: aviso, no error.
  * - La etiqueta `epic` no crea nodo; si ya existe, se sincroniza normal.
+ * - Un nodo cuyo `link` es de otro issue (otro repo con el mismo número) se salta con aviso (#50).
+ * - Completado = `state_reason` `completed` o null; `not_planned` y `duplicate` no cuentan (#50).
  * - Aristas solo si ambos nodos existen; nunca borra. `founder-input` → bloqueante `decision`, solo si el
  *   nodo no tiene ninguna decisión (abierta o resuelta, con cualquier texto: contrato #31).
  */
@@ -77,6 +79,8 @@ export async function syncGithub(api: SyncApi, source: GithubSource, projectId: 
     warnings: [],
   };
   const created = new Set<string>();
+  /** nodos `gh-<n>` que son de otro issue (otro repo con el mismo número): no se tocan ni se enlazan */
+  const foreign = new Set<string>();
   const updated = new Set<string>();
   const considered: GhIssue[] = [];
 
@@ -97,7 +101,8 @@ export async function syncGithub(api: SyncApi, source: GithubSource, projectId: 
   for (const issue of issues) {
     const id = nodeIdOf(issue.number);
     const existing = nodes.get(id);
-    const completed = issue.state === 'closed' && issue.stateReason !== 'not_planned';
+    // completado = `completed` o null (issues viejos); `not_planned` y `duplicate` no cuentan
+    const completed = issue.state === 'closed' && (issue.stateReason === 'completed' || issue.stateReason === null);
     if (!existing) {
       if (issue.state === 'closed' && (!opts.all || !completed)) continue;
       if (issue.labels.includes(EPIC_LABEL)) continue;
@@ -114,6 +119,11 @@ export async function syncGithub(api: SyncApi, source: GithubSource, projectId: 
       nodes.set(id, { id, status: input.status!, link: input.link! });
       created.add(id);
       report.actions.push(`nuevo ${id} «${input.title}» (${STATUS_HUMAN[input.status!]})`);
+      continue;
+    }
+    if (existing.link && linkClash(existing.link, issue, opts.repo)) {
+      foreign.add(id);
+      report.warnings.push(`${id} apunta a ${existing.link}, no a ${issue.url}: lo salté (¿otro repo con el mismo número?)`);
       continue;
     }
     considered.push(issue);
@@ -162,7 +172,7 @@ export async function syncGithub(api: SyncApi, source: GithubSource, projectId: 
       ...refs.dependsOn.map((n): [string, string] => [nodeIdOf(n), self]),
     ];
     for (const [from, to] of wanted) {
-      if (from === to || !nodes.has(from) || !nodes.has(to)) continue;
+      if (from === to || !nodes.has(from) || !nodes.has(to) || foreign.has(from) || foreign.has(to)) continue;
       if (edges.some((e) => e.from === from && e.to === to)) continue;
       if (dry) {
         if (wouldCreateCycle(edges, from, to)) {
@@ -213,6 +223,20 @@ export async function syncGithub(api: SyncApi, source: GithubSource, projectId: 
     else report.unchanged.push(id);
   }
   return report;
+}
+
+/**
+ * El enlace del nodo es de otro issue: fuera de `github.com/<repo>/` o hacia otro número de issue del mismo
+ * repo. Un enlace al PR del mismo repo no es choque (el nodo puede enlazar su issue o su PR).
+ */
+export function linkClash(link: string, issue: Pick<GhIssue, 'number' | 'url'>, repo: string): boolean {
+  const norm = (u: string) => u.trim().replace(/\/+$/, '').toLowerCase();
+  const l = norm(link);
+  if (l === norm(issue.url)) return false;
+  const base = `https://github.com/${repo.toLowerCase()}/`;
+  if (!l.startsWith(base)) return true;
+  const m = /^issues\/(\d+)(?:[/?#]|$)/.exec(l.slice(base.length));
+  return !!m && Number(m[1]) !== issue.number;
 }
 
 function hasOpenBlocker(blockers: Blocker[], nodeId: string): boolean {

@@ -16,4 +16,5 @@ export interface Env {
   VAULT_KEY: string;
 }
 
-export type AppEnv = { Bindings: Env; Variables: { role: Role } };
+/** `session`: hash del id de la sesión del navegador, si la auth vino por cookie. */
+export type AppEnv = { Bindings: Env; Variables: { role: Role; session?: string } };

@@ -13,8 +13,14 @@ export default defineConfig({
         target: api,
         changeOrigin: true,
         ws: true,
-        // el Worker exige que el upgrade con cookie venga de su mismo origen (#14): el proxy se lo da
-        configure: (proxy) => proxy.on('proxyReqWs', (req) => req.setHeader('origin', new URL(api).origin)),
+        // con la cookie, el Worker exige su mismo origen en el WebSocket y en las escrituras: el proxy se lo da
+        configure: (proxy) => {
+          const origin = new URL(api).origin;
+          proxy.on('proxyReqWs', (req) => req.setHeader('origin', origin));
+          proxy.on('proxyReq', (req) => {
+            if (req.getHeader('origin')) req.setHeader('origin', origin);
+          });
+        },
       },
     },
   },

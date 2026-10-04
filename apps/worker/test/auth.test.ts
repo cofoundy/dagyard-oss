@@ -29,7 +29,7 @@ describe('health y auth', () => {
     const res = await api('/api/session', { method: 'POST', body: { token: 'test-owner-token' }, headers: {} });
     expect(res.status).toBe(204);
     const setCookie = res.headers.get('set-cookie')!;
-    expect(setCookie).toMatch(/^dagyard_session=/);
+    expect(setCookie).toMatch(/^__Host-dagyard_session=/);
     expect(setCookie).toMatch(/HttpOnly/i);
     expect(setCookie).toMatch(/Secure/i);
     expect(setCookie).toMatch(/SameSite=Lax/i);
@@ -38,11 +38,11 @@ describe('health y auth', () => {
 
     const cookie = setCookie.split(';')[0]!;
     expect(await json(await api('/api/me', { headers: { cookie } }), 200)).toEqual({ role: 'owner' });
-    await json(await api('/api/me', { headers: { cookie: 'dagyard_session=falsa' } }), 401);
+    await json(await api('/api/me', { headers: { cookie: '__Host-dagyard_session=falsa' } }), 401);
 
     const out = await api('/api/session', { method: 'DELETE', headers: { cookie } });
     expect(out.status).toBe(204);
-    expect(out.headers.get('set-cookie')).toMatch(/dagyard_session=;.*Max-Age=0/i);
+    expect(out.headers.get('set-cookie')).toMatch(/__Host-dagyard_session=;.*Max-Age=0/i);
   });
 
   it('?token= no sirve fuera del WebSocket', async () => {

@@ -36,9 +36,10 @@ Dos credenciales, ambas secrets del Worker. Ninguna se commitea ni se pega en Ba
 Formas de presentarla (el servidor prueba en este orden):
 
 1. Header `Authorization: Bearer <token>` — el CLI usa esta.
-2. Cookie `dagyard_session` (httpOnly, Secure, SameSite=Lax), que crea `POST /api/session`. La UI usa
-   esta: el humano pega el token una vez y el navegador lo recuerda; el WebSocket la manda solo.
-   Solo vale como `owner`.
+2. Cookie `__Host-dagyard_session` (httpOnly, Secure, SameSite=Lax, `Path=/`, sin `Domain`), que crea
+   `POST /api/session`. La UI usa esta: el humano pega el token una vez y el navegador lo recuerda; el
+   WebSocket la manda solo. Solo vale como `owner`. El prefijo `__Host-` impide que otro subdominio
+   plante una cookie con ese nombre.
 3. Solo en el upgrade del WebSocket, para clientes sin cookie: subprotocolo
    `new WebSocket(url, ['dagyard', 'token.' + token])` (el servidor responde `Sec-WebSocket-Protocol: dagyard`
    y el token no queda en ninguna URL), o, como último recurso, la query `?token=<token>`.
@@ -54,15 +55,21 @@ Sin el secret `VAULT_KEY`, resolver un acceso o recibir su valor responde `500`:
 |---|---|---|
 | `POST /api/session` | `{"token": "<owner-token>"}` | `204` + `Set-Cookie`. Token malo (o la clave del agente) → `401` |
 | `DELETE /api/session` | — | `204`: cierra **esa** sesión en el servidor y borra la cookie. Sin cookie, también `204` |
-| `DELETE /api/session?all=1` | — | `204`: cierra **todas** las sesiones. Exige credencial de dueño (cookie viva o Bearer): sin ella `401`, con la del agente `403` |
+| `DELETE /api/session?all=1` | — | `204`: cierra **todas** las sesiones. Exige credencial de dueño (cookie viva o Bearer): sin ella `401`, con la del agente `403`, con cookie y un `Origin` ajeno `403` |
 | `GET /api/me` | — | `{"role": "owner" \| "agent"}` o `401` |
 
 Cada login abre una sesión nueva: la cookie lleva un id aleatorio de 256 bits (base64url) y el Durable
 Object `Store` guarda solo su SHA-256, con su vencimiento a los **30 días** (el mismo `Max-Age` de la
 cookie) y una huella del `OWNER_TOKEN`. Una sesión cerrada, vencida o abierta con un `OWNER_TOKEN` que
 ya se rotó responde `401` aunque alguien haya copiado la cookie; la UI vuelve a pedir la clave. Las
-vencidas se borran solas al abrir otra sesión o al intentar usarlas. Cerrar sesión no corta un
-WebSocket que ya estaba abierto: deja de servir al reconectar.
+vencidas se borran solas al abrir otra sesión o al intentar usarlas. Un WebSocket abierto con esa
+cookie también se cierra (ver §Tiempo real).
+
+**Escrituras con la cookie:** como `workers.dev` está en la Public Suffix List, el «sitio» de la preview es
+`cofoundy-dev.workers.dev`: cualquier otro Worker de la cuenta es el mismo sitio y `SameSite=Lax` no lo frena. Por eso, si la auth vino por la cookie y el
+método no es `GET`/`HEAD`, un `Origin` presente que no esté permitido (mismo origen, `ALLOWED_ORIGINS`
+o localhost en dev; un origen opaco `null` nunca) responde `403 forbidden`. Sin `Origin` pasa: un
+navegador siempre lo manda en una petición entre orígenes. Bearer no mira el `Origin`.
 
 ## Rutas
 
@@ -159,8 +166,15 @@ emite una escritura. Todas las escrituras de la API, vengan de la UI o del CLI, 
 que la URL pedida o uno de la var `ALLOWED_ORIGINS` del Worker (lista por comas, vacía por defecto en
 `wrangler.toml`); si no, o sin `Origin`, `403 forbidden`. En dev, si se pide a `localhost`/`127.0.0.1`,
 vale cualquier origen localhost. Bearer, subprotocolo y `?token=` no miran el `Origin` (un sitio ajeno no
-tiene el token). El proxy de Vite (`apps/web/vite.config.ts`) reescribe el `Origin` del upgrade al de su
-target, así la UI en dev funciona contra un Worker local o remoto.
+tiene el token). Un origen opaco (`Origin: null`, `file:`, `data:`) nunca vale, ni desde `ALLOWED_ORIGINS`.
+El proxy de Vite (`apps/web/vite.config.ts`) reescribe el `Origin` del upgrade y de las peticiones al de
+su target, así la UI en dev funciona contra un Worker local o remoto.
+
+**Sesión viva:** un socket abierto con la cookie se revalida contra el Store antes de cada evento. Si su
+sesión se cerró (logout o `?all=1`), venció o es de un `OWNER_TOKEN` rotado, el servidor lo cierra con
+código **`4001`** sin mandarle el evento; al reconectar, el upgrade responde `401` y la UI vuelve a pedir
+la clave. Para no sumar latencia, una sesión vista viva se confía hasta 30 s: el cierre llega en el primer
+evento después de esa ventana. (`4004` = el proyecto se borró.)
 
 **Frames servidor → cliente** (JSON, tipo `ServerFrame`):
 

@@ -135,4 +135,8 @@ export const COPY = {
   started: 'arrancó',
   added: 'se agregó al plan',
   removed: 'salió del plan',
+  // avisos fuera de la pantalla (#47)
+  noticeTitle: 'Te espera',
+  notifyMe: 'Avisarme',
+  notifyMeHint: 'Te aviso en este navegador cuando algo te espere, aunque estés en otra pestaña.',
 } as const;

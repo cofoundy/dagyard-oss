@@ -8,6 +8,15 @@ import { ApiError, type AppApi } from '../data/session';
 import { ProjectStore, type StoreChange, type StoreState } from '../data/store';
 import { UnauthorizedError, type Blocker, type ProjectSummary, type Resolution } from '../data/types';
 import { nodeById, openBlockers, stageIndex, toSceneGraph } from '../data/view';
+import {
+  isLooking,
+  newlyOpened,
+  notifyPermission,
+  requestNotifyPermission,
+  showAttention,
+  showNotice,
+  type NotifyPermission,
+} from './attention';
 import { Card } from './Card';
 import { COPY } from './copy';
 import { feedbackFor, resolvedToast, type ToastSpec } from './feedback';
@@ -126,8 +135,31 @@ export function Workspace({ api, sky, handlers, demo, onUnauthorized, onLogout }
   const pendingPulses = useRef<Array<{ nodeId: string; kind: Pulse }>>([]);
   const mine = useRef(new Set<string>());
 
+  // Avisos del navegador abiertos de este proyecto, por bloqueante (uno por pedido, nunca dos).
+  const notices = useRef(new Map<string, Notification | null>());
+  const focusRef = useRef<(id: string) => void>(() => {});
+
   const onChange = useRef<(c: StoreChange) => void>(() => {});
   onChange.current = ({ prev, next, event }) => {
+    const opened = newlyOpened(prev, next, event);
+    // Solo si no estás mirando: con la página al frente ya están el aviso en pantalla y la cuenta del HUD.
+    if (opened && !notices.current.has(opened.blocker.id) && !isLooking(document)) {
+      const notice = showNotice(
+        {
+          blockerId: opened.blocker.id,
+          nodeId: opened.node.id,
+          taskTitle: opened.node.title,
+          kind: opened.blocker.kind,
+          projectName: next.project.name,
+        },
+        (nodeId) => focusRef.current(nodeId),
+      );
+      if (notice) notices.current.set(opened.blocker.id, notice);
+    }
+    if (event.type === 'blocker.resolved') {
+      // Ya no te espera: el aviso que quedó en el centro de notificaciones se va.
+      notices.current.get(event.blocker.id)?.close();
+    }
     const fb = feedbackFor(prev, next, event);
     if (fb.pulse) pendingPulses.current.push(fb.pulse);
     // Lo que resolviste desde aquí ya tiene su aviso; el eco del servidor no lo repite.
@@ -143,7 +175,11 @@ export function Workspace({ api, sky, handlers, demo, onUnauthorized, onLogout }
     });
     setStore(s);
     s.start().catch(() => {});
+    const open = notices.current;
     return () => {
+      // Al cambiar de proyecto, los avisos del anterior ya no abren nada aquí.
+      for (const n of open.values()) n?.close();
+      open.clear();
       s.dispose();
       setStore((cur) => (cur === s ? null : cur));
     };
@@ -178,6 +214,8 @@ export function Workspace({ api, sky, handlers, demo, onUnauthorized, onLogout }
     },
     [snapshot, sky],
   );
+
+  focusRef.current = focus;
 
   const overview = useCallback(() => {
     setFocusId(null);
@@ -235,6 +273,26 @@ export function Workspace({ api, sky, handlers, demo, onUnauthorized, onLogout }
   );
 
   /* ---------------------------------------------------------------- acciones */
+
+  /* ---------------------------------------------------------------- pestaña y avisos del navegador */
+
+  // La cuenta del proyecto que miras: «(2) Dagyard» y el punto ámbar, también con la pestaña de fondo.
+  const openCount = snapshot ? openBlockers(snapshot).length : 0;
+  useEffect(() => showAttention(document, openCount), [openCount]);
+  useEffect(() => () => showAttention(document, 0), []);
+
+  const [permission, setPermission] = useState<NotifyPermission>(notifyPermission);
+  useEffect(() => {
+    // Si lo cambias desde los ajustes del navegador, el botón se entera al volver a la pestaña.
+    const sync = () => setPermission(notifyPermission());
+    document.addEventListener('visibilitychange', sync);
+    window.addEventListener('focus', sync);
+    return () => {
+      document.removeEventListener('visibilitychange', sync);
+      window.removeEventListener('focus', sync);
+    };
+  }, []);
+  const askPermission = () => void requestNotifyPermission().then(setPermission);
 
   const waitingIds = useMemo(() => (snapshot ? [...new Set(openBlockers(snapshot).map((b) => b.nodeId))] : []), [snapshot]);
 
@@ -320,7 +378,13 @@ export function Workspace({ api, sky, handlers, demo, onUnauthorized, onLogout }
         onPick={pickProject}
         onLogout={onLogout}
       />
-      <Actions ref={actionsRef} waiting={waitingIds.length} onWaiting={nextWaiting} onOverview={overview} />
+      <Actions
+        ref={actionsRef}
+        waiting={waitingIds.length}
+        onWaiting={nextWaiting}
+        onOverview={overview}
+        onNotify={permission === 'default' ? askPermission : undefined}
+      />
       <Toasts items={toasts} onOpen={focus} />
       {snapshot && <Card snapshot={snapshot} node={focusedNode} onClose={overview} onFocus={focus} onResolve={resolve} />}
       {demo && (

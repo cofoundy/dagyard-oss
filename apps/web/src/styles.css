@@ -95,6 +95,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 .waiting .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 10px var(--amber); animation: beat 1.4s ease-in-out infinite; }
 .waiting.calm { color: var(--mute); border-color: var(--line); cursor: default; }
 .waiting.calm .dot { background: var(--mute); box-shadow: none; animation: none; }
+/* «Avisarme»: discreto, del mismo alto que los otros botones (el ícono mide lo que la letra) */
+.notify { color: var(--mute); }
+.notify:hover { color: var(--text); }
+.notify svg { width: 12px; height: 12px; flex: none; }
 
 /* ---------------------------------------------------------------- carril de etapas */
 .rail { left: var(--gutter); right: var(--gutter); bottom: var(--bottom); display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; }
@@ -212,8 +216,14 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
   .now .live { display: none; }
   .note { display: none; }
   .actions { top: calc(96px + env(safe-area-inset-top, 0px)); right: 16px; }
+  .notify .lbl { display: none; }
   .brand { max-width: calc(100vw - 32px); }
   .picker { left: 0; }
+}
+/* 360 px con «Nada te espera»: la campana y los espacios se angostan para que la fila respete el margen */
+@media (max-width: 380px) {
+  .actions { gap: 6px; }
+  .notify { padding: 10px 9px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }

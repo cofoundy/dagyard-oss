@@ -111,7 +111,8 @@ export const COPY = {
   unlocks: 'Cuando esté lista, arranca',
   notStarted: 'Todavía no empieza. Arranca sola cuando esté listo lo que necesita.',
   waitsYou: 'espera tu respuesta',
-  report: 'Informe en Basalt',
+  report: 'Informe',
+  reportBasalt: 'Informe en Basalt',
   technical: 'Detalle técnico',
   open: 'Abrir',
   yourAnswers: 'Tus respuestas',
@@ -140,3 +141,16 @@ export const COPY = {
   notifyMe: 'Avisarme',
   notifyMeHint: 'Te aviso en este navegador cuando algo te espere, aunque estés en otra pestaña.',
 } as const;
+
+const BASALT_HOST = 'basalt.cofoundy.ai';
+
+/** «Informe en Basalt» solo si el enlace vive en Basalt; un PR, un issue o una URL inválida dicen «Informe» (#59). */
+export function reportLabel(url: string): string {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return COPY.report;
+  }
+  return host === BASALT_HOST || host.endsWith(`.${BASALT_HOST}`) ? COPY.reportBasalt : COPY.report;
+}

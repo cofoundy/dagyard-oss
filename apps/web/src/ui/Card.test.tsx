@@ -7,7 +7,8 @@ import { Card } from './Card';
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const ISSUE = 'https://github.com/cofoundy/dagyard/issues/45';
-const REPORT = 'https://basalt.example/r/1';
+const REPORT = 'https://basalt.cofoundy.ai/r/1';
+const PR = 'https://github.com/cofoundy/dagyard/pull/50';
 
 const node = (extra: Partial<DagNode> = {}): DagNode => ({
   id: 'sincronizar-issues',
@@ -67,5 +68,36 @@ describe('ficha: detalle técnico', () => {
   it('sin link, no hay detalle técnico', () => {
     render(node({ reportUrl: REPORT }));
     expect(links().map((a) => a.textContent)).toEqual(['Informe en BasaltAbrir ↗']);
+  });
+});
+
+describe('ficha: rótulo del informe según dónde vive', () => {
+  const inline = () => [...host.querySelectorAll<HTMLAnchorElement>('a.inline-report')];
+  const withMessage = (reportUrl: string) => {
+    const n = node({ reportUrl });
+    const s = snapshot(n);
+    s.messages = [{ id: 'm_1', nodeId: n.id, from: 'Equipo de Construcción', text: 'Listo.', reportUrl, at: '2026-10-04T12:00:00Z' }];
+    const noop = () => {};
+    act(() => root.render(<Card snapshot={s} node={n} onClose={noop} onFocus={noop} onResolve={async () => {}} />));
+  };
+
+  it('un informe que es un PR de GitHub no dice «Basalt», ni en la ficha ni en el mensaje', () => {
+    withMessage(PR);
+    expect(links().map((a) => a.textContent)).toEqual(['InformeAbrir ↗']);
+    expect(inline().map((a) => a.textContent)).toEqual(['Informe ↗']);
+    expect(host.textContent).not.toMatch(/Basalt/);
+  });
+
+  it('un informe en Basalt conserva «Informe en Basalt», también en un subdominio', () => {
+    withMessage('https://dagyard.basalt.cofoundy.ai/r/1');
+    expect(links().map((a) => a.textContent)).toEqual(['Informe en BasaltAbrir ↗']);
+    expect(inline().map((a) => a.textContent)).toEqual(['Informe en Basalt ↗']);
+  });
+
+  it('un host que solo se parece a Basalt, o una URL inválida, dice «Informe»', () => {
+    for (const url of ['https://basalt.cofoundy.ai.evil.com/r/1', 'https://notbasalt.cofoundy.ai/r/1', 'https://basalt.example/r/1', 'no es una url']) {
+      render(node({ reportUrl: url }));
+      expect(links().map((a) => a.textContent)).toEqual(['InformeAbrir ↗']);
+    }
   });
 });

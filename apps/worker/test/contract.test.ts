@@ -1,5 +1,6 @@
 import { demoProject, type BlockerWaitResult, type NextResult, type ProjectGraphInput, type ProjectSnapshot } from '@dagyard/model';
 import { describe, expect, it } from 'vitest';
+import { buildImport } from '../../../packages/cli/src/tasks/import.js';
 import { AGENT, OWNER, api, json, seedDemo, uniquePid } from './helpers.js';
 
 const open = (s: ProjectSnapshot) => s.blockers.filter((b) => b.status === 'open');
@@ -280,5 +281,25 @@ describe('un PUT no deja una tarea blocked al 100 %', () => {
     expect(r.error.message).toMatch(/quítala de blockers o no cierres la tarea/);
     expect(r.error.message).not.toMatch(/hasta que la responda/);
     expect((await snap(pid)).seq).toBe(resolved.seq);
+  });
+});
+
+// #35: lo que arma `dagyard import` lo acepta el servidor, y re-importarlo no duplica la decisión
+describe('PUT de un grafo de dagyard import', () => {
+  const files = [
+    { file: 'a.md', text: '---\nid: T-1\nstatus: ready\n---\n# Base' },
+    { file: 'b.md', text: '---\nid: T-2\nstatus: blocked  # ESCALATION REQUIRED\ndeps: [T-1]\n---\n# Escalada' },
+  ];
+
+  it('una tarea con escalación → 200 con su decisión abierta; re-importar como agente no la duplica', async () => {
+    const pid = uniquePid();
+    const { graph } = buildImport(files, { dirName: 'escalada' });
+    const s = await json<ProjectSnapshot>(await put(pid, graph), 200);
+    expect(s.nodes.find((n) => n.id === 't-2')?.status).toBe('blocked');
+    expect(open(s)).toHaveLength(1);
+    expect(open(s)[0]).toMatchObject({ nodeId: 't-2', kind: 'decision', options: ['Sigue', 'Déjala en pausa'] });
+
+    const again = await json<ProjectSnapshot>(await put(pid, buildImport(files, { dirName: 'escalada' }).graph), 200);
+    expect(again.blockers.map((b) => b.id)).toEqual(s.blockers.map((b) => b.id));
   });
 });

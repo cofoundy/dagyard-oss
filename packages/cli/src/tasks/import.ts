@@ -6,7 +6,7 @@
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import type { NodeInput, NodeStatus, ProjectGraphInput, StageInput } from '@dagyard/model';
+import type { BlockerInput, NodeInput, NodeStatus, ProjectGraphInput, StageInput } from '@dagyard/model';
 import { LIMITS } from '@dagyard/model';
 import { slugify } from '@dagyard/model';
 import { humanize, legibleTitle, oneLine, parseTask, type ParsedTask } from './parse.js';
@@ -131,6 +131,12 @@ export function buildImport(files: TaskFile[], opts: ImportOptions = {}): Import
     };
   });
 
+  // el servidor no acepta un «blocked» sin bloqueante (#35): cada tarea que te espera lleva su decisión. La
+  // pregunta sale solo del título, así re-importar el mismo directorio no la duplica
+  const blockers: Array<BlockerInput & { nodeId: string }> = nodes
+    .filter((n) => n.status === 'blocked')
+    .map((n) => ({ nodeId: n.id!, ...humanDecision(n.title) }));
+
   const projectId = slugify(opts.projectId || opts.dirName || 'proyecto');
   const name = oneLine(opts.name ?? humanize(opts.dirName ?? projectId), LIMITS.name);
 
@@ -139,7 +145,7 @@ export function buildImport(files: TaskFile[], opts: ImportOptions = {}): Import
 
   return {
     projectId,
-    graph: { name, stages, nodes },
+    graph: { name, stages, nodes, ...(blockers.length ? { blockers } : {}) },
     stats: {
       nodes: nodes.length,
       edges: nodes.reduce((n, node) => n + (node.deps?.length ?? 0), 0),
@@ -160,6 +166,15 @@ function effectiveStatus(t: ParsedTask, myDeps: number[], tasks: ParsedTask[]): 
   if (t.status !== 'blocked') return t.status;
   if (t.needsHuman) return 'blocked';
   return myDeps.some((d) => tasks[d]!.status !== 'done') ? 'pending' : 'blocked';
+}
+
+/** La decisión que una tarea «Te espera» le pide al PM, en su idioma. */
+function humanDecision(title: string): BlockerInput {
+  return {
+    kind: 'decision',
+    question: oneLine(`«${title}» necesita tu decisión para seguir. ¿Sigue o la dejas en pausa?`, LIMITS.question),
+    options: ['Sigue', 'Déjala en pausa'],
+  };
 }
 
 /** Aristas de retroceso (DFS en orden de archivo) que hay que quitar para que sea un DAG. */

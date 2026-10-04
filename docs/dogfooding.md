@@ -11,6 +11,7 @@ lo mira en la URL y contesta ahí lo que es suyo. Épica: #44.
 | Nodo `gh-<n>` | la tarea del issue `#n` de `cofoundy/dagyard`. Los nodos sin issue (`intencion`, `spec`, `v1`…) los cura la fábrica a mano |
 | `.dagyard.json` | en la raíz del repo: `{"project": "dagyard", "url": "…"}`. El CLI lo busca subiendo desde el cwd, así que dentro del repo (o de cualquier worktree suyo) no hace falta `--project` ni `DAGYARD_URL` |
 | API key | `~/.config/dagyard/agent-key` (o `DAGYARD_KEY`). Nunca va en `.dagyard.json`, en un commit ni en un mensaje |
+| URL de confianza | la key viaja a la `url` de `.dagyard.json` solo si es https y su origen es de confianza: la preview, `https://dagyard.run`, el de `DAGYARD_URL`/`~/.config/dagyard/url` o una línea de `~/.config/dagyard/trusted-urls`. Si no, el CLI la ignora y avisa. La búsqueda sube hasta la raíz del repo (el primer `.git`) o `$HOME`, nunca más arriba: un `.dagyard.json` plantado en `/tmp` no te roba la key |
 | Precedencia | `--project`/`--url` > `DAGYARD_PROJECT`/`DAGYARD_URL` > `.dagyard.json` > `~/.config/dagyard/{project,url}` |
 | `dagyard sync --github cofoundy/dagyard` | lo corre la fábrica: crea o actualiza los nodos `gh-<n>` desde la cola de issues (abajo) |
 
@@ -59,8 +60,10 @@ Usa la API granular (nunca reemplaza el grafo), así cada cambio llega en vivo y
 - **Nodos.** Un issue abierto sin nodo crea `gh-<n>` (título del issue sin el prefijo `algo: `, etapa
   `--stage` o Construcción, enlace técnico al issue). Los cerrados solo con `--all`; los cerrados como
   «no planeado», nunca. De un nodo que ya existe solo toca el estado y, si está vacío, el enlace: el
-  título, la etapa, el equipo y el goal son de la fábrica.
-- **Estado, solo hacia adelante.** Issue cerrado → Lista. Abierto con un PR abierto que lo cierra
+  título, la etapa, el equipo y el goal son de la fábrica. Si su enlace apunta a otro issue (otro repo
+  con el mismo número), lo salta con un aviso. Las épicas (`epic`) no crean nodo.
+- **Estado, solo hacia adelante.** Issue cerrado como completado → Lista (cerrado como duplicado o
+  «no planeado» no cuenta). Abierto con un PR abierto que lo cierra
   (`closes|fixes|resolves|cierra|resuelve #n`) y el nodo Pendiente → En progreso. Nunca retrocede.
 - **Aristas, solo se agregan.** «Parte de #n» → la épica `gh-n` necesita a este nodo. «depende de #n»,
   «blocked by #n» o «bloqueado por #n» → este nodo necesita a `gh-n`. Solo entre nodos que existen.

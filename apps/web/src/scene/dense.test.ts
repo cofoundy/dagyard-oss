@@ -24,9 +24,9 @@ import { orientationFor } from './layout';
 
 const g = basaltGraph();
 
-// Umbral de títulos visibles (fracción de 88). 1440×900: la mayoría (medido 66). En el celular no caben todos: con
-// títulos de 2 líneas el alto da para ~11 filas de etiquetas a 4 por fila (~36 de techo); medido 30 y 32 (antes de
-// #27, 19 y 16), así que se exige el 30 % (27) con holgura de 3–5 frente a lo medido.
+// Umbral de títulos visibles (fracción de 88). 1440×900: la mayoría (medido 55 con este estimador, 61 con el DOM real).
+// En el celular no caben todos: con títulos de 2 líneas el alto da para ~11 filas de etiquetas a 4 por fila (~36 de
+// techo); medido 31 y 32, igual con el DOM real (antes de #27, 19 y 16), así que se exige el 30 % (27) con holgura.
 const CASES: { name: string; vp: Viewport; safe: SafeArea; minShare: number }[] = [
   { name: '1440×900', vp: { width: 1440, height: 900 }, safe: { top: 104, right: 20, bottom: 92, left: 20 }, minShare: 0.5 },
   { name: '390×844', vp: { width: 390, height: 844 }, safe: { top: 124, right: 16, bottom: 90, left: 16 }, minShare: 0.3 },

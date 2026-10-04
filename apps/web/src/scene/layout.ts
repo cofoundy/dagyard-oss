@@ -293,7 +293,7 @@ export function layoutGraph(graph: SceneGraph, opts: LayoutOptions & { metrics?:
         const pitch = opts.rowWidth !== undefined ? Math.max(step, opts.rowWidth / row.length) : step;
         widest = Math.max(widest, (row.length - 1) * pitch);
         row.forEach((id, i) => {
-          const x = (i - (row.length - 1) / 2) * pitch + signed(id, 1) * step * 0.04;
+          const x = (i - (row.length - 1) / 2) * pitch + signed(id, 1) * step * 0.02; // vaivén corto: las etiquetas vecinas casi se tocan
           positions.set(id, { x, y: y + signed(id, 2) * step * 0.015, z: signed(id, 3) * depth * 0.4 });
           lowest = Math.max(lowest, M.below(id));
         });

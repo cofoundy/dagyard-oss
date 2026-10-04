@@ -459,7 +459,8 @@ function solvePortrait(graph: SceneGraph, vp: Viewport, safe: SafeArea, sizer: S
   const o: Orientation = 'portrait';
   const W = LABEL_WIDTH[o];
   const colPx = (vp.width - safe.left - safe.right - FRAME_PAD * 2) / maxPerRow;
-  const lw = Math.round(MathUtils.clamp(colPx - 12, W.min, W.max));
+  // aire entre vecinas: 15 px, que cubren el vaivén de las dos y la respiración (la caja real ocupa todo el ancho)
+  const lw = Math.round(MathUtils.clamp(colPx - 15, W.min, W.max));
   const attempt = (p: number) => {
     // denso: las filas cortas (etapas chicas, última fila) se reparten en todo el ancho
     const s = solveSpread(graph, vp, safe, sizer, o, lw, metricsFor(graph, sizer, p, lw), maxPerRow, colPx / p, dense ? (colPx * maxPerRow) / p : undefined);
@@ -579,7 +580,8 @@ export function estimateSizer(graph: SceneGraph, portrait = false): Sizer {
         } else line += add;
       }
       widest = Math.max(widest, line);
-      return { w: Math.min(maxWidth, Math.ceil(widest)), h: Math.min(lines, maxLines ?? Infinity) * lh };
+      // como en el DOM (`width: max-content` + `max-width`): si el título parte, la caja ocupa todo el ancho máximo
+      return { w: lines > 1 ? maxWidth : Math.min(maxWidth, Math.ceil(widest)), h: Math.min(lines, maxLines ?? Infinity) * lh };
     },
     header(stage) {
       const st = graph.stages[stage];

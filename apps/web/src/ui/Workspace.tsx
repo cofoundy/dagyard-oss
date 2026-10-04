@@ -1,6 +1,7 @@
 // El espacio de trabajo: elige el proyecto, mantiene el estado vivo (snapshot + eventos) y conecta la
 // escena con el HUD, la ficha y los avisos. Eventos del servidor → reducer → setGraph + pulse + aviso.
 
+import { DEMO_PROJECT_ID } from '@dagyard/model';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from 'react';
 import type { Pulse, SceneHandlers, Sky } from '../scene/contract';
 import { ApiError, type AppApi } from '../data/session';
@@ -16,6 +17,18 @@ import { useSafeArea } from './useSafeArea';
 const PROJECT_KEY = 'dagyard:project';
 const TOAST_MS = 4200;
 const MAX_TOASTS = 3;
+
+/**
+ * Proyecto que se abre al entrar: el que el usuario eligió la última vez; si no eligió (o ya no existe), la demo, que es
+ * lo primero que un PM tiene que ver (la lista llega por última actualización, así que su primero sería el último
+ * importado). Sin demo, el primero de la lista.
+ */
+export function initialProject(list: readonly ProjectSummary[], stored: string | null): string | null {
+  const has = (id: string | null) => !!id && list.some((p) => p.id === id);
+  if (has(stored)) return stored;
+  if (has(DEMO_PROJECT_ID)) return DEMO_PROJECT_ID;
+  return list[0]?.id ?? null;
+}
 
 const NO_STATE: StoreState = { snapshot: null, status: 'loading' };
 const noSubscribe = () => () => {};
@@ -85,7 +98,7 @@ export function Workspace({ api, sky, handlers, demo, onUnauthorized, onLogout }
       } catch {
         /* almacenamiento bloqueado */
       }
-      setProjectId((cur) => cur ?? (list.find((p) => p.id === stored) ?? list[0])?.id ?? null);
+      setProjectId((cur) => cur ?? initialProject(list, stored));
     } catch (e) {
       if (e instanceof UnauthorizedError) onUnauthorizedRef.current();
       else setListError(true);

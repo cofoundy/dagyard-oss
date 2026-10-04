@@ -5,6 +5,8 @@ import type { BlockerInput, BlockerKind, BlockerWaitResult, NodeInput, NodePatch
 import { BLOCKER_KINDS, LIMITS, NODE_STATUSES, parseProjectGraphInput, slugify } from '@dagyard/model';
 import { buildImport, projectNameFromDir, readTasksDir, readTitles, type ImportResult } from './tasks/import.js';
 import { oneLine } from './tasks/parse.js';
+import { ghCliSource, type GithubSource } from './sync/github.js';
+import { formatSync, syncGithub } from './sync/sync.js';
 
 export const VERSION = '0.1.0';
 
@@ -16,6 +18,8 @@ export interface Io {
   sleep?: (ms: number) => Promise<void>;
   /** de dónde se busca `.dagyard.json` (default `process.cwd()`) */
   cwd?: string;
+  /** la cola de GitHub de `sync` (default: `gh api`) */
+  github?: GithubSource;
 }
 
 /** Exit codes: 0 ok · 1 error de la API o de red · 2 `wait` venció · 3 `next` sin nada arrancable · 64 uso. */
@@ -332,6 +336,35 @@ caracteres solo avisan.
         }
       }
       io.stdout(args.bools.has('json') ? `${JSON.stringify(result, null, 2)}\n` : formatImport(result, dry, replace));
+      return EXIT.ok;
+    },
+  },
+  sync: {
+    usage: 'dagyard sync --github <owner/repo> [--label <l>] [--stage <etapa>] [--all] [--dry-run] [--json]',
+    summary: 'crea o actualiza las tareas gh-<n> desde los issues de GitHub',
+    help: `Usa gh (GitHub CLI) autenticado. Nunca reemplaza el grafo: solo agrega y avanza, cada cambio en vivo.
+Tarea nueva = issue abierto (con --all también los cerrados, ya Listos), en --stage o «construccion» o la primera etapa,
+con el enlace al issue. A una tarea que ya existe nunca le cambia título, etapa, equipo ni misión; el enlace, solo si
+no tiene. El estado solo avanza: cerrado → Lista; abierto con un PR abierto que dice «closes #n» → En progreso.
+«Parte de #n» → la tarea n necesita esta; «depende de #n», «blocked by #n» o «bloqueado por #n» → esta necesita la n.
+La etiqueta founder-input abre una decisión con las opciones del cuerpo (- **A:** …, - A) …), una sola vez.
+--dry-run lee pero no escribe nada.`,
+    flags: ['github', 'label', 'stage', ...GLOBAL_FLAGS],
+    bools: ['all', 'dry-run', 'json'],
+    async run({ io, args }) {
+      need(args, []);
+      const repo = required(args, 'github');
+      if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new UsageError(`--github va como owner/repo: «${repo}»`);
+      const label = optional(args, 'label');
+      const stage = optional(args, 'stage');
+      const report = await syncGithub(client(io, args), io.github ?? ghCliSource(), project(io, args), {
+        repo,
+        ...(label ? { label } : {}),
+        ...(stage ? { stage } : {}),
+        all: args.bools.has('all'),
+        dryRun: args.bools.has('dry-run'),
+      });
+      io.stdout(args.bools.has('json') ? `${JSON.stringify(report, null, 2)}\n` : formatSync(report));
       return EXIT.ok;
     },
   },

@@ -7,16 +7,31 @@ pnpm install && pnpm build
 node dist/dagyard.mjs --help
 ```
 
-Config: `DAGYARD_URL`, `DAGYARD_KEY`, `DAGYARD_PROJECT`; si faltan, `~/.config/dagyard/{url,agent-key,project}`.
-La key nunca se imprime (los errores la tapan con `***`).
+## Config
+
+Proyecto y servidor, en este orden: la flag (`--project`/`-p`, `--url`, antes o después del comando:
+`dagyard --project p --url u node start x` vale) > `DAGYARD_PROJECT` / `DAGYARD_URL` > `.dagyard.json` >
+`~/.config/dagyard/{project,url}`.
+
+`.dagyard.json` va en la raíz del repo y se commitea; el CLI usa el primero que encuentra subiendo desde la
+carpeta actual. Así un agente en cualquier repo sabe a qué proyecto de Dagyard pertenece:
+
+```json
+{ "project": "dagyard", "url": "https://dagyard.cofoundy-dev.workers.dev" }
+```
+
+Si no es JSON válido, el CLI lo dice con la ruta del archivo. **La key nunca sale de ahí** (aunque la
+pongas, se ignora): solo de `DAGYARD_KEY` o `~/.config/dagyard/agent-key`, y nunca se imprime (los errores
+la tapan con `***`).
 
 | Comando | Qué hace |
 |---|---|
-| `node add\|update\|start\|progress\|done`, `edge add` | mutan el DAG (`start`, `progress`, `done` también como atajo) |
+| `node add\|update\|start\|progress\|done`, `edge add` | mutan el DAG (`start`, `progress`, `done` también como atajo). `node add\|update --link <url>` cuelga el issue o el PR: la ficha lo muestra como «Detalle técnico ↗» |
 | `block <nodo> --kind decision\|review\|access --q "…" [--opt …]` | abre un bloqueante e imprime su id |
 | `wait <nodo> [--blocker <id>]` | long-poll hasta que el humano resuelve; imprime la elección o el valor |
 | `msg <nodo> "…" [--report <url>]` | mensaje ≤280 caracteres |
 | `next` | `/goal …` en una sola línea (exit 3 si no hay nada arrancable) |
+| `sync --github <owner/repo> [--label <l>] [--stage <etapa>] [--all] [--dry-run] [--json]` | crea o actualiza las tareas `gh-<n>` desde los issues (ver abajo) |
 | `import --from <.cofoundy/tasks> [--replace] [--dry-run]` | crea el proyecto desde las tareas del orchestrator; si ya existe, falla (`PUT` con `If-None-Match: *`) salvo `--replace` (`PUT` del grafo entero; con la clave de agente conserva las preguntas y respuestas del dueño y da 409 si quita una tarea que tiene alguna, con el token del dueño las recrea desde el archivo) |
 
 Exit codes: 0 ok · 1 API o red · 2 `wait` venció · 3 `next` vacío · 64 uso.
@@ -40,3 +55,27 @@ Los títulos visibles pasan por `legibleTitle` (D10, #21): sin `T-xxx` ni `#123`
 ruta, archivo o código (`lib/x.ts —`, `SEC —`, `P0.1`), sin nombres de archivo (`verify.sh` →
 `verify`), sin paréntesis (notas y llamadas: `var()` → `var`) y sin MAYÚSCULAS enfáticas (las
 siglas como MCP o CI se quedan). Si el título es `role: x`, se usa la primera frase del `**Issue:**`.
+
+## `sync --github`
+
+Lleva la cola de issues al grafo con la API granular (`GET` del snapshot + `POST` nodo, `PATCH`, `POST`
+arista, `POST` bloqueante), **nunca `PUT`**: no toca el resto del grafo y cada cambio llega en vivo. Lee
+GitHub con `gh api --paginate` (necesita `gh` autenticado); los PRs del listado no cuentan como issues.
+
+- **Tarea `gh-<n>` nueva:** solo issues abiertos (con `--all`, también los cerrados como completados, ya
+  Listos; los cerrados como `not_planned` nunca). Título = el del issue sin el prefijo `algo: ` y con
+  mayúscula inicial; etapa `--stage`, o `construccion` si existe, o la primera; enlace = la URL del issue.
+- **Tarea que ya existe:** nunca le cambia título, etapa, equipo ni misión (los cura la fábrica); el
+  enlace, solo si no tiene.
+- **El estado solo avanza:** cerrado → Lista; abierto con un PR abierto que dice `closes|fixes|resolves|cierra|resuelve #n`
+  (título o cuerpo, sin distinguir mayúsculas) y tarea Pendiente → En progreso. Una tarea con una pregunta
+  abierta no cambia de estado: aviso, no error.
+- **Aristas** (solo si las dos tareas existen; nunca borra): «Parte de #n» → la épica `gh-n` necesita esta;
+  «depende de #n», «blocked by #n» o «bloqueado por #n» → esta necesita `gh-n`. Repetida o con ciclo → aviso.
+- **`founder-input`** → decisión para el dueño: la pregunta es el título y las opciones salen de las líneas
+  `- **A (…):** texto`, `- **A:** texto` o `- A) texto` del cuerpo (máx. 6; sin ninguna, «Sí» / «No»). Si la
+  tarea ya tiene esa pregunta, abierta o respondida, no la repite (contrato #31).
+
+Salida: `Sincronicé N issues: X nuevas · Y actualizadas · Z sin cambios` y los avisos. Correrlo dos veces
+seguidas da `0 nuevas · 0 actualizadas` la segunda. `--dry-run` lee y cuenta sin escribir; `--json` da el
+reporte completo.

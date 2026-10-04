@@ -183,6 +183,7 @@ describe('ayuda', () => {
     ['msg'],
     ['next'],
     ['import'],
+    ['sync'],
   ])('%s %s --help', async (...cmd) => {
     const r = await cli([...cmd.filter(Boolean), '--help']);
     expect(r.code).toBe(EXIT.ok);
@@ -193,7 +194,7 @@ describe('ayuda', () => {
   it('sin argumentos lista todos los comandos', async () => {
     const r = await cli([]);
     expect(r.code).toBe(0);
-    for (const c of ['node add', 'edge add', 'block', 'wait', 'msg', 'next', 'import']) expect(r.stdout).toContain(c);
+    for (const c of ['node add', 'edge add', 'block', 'wait', 'msg', 'next', 'import', 'sync']) expect(r.stdout).toContain(c);
   });
 
   it('comando u opción desconocidos → exit 64', async () => {

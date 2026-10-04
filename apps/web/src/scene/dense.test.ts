@@ -123,3 +123,35 @@ describe.each(CASES)('guardrail: la demo de 20 nodos no cambia a $name', ({ vp, 
     expect(sol.maxLines).toBeUndefined();
   });
 });
+
+// La app mide su HUD (top/bottom) y cae donde cae: con 142/79 (la app real a 390×844) el retrato denso se aplastaba y
+// mostraba 12 títulos con la etapa III muda, mientras los tres safe areas de arriba daban 30+. Se barre el entorno.
+const PHONE_SAFES: [number, number][] = [[110, 64], [124, 90], [126, 96], [134, 90], [142, 79], [150, 71], [150, 84], [158, 64], [170, 96]];
+
+describe('robusto al safe area medido a 390×844', () => {
+  const vp: Viewport = { width: 390, height: 844 };
+  const sizer = estimateSizer(g, true);
+  const demo = labGraph();
+  const demoSizer = estimateSizer(demo, true);
+
+  it.each(PHONE_SAFES)('Basalt con top %i / bottom %i: ≥ 30 % de títulos y ninguna etapa muda', (top, bottom) => {
+    const sol = solveOverview(g, vp, { top, right: 16, bottom, left: 16 }, sizer);
+    const per = g.stages.map((_, i) => [...sol.visible].filter((id) => sol.layout.stageOf.get(id) === i).length);
+    expect(per.every((n) => n > 0), `por etapa ${per.join('/')}`).toBe(true);
+    expect(sol.visible.size).toBeGreaterThanOrEqual(Math.ceil(g.nodes.length * 0.3));
+  });
+
+  it.each(PHONE_SAFES)('demo con top %i / bottom %i: las 20 etiquetas', (top, bottom) => {
+    expect(solveOverview(demo, vp, { top, right: 16, bottom, left: 16 }, demoSizer).visible.size).toBe(20);
+  });
+});
+
+describe('el estimador mide como el DOM', () => {
+  it('un título que parte en dos líneas ocupa todo el ancho máximo (`width: max-content` + `max-width`)', () => {
+    const s = estimateSizer({ stages: [{ id: 'a', name: 'A' }], nodes: [{ id: 'n', stage: 0, title: 'Revisión de velocidad en celular', status: 'pending', progress: 0 }], edges: [] }, true);
+    const wrapped = s.node('n', 100);
+    expect(wrapped.h).toBeGreaterThan(15);
+    expect(wrapped.w).toBe(100);
+    expect(s.node('n', 400).w).toBeLessThan(400); // en una línea, solo lo que mide el texto
+  });
+});

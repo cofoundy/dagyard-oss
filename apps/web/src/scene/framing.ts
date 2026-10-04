@@ -399,10 +399,10 @@ export const DENSE_STAGE = 8;
 export const DENSE_LINES = 2;
 /** Proyecto denso: aire mínimo en px entre dos etiquetas visibles. */
 const DENSE_MARGIN = 3;
-/** Retrato denso: columnas por fila que se prueban (a 390 px de ancho ganan 8–10: menos filas, más títulos). */
+/** Retrato denso: columnas por fila que se prueban (a 390 px de ancho ganan 10–14: menos filas, más títulos). */
 const DENSE_PORTRAIT_COLS = [3, 4, 5, 6, 8, 10, 12, 14];
 /** Retrato denso: paso mínimo entre columnas en px, para que los nodos vecinos no se toquen. */
-const DENSE_MIN_COL_PX = 32;
+const DENSE_MIN_COL_PX = 24;
 
 type BaseSolution = Omit<OverviewSolution, 'visible'>;
 
@@ -442,12 +442,15 @@ export function solveOverview(graph: SceneGraph, vp: Viewport, safe: SafeArea, s
   // etiquetas. Las 3 columnas se prueban siempre (pantallas angostísimas).
   const short = clampSizer(sizer, DENSE_LINES);
   const usable = vp.width - safe.left - safe.right - FRAME_PAD * 2;
+  // De más a menos columnas: con menos, las filas crecen y el alto se aplasta; cuando los títulos visibles caen a menos
+  // de la mitad del mejor, ya no remontan y se deja de probar.
   let best: OverviewSolution | null = null;
-  for (const per of DENSE_PORTRAIT_COLS.filter((k) => k === 3 || usable / k >= DENSE_MIN_COL_PX)) {
+  for (const per of DENSE_PORTRAIT_COLS.filter((k) => k === 3 || usable / k >= DENSE_MIN_COL_PX).reverse()) {
     const b = solvePortrait(graph, vp, safe, short, per, true);
     const visible = declutter(graph, b.layout, b.fit.cam, vp, short, b.labelWidth, { margin: DENSE_MARGIN });
     const c = { ...b, visible, maxLines: DENSE_LINES };
     if (!best || betterDense(c, best)) best = c;
+    else if (visible.size < best.visible.size / 2) break;
   }
   return best!;
 }
@@ -458,12 +461,16 @@ function solvePortrait(graph: SceneGraph, vp: Viewport, safe: SafeArea, sizer: S
   // → todavía menos alto). El paso en mundo se deriva de la escala supuesta `p`.
   const o: Orientation = 'portrait';
   const W = LABEL_WIDTH[o];
-  const colPx = (vp.width - safe.left - safe.right - FRAME_PAD * 2) / maxPerRow;
+  const usable = vp.width - safe.left - safe.right - FRAME_PAD * 2;
+  const colPx = usable / maxPerRow;
   // aire entre vecinas: 15 px, que cubren el vaivén de las dos y la respiración (la caja real ocupa todo el ancho)
   const lw = Math.round(MathUtils.clamp(colPx - 15, W.min, W.max));
+  // denso: la etiqueta es más ancha que la columna, así que el paso deja sitio a media etiqueta en cada extremo; si
+  // no, la fila no entra a la escala supuesta y el encuadre la achica, aplastando el alto (todo se pisa)
+  const pitchPx = dense && maxPerRow > 1 ? Math.min(colPx, (usable - lw) / (maxPerRow - 1)) : colPx;
   const attempt = (p: number) => {
     // denso: las filas cortas (etapas chicas, última fila) se reparten en todo el ancho
-    const s = solveSpread(graph, vp, safe, sizer, o, lw, metricsFor(graph, sizer, p, lw), maxPerRow, colPx / p, dense ? (colPx * maxPerRow) / p : undefined);
+    const s = solveSpread(graph, vp, safe, sizer, o, lw, metricsFor(graph, sizer, p, lw), maxPerRow, pitchPx / p, dense ? (pitchPx * maxPerRow) / p : undefined);
     return { s, lw, ppu: pxPerUnit(s.fit.cam, vp) };
   };
   // consistente = la escala resultante alcanza la supuesta (entonces nada se pisa); si ninguna lo es (demasiados

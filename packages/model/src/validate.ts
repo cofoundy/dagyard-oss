@@ -152,6 +152,8 @@ function nodeInput(o: Record<string, unknown>, at: string): NodeInput {
   if (goal !== undefined) n.goal = goal;
   const r = url(o.reportUrl, `${at}reportUrl`);
   if (r !== undefined) n.reportUrl = r;
+  const l = url(o.link, `${at}link`);
+  if (l !== undefined) n.link = l;
   if (o.deps !== undefined) {
     if (!Array.isArray(o.deps)) fail(`${at}deps: se esperaba una lista`);
     n.deps = (o.deps as unknown[]).map((d, i) => slug(d, `${at}deps[${i}]`)!);
@@ -166,7 +168,7 @@ export function parseNodeInput(body: unknown): Parsed<NodeInput> {
 export function parseNodePatch(body: unknown): Parsed<NodePatch> {
   return wrap(() => {
     const o = obj(body, 'body');
-    const allowed = ['stage', 'title', 'status', 'progress', 'team', 'goal', 'reportUrl'];
+    const allowed = ['stage', 'title', 'status', 'progress', 'team', 'goal', 'reportUrl', 'link'];
     const extra = Object.keys(o).filter((k) => !allowed.includes(k));
     if (extra.length) fail(`campos no editables: ${extra.join(', ')}`);
     const p: NodePatch = {};
@@ -182,6 +184,8 @@ export function parseNodePatch(body: unknown): Parsed<NodePatch> {
     if (goal !== undefined) p.goal = goal;
     const r = url(o.reportUrl, 'reportUrl');
     if (r !== undefined) p.reportUrl = r;
+    const l = url(o.link, 'link');
+    if (l !== undefined) p.link = l;
     if (Object.keys(p).length === 0) fail('nada que actualizar');
     return p;
   });

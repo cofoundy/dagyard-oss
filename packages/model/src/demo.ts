@@ -58,6 +58,7 @@ export function demoProject(): ProjectGraphInput {
       team: t,
       goal,
       reportUrl: null,
+      link: null,
       deps: [...deps],
     })),
     blockers: [

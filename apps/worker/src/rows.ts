@@ -1,0 +1,68 @@
+/** Filas de SQLite → tipos del contrato. */
+import type { Blocker, BlockerResolution, DagEvent, DagEventType, DagNode, Edge, Message, Project, Role } from '@dagyard/model';
+import type { Row } from './db.js';
+
+const s = (v: unknown) => v as string;
+const ns = (v: unknown) => (v ?? null) as string | null;
+
+export const toProject = (r: Row): Project => ({
+  id: s(r.id),
+  name: s(r.name),
+  stages: JSON.parse(s(r.stages)),
+  createdAt: s(r.created_at),
+  updatedAt: s(r.updated_at),
+});
+
+export const toNode = (r: Row): DagNode => ({
+  id: s(r.id),
+  projectId: s(r.project_id),
+  stage: s(r.stage),
+  title: s(r.title),
+  status: r.status as DagNode['status'],
+  progress: Number(r.progress),
+  team: ns(r.team),
+  goal: ns(r.goal),
+  reportUrl: ns(r.report_url),
+  createdAt: s(r.created_at),
+  updatedAt: s(r.updated_at),
+});
+
+export const toEdge = (r: Row): Edge => ({ projectId: s(r.project_id), from: s(r.from_id), to: s(r.to_id) });
+
+/** Nunca lee `access_value`: el valor no sale por aquí. */
+export const toBlocker = (r: Row): Blocker => ({
+  id: s(r.id),
+  projectId: s(r.project_id),
+  nodeId: s(r.node_id),
+  kind: r.kind as Blocker['kind'],
+  question: s(r.question),
+  options: JSON.parse(s(r.options)),
+  accessLabel: ns(r.access_label),
+  status: r.status as Blocker['status'],
+  resolution: r.resolution ? (JSON.parse(s(r.resolution)) as BlockerResolution) : null,
+  resolvedBy: ns(r.resolved_by) as Role | null,
+  resolvedAt: ns(r.resolved_at),
+  createdAt: s(r.created_at),
+});
+
+export const toMessage = (r: Row): Message => ({
+  id: s(r.id),
+  projectId: s(r.project_id),
+  nodeId: s(r.node_id),
+  from: s(r.from_name),
+  text: s(r.text),
+  reportUrl: ns(r.report_url),
+  createdAt: s(r.created_at),
+});
+
+export const BLOCKER_COLS = 'id, project_id, node_id, kind, question, options, access_label, status, resolution, resolved_by, resolved_at, created_at';
+
+export const toEvent = (r: Row): DagEvent =>
+  ({
+    seq: Number(r.seq),
+    projectId: s(r.project_id),
+    type: r.type as DagEventType,
+    actor: r.actor as Role,
+    at: s(r.at),
+    payload: JSON.parse(s(r.payload)),
+  }) as DagEvent;

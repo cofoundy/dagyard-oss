@@ -1,7 +1,7 @@
 /**
  * Un Durable Object por proyecto: guarda los WebSockets (API de hibernación) y reparte los eventos
- * que le pasa el Worker después de cada escritura. El log de eventos vive en D1; aquí solo se
- * recuerda `lastSent`, el último seq repartido, para no saltarse ni repetir eventos.
+ * que le pasa el Worker después de cada escritura. El log de eventos vive en el DO `Store` (SQLite);
+ * aquí solo se recuerda `lastSent`, el último seq repartido, para no saltarse ni repetir eventos.
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { DagEvent, ServerFrame } from '@dagyard/model';
@@ -73,7 +73,9 @@ export class ProjectRoom extends DurableObject<Env> {
   private async greet(ws: WebSocket, pid: string, since: number | null): Promise<void> {
     const seq = await currentSeq(db(this.env), pid);
     ws.send(frame({ type: 'hello', projectId: pid, seq }));
-    if (since !== null && since < seq) {
+    // un since del futuro (p. ej. el proyecto se borró y se volvió a crear): el cliente debe recargar
+    if (since !== null && since > seq) ws.send(frame({ type: 'resync', seq }));
+    else if (since !== null && since < seq) {
       const evs = await eventsSince(db(this.env), pid, since, REPLAY_LIMIT + 1);
       if (evs.length > REPLAY_LIMIT) ws.send(frame({ type: 'resync', seq }));
       else for (const event of evs) if (event.seq <= seq) ws.send(frame({ type: 'event', event }));
@@ -98,7 +100,7 @@ export class ProjectRoom extends DurableObject<Env> {
       let toSend = incoming.filter((e) => e.seq > last!);
       if (!toSend.length) return;
       const contiguous = toSend.every((e, i) => e.seq === last! + 1 + i);
-      // Una escritura concurrente se adelantó: lo que falta ya está commiteado en D1.
+      // Una escritura concurrente se adelantó: lo que falta ya está commiteado en el Store.
       if (!contiguous) toSend = await eventsSince(db(this.env), pid, last, REPLAY_LIMIT);
       for (const ws of sockets) {
         const att = ws.deserializeAttachment() as Attachment | null;

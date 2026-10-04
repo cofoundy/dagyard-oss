@@ -5,7 +5,9 @@
  */
 import { DurableObject } from 'cloudflare:workers';
 import type { Env } from './env.js';
+import { ApiFailure } from './http.js';
 import { MIGRATIONS } from './schema.js';
+import { runWrite, type WriteOp, type WriteResult } from './writes.js';
 
 export type SqlValue = string | number | null;
 export type Row = Record<string, unknown>;
@@ -89,6 +91,18 @@ export class Store extends DurableObject<Env> {
         sql.exec('INSERT INTO _schema (version) VALUES (?)', i + 1);
       });
     });
+  }
+
+  /** Una escritura completa (leer, validar, escribir, eventos) en una transacción. Ver writes.ts. */
+  write(op: WriteOp): WriteResult {
+    try {
+      const { value, events } = this.ctx.storage.transactionSync(() => runWrite(this.ctx.storage.sql, op));
+      return { ok: true, value, events };
+    } catch (err) {
+      // ApiFailure revierte la transacción y viaja como dato (las clases no cruzan la RPC)
+      if (err instanceof ApiFailure) return { ok: false, error: { code: err.code, message: err.message } };
+      throw err;
+    }
   }
 
   batch(queries: Query[]): Row[][] {

@@ -44,7 +44,8 @@ Formas de presentarla (el servidor prueba en este orden):
 
 Qué puede cada rol: los dos leen y escriben el grafo y los mensajes. **Resolver un bloqueante es solo
 del `owner`** (es el humano quien desbloquea). **Recibir el valor de un acceso es solo del `agent`**
-(en `wait`); el valor nunca viaja en snapshots, listados ni eventos, y se guarda cifrado (AES-GCM) en el Durable Object del proyecto.
+(en `wait`); el valor nunca viaja en snapshots, listados ni eventos, y se guarda cifrado (AES-GCM, amarrado a su proyecto y bloqueante) en el Durable Object `Store` (SQLite).
+Sin el secret `VAULT_KEY`, resolver un acceso o recibir su valor responde `500`: nunca se guarda ni se entrega en claro.
 
 ### Sesión (UI)
 
@@ -150,7 +151,8 @@ emite una escritura. Todas las escrituras de la API, vengan de la UI o del CLI, 
 ```
 
 Si mandas `since` y hay eventos más nuevos, el servidor los reenvía en orden justo después del `hello`.
-Si faltan más de 500, manda `resync`: vuelve a pedir el snapshot. Cliente → servidor: `{"type": "ping"}`
+Si faltan más de 500, o si `since` es mayor que el `seq` actual (p. ej. el proyecto se borró y se volvió a
+crear), manda `resync`: vuelve a pedir el snapshot. Cliente → servidor: `{"type": "ping"}`
 (o el texto `ping`) cuando quieras; el servidor contesta `pong`.
 
 **Eventos** (`DagEvent`, cada uno con `seq` monotónico por proyecto, `actor` y `at`):

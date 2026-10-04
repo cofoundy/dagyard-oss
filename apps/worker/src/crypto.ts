@@ -31,21 +31,26 @@ export async function sessionValue(ownerToken: string): Promise<string> {
   return b64(await crypto.subtle.sign('HMAC', key, enc.encode('dagyard-session-v1')));
 }
 
-async function vaultKey(secret: string): Promise<CryptoKey> {
+async function vaultKey(secret: string | undefined): Promise<CryptoKey> {
+  // falla cerrado: sin clave no se cifra ni se descifra nada (nunca con una clave derivada de "")
+  if (!secret) throw new Error('VAULT_KEY no está configurada');
   return crypto.subtle.importKey('raw', await sha256(secret), 'AES-GCM', false, ['encrypt', 'decrypt']);
 }
 
-/** `v1.<iv>.<cifrado>` en base64url. */
-export async function seal(secret: string, plain: string): Promise<string> {
+/**
+ * `v1.<iv>.<cifrado>` en base64url. `aad` (p. ej. `<pid>/<bid>`) amarra el valor a su bloqueante:
+ * copiado a otra fila, no descifra.
+ */
+export async function seal(secret: string | undefined, plain: string, aad: string): Promise<string> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await vaultKey(secret), enc.encode(plain));
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: enc.encode(aad) }, await vaultKey(secret), enc.encode(plain));
   return `v1.${b64(iv)}.${b64(ct)}`;
 }
 
-export async function unseal(secret: string, sealed: string): Promise<string> {
+export async function unseal(secret: string | undefined, sealed: string, aad: string): Promise<string> {
   const [v, iv, ct] = sealed.split('.');
   if (v !== 'v1' || !iv || !ct) throw new Error('formato de acceso cifrado desconocido');
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(iv) }, await vaultKey(secret), unb64(ct));
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(iv), additionalData: enc.encode(aad) }, await vaultKey(secret), unb64(ct));
   return new TextDecoder().decode(pt);
 }
 

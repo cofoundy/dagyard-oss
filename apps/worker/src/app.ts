@@ -1,6 +1,9 @@
+/**
+ * Router del Worker: auth, forma del body (`@dagyard/model`) y lecturas. Toda escritura que depende
+ * del estado (ids, ciclos, bloqueantes, estado de la tarea) se valida y escribe dentro del Store en
+ * una sola transacción: ver writes.ts.
+ */
 import {
-  DEFAULT_STAGES,
-  LIMITS,
   countNodes,
   isSlug,
   nextStartable,
@@ -12,45 +15,20 @@ import {
   parseProjectInput,
   parseResolveInput,
   slugify,
-  wouldCreateCycle,
-  type Blocker,
   type BlockerWaitResult,
   type DagNode,
-  type Edge,
-  type Message,
-  type NodeInput,
   type Parsed,
-  type Project,
   type ProjectSummary,
-  type Stage,
-  type StageInput,
 } from '@dagyard/model';
 import { Hono, type Context } from 'hono';
 import { deleteCookie, setCookie } from 'hono/cookie';
 import { SESSION_COOKIE, authenticate, offeredProtocols, requireOwner, roleOfToken } from './auth.js';
-import { randomId, seal, sessionValue, unseal } from './crypto.js';
+import { seal, sessionValue, unseal } from './crypto.js';
 import { db as dbOf } from './db.js';
 import type { AppEnv } from './env.js';
 import { ApiFailure, errorResponse, fail, notFound } from './http.js';
-import {
-  clearGraph,
-  commit,
-  eventsSince,
-  getBlockerRow,
-  getProject,
-  insertBlocker,
-  insertEdge,
-  insertMessage,
-  insertNode,
-  loadGraph,
-  openBlockerCount,
-  requireNode,
-  requireProject,
-  snapshot,
-  toBlocker,
-  toProject,
-  updateNode,
-} from './store.js';
+import { toBlocker, toProject } from './rows.js';
+import { eventsSince, getBlockerRow, loadGraph, requireProject, snapshot, write } from './store.js';
 
 type C = Context<AppEnv>;
 
@@ -66,35 +44,13 @@ async function body(c: C): Promise<unknown> {
   }
 }
 
-const iso = () => new Date().toISOString();
-const toStages = (input: StageInput[] | undefined): Stage[] =>
-  (input ?? DEFAULT_STAGES).map((s) => ({ id: s.id ?? slugify(s.name), name: s.name }));
-const signature = (n: Pick<DagNode, 'team'>) => (n.team ? `Equipo de ${n.team}` : 'Agente');
-const RESUME_TEXT = 'Gracias. Sigo desde donde me quedé.';
 const room = (c: C, pid: string) => c.env.PROJECT_ROOM.get(c.env.PROJECT_ROOM.idFromName(pid));
+/** AAD del valor de un acceso: lo amarra a su proyecto y su bloqueante. */
+const accessAad = (pid: string, bid: string) => `${pid}/${bid}`;
 
 function pidParam(c: C): string {
   const pid = c.req.param('pid')!;
   return isSlug(pid) ? pid : notFound(`El proyecto «${pid}»`);
-}
-
-/** Nodo nuevo con las reglas del servidor: `done` → progress 1. */
-function newNode(pid: string, input: NodeInput, stages: Stage[], now: string, at = ''): DagNode {
-  if (!stages.some((s) => s.id === input.stage)) fail('invalid', `${at}stage: «${input.stage}» no es una etapa del proyecto`);
-  const status = input.status ?? 'pending';
-  return {
-    id: input.id ?? slugify(input.title),
-    projectId: pid,
-    stage: input.stage,
-    title: input.title,
-    status,
-    progress: status === 'done' ? 1 : (input.progress ?? 0),
-    team: input.team ?? null,
-    goal: input.goal ?? null,
-    reportUrl: input.reportUrl ?? null,
-    createdAt: now,
-    updatedAt: now,
-  };
 }
 
 /* ------------------------------------------------------------------ errores y auth */
@@ -166,13 +122,7 @@ app.get('/api/projects', async (c) => {
 
 app.post('/api/projects', async (c) => {
   const input = ok(parseProjectInput(await body(c)));
-  const id = input.id ?? slugify(input.name);
-  if (await getProject(dbOf(c.env), id)) fail('conflict', `Ya existe un proyecto «${id}»`);
-  const now = iso();
-  const project: Project = { id, name: input.name, stages: toStages(input.stages), createdAt: now, updatedAt: now };
-  await dbOf(c.env).prepare('INSERT INTO projects (id, name, stages, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
-    .bind(id, project.name, JSON.stringify(project.stages), now, now)
-    .run();
+  const project = await write(c.env, { kind: 'createProject', pid: input.id ?? slugify(input.name), name: input.name, stages: input.stages });
   return c.json(project, 201);
 });
 
@@ -180,110 +130,35 @@ app.get('/api/projects/:pid', async (c) => c.json(await snapshot(dbOf(c.env), pi
 
 app.put('/api/projects/:pid', async (c) => {
   const pid = pidParam(c);
-  const g = ok(parseProjectGraphInput(await body(c)));
-  const db = dbOf(c.env);
-  const prev = await getProject(db, pid);
-  const now = iso();
-  const stages = g.stages ? toStages(g.stages) : (prev?.stages ?? toStages(undefined));
-  const blockedBy = new Set((g.blockers ?? []).map((b) => b.nodeId));
-  const nodes = g.nodes.map((n, i) => {
-    const node = newNode(pid, n, stages, now, `nodes[${i}].`);
-    if (node.status === 'blocked' && !blockedBy.has(node.id))
-      fail('invalid', `nodes[${i}].status: «blocked» lo pone un bloqueante; agrégalo en blockers`);
-    // una tarea con un bloqueante abierto está bloqueada, la declare así o no
-    if (blockedBy.has(node.id)) node.status = 'blocked';
-    return node;
-  });
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  const edges: Edge[] = g.nodes.flatMap((n, i) => (n.deps ?? []).map((d) => ({ projectId: pid, from: d, to: nodes[i]!.id })));
-  const blockers: Blocker[] = (g.blockers ?? []).map((b) => ({
-    id: randomId('b_'),
-    projectId: pid,
-    nodeId: b.nodeId,
-    kind: b.kind,
-    question: b.question,
-    options: b.options ?? [],
-    accessLabel: b.accessLabel ?? null,
-    status: 'open',
-    resolution: null,
-    resolvedBy: null,
-    resolvedAt: null,
-    createdAt: now,
-  }));
-  const messages: Message[] = (g.messages ?? []).map((m) => ({
-    id: randomId('m_'),
-    projectId: pid,
-    nodeId: m.nodeId,
-    from: m.from ?? signature(byId.get(m.nodeId)!),
-    text: m.text,
-    reportUrl: m.reportUrl ?? null,
-    createdAt: now,
-  }));
-  const project: Project = { id: pid, name: g.name, stages, createdAt: prev?.createdAt ?? now, updatedAt: now };
-  await commit(
-    c.env,
-    pid,
-    c.get('role'),
-    now,
-    [
-      db
-        .prepare(
-          `INSERT INTO projects (id, name, stages, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT (id) DO UPDATE SET name = excluded.name, stages = excluded.stages, updated_at = excluded.updated_at`,
-        )
-        .bind(pid, project.name, JSON.stringify(stages), project.createdAt, now),
-      ...clearGraph(db, pid),
-      ...nodes.map((n) => insertNode(db, n)),
-      ...edges.map((e) => insertEdge(db, e)),
-      ...blockers.map((b) => insertBlocker(db, b)),
-      ...messages.map((m) => insertMessage(db, m)),
-    ],
-    [{ type: 'project.replaced', payload: { project } }],
-  );
-  return c.json(await snapshot(db, pid));
+  const graph = ok(parseProjectGraphInput(await body(c)));
+  await write(c.env, { kind: 'replaceGraph', pid, graph, actor: c.get('role') });
+  return c.json(await snapshot(dbOf(c.env), pid));
 });
 
 app.patch('/api/projects/:pid', async (c) => {
   const pid = pidParam(c);
-  const db = dbOf(c.env);
-  const prev = await requireProject(db, pid);
   const b = await body(c);
   if (typeof b !== 'object' || b === null || Array.isArray(b)) return fail('invalid', 'body: se esperaba un objeto');
   const extra = Object.keys(b).filter((k) => k !== 'name' && k !== 'stages');
   if (extra.length) fail('invalid', `campos no editables: ${extra.join(', ')}`);
   const o = b as { name?: unknown; stages?: unknown };
   if (o.name === undefined && o.stages === undefined) fail('invalid', 'nada que actualizar');
-  const input = ok(parseProjectInput({ name: o.name ?? prev.name, ...(o.stages !== undefined && { stages: o.stages }) }));
-  const stages = input.stages ? toStages(input.stages) : prev.stages;
-  if (input.stages) {
-    const ids = new Set(stages.map((s) => s.id));
-    const { nodes } = await loadGraph(db, pid);
-    const orphan = nodes.find((n) => !ids.has(n.stage));
-    if (orphan) fail('invalid', `stages: la tarea «${orphan.title}» usa la etapa «${orphan.stage}»; muévela antes de quitarla`);
-  }
-  const now = iso();
-  const project: Project = { ...prev, name: input.name, stages, updatedAt: now };
-  await commit(
-    c.env,
+  // reusa el parser de proyecto; el nombre de relleno solo sirve para validar las etapas
+  const input = ok(parseProjectInput({ name: o.name ?? 'x', ...(o.stages !== undefined && { stages: o.stages }) }));
+  const project = await write(c.env, {
+    kind: 'patchProject',
     pid,
-    c.get('role'),
-    now,
-    [db.prepare('UPDATE projects SET name = ?, stages = ? WHERE id = ?').bind(project.name, JSON.stringify(stages), pid)],
-    [{ type: 'project.updated', payload: { project } }],
-  );
+    ...(o.name !== undefined && { name: input.name }),
+    ...(input.stages && { stages: input.stages }),
+    actor: c.get('role'),
+  });
   return c.json(project);
 });
 
 app.delete('/api/projects/:pid', async (c) => {
   requireOwner(c, 'Borrar un proyecto');
   const pid = pidParam(c);
-  const db = dbOf(c.env);
-  await requireProject(db, pid);
-  await db.batch([
-    ...clearGraph(db, pid),
-    db.prepare('DELETE FROM events WHERE project_id = ?').bind(pid),
-    db.prepare('DELETE FROM projects WHERE id = ?').bind(pid),
-  ]);
+  await write(c.env, { kind: 'deleteProject', pid });
   await room(c, pid).reset();
   return c.body(null, 204);
 });
@@ -306,59 +181,18 @@ app.get('/api/projects/:pid/events', async (c) => {
 app.post('/api/projects/:pid/nodes', async (c) => {
   const pid = pidParam(c);
   const input = ok(parseNodeInput(await body(c)));
-  const db = dbOf(c.env);
-  const { project, nodes } = await loadGraph(db, pid);
-  if (input.status === 'blocked') fail('invalid', 'status: «blocked» lo pone un bloqueante, no se pone a mano');
-  if (nodes.length >= LIMITS.nodesPerProject) fail('invalid', `nodes: máximo ${LIMITS.nodesPerProject} por proyecto`);
-  const now = iso();
-  const node = newNode(pid, input, project.stages, now);
-  if (nodes.some((n) => n.id === node.id)) fail('conflict', `Ya existe una tarea «${node.id}»`);
-  const deps = [...new Set(input.deps ?? [])];
-  for (const d of deps) if (!nodes.some((n) => n.id === d)) fail('invalid', `deps: «${d}» no existe`);
-  const edges: Edge[] = deps.map((d) => ({ projectId: pid, from: d, to: node.id }));
-  await commit(
-    c.env,
-    pid,
-    c.get('role'),
-    now,
-    [insertNode(db, node), ...edges.map((e) => insertEdge(db, e))],
-    [{ type: 'node.added', payload: { node } }, ...edges.map((edge) => ({ type: 'edge.added' as const, payload: { edge } }))],
-  );
-  return c.json(node, 201);
+  return c.json(await write(c.env, { kind: 'addNode', pid, input, actor: c.get('role') }), 201);
 });
 
 app.patch('/api/projects/:pid/nodes/:nid', async (c) => {
   const pid = pidParam(c);
   const patch = ok(parseNodePatch(await body(c)));
-  const db = dbOf(c.env);
-  const project = await requireProject(db, pid);
-  const prev = await requireNode(db, pid, c.req.param('nid'));
-  if (patch.status === 'blocked') fail('invalid', 'status: «blocked» lo pone un bloqueante, no se pone a mano');
-  if (patch.status !== undefined && (await openBlockerCount(db, pid, prev.id)) > 0)
-    fail('conflict', 'La tarea tiene un bloqueante abierto: resuélvelo antes de cambiar su estado');
-  if (patch.stage !== undefined && !project.stages.some((s) => s.id === patch.stage))
-    fail('invalid', `stage: «${patch.stage}» no es una etapa del proyecto`);
-  const now = iso();
-  const node: DagNode = { ...prev, ...patch, updatedAt: now };
-  if (node.status === 'done') node.progress = 1;
-  else if (patch.status === 'working' && prev.status === 'pending') node.progress = patch.progress ?? 0;
-  await commit(c.env, pid, c.get('role'), now, [updateNode(db, node)], [{ type: 'node.updated', payload: { node } }]);
-  return c.json(node);
+  return c.json(await write(c.env, { kind: 'patchNode', pid, nid: c.req.param('nid'), patch, actor: c.get('role') }));
 });
 
 app.delete('/api/projects/:pid/nodes/:nid', async (c) => {
   const pid = pidParam(c);
-  const db = dbOf(c.env);
-  const node = await requireNode(db, pid, c.req.param('nid'));
-  const del = (t: string, col = 'node_id') => db.prepare(`DELETE FROM ${t} WHERE project_id = ? AND ${col} = ?`).bind(pid, node.id);
-  await commit(
-    c.env,
-    pid,
-    c.get('role'),
-    iso(),
-    [del('messages'), del('blockers'), del('edges', 'from_id'), del('edges', 'to_id'), del('nodes', 'id')],
-    [{ type: 'node.removed', payload: { nodeId: node.id } }],
-  );
+  await write(c.env, { kind: 'removeNode', pid, nid: c.req.param('nid'), actor: c.get('role') });
   return c.body(null, 204);
 });
 
@@ -368,14 +202,7 @@ app.post('/api/projects/:pid/edges', async (c) => {
   const from = b?.from;
   const to = b?.to;
   if (!isSlug(from) || !isSlug(to)) return fail('invalid', 'from y to: ids de tareas');
-  const db = dbOf(c.env);
-  const { nodes, edges } = await loadGraph(db, pid);
-  for (const id of [from, to]) if (!nodes.some((n) => n.id === id)) notFound(`La tarea «${id}»`);
-  if (edges.some((e) => e.from === from && e.to === to)) fail('conflict', 'Esa dependencia ya existe');
-  if (wouldCreateCycle(edges, from, to)) fail('cycle', `«${from}» ya depende de «${to}»: esa dependencia cerraría un ciclo`);
-  const edge: Edge = { projectId: pid, from, to };
-  await commit(c.env, pid, c.get('role'), iso(), [insertEdge(db, edge)], [{ type: 'edge.added', payload: { edge } }]);
-  return c.json(edge, 201);
+  return c.json(await write(c.env, { kind: 'addEdge', pid, from, to, actor: c.get('role') }), 201);
 });
 
 app.delete('/api/projects/:pid/edges', async (c) => {
@@ -383,19 +210,7 @@ app.delete('/api/projects/:pid/edges', async (c) => {
   const from = c.req.query('from');
   const to = c.req.query('to');
   if (!isSlug(from) || !isSlug(to)) return fail('invalid', 'from y to: ids de tareas');
-  const db = dbOf(c.env);
-  await requireProject(db, pid);
-  const exists = await db.prepare('SELECT 1 FROM edges WHERE project_id = ? AND from_id = ? AND to_id = ?').bind(pid, from, to).first();
-  if (!exists) notFound('Esa dependencia');
-  const edge: Edge = { projectId: pid, from, to };
-  await commit(
-    c.env,
-    pid,
-    c.get('role'),
-    iso(),
-    [db.prepare('DELETE FROM edges WHERE project_id = ? AND from_id = ? AND to_id = ?').bind(pid, from, to)],
-    [{ type: 'edge.removed', payload: { edge } }],
-  );
+  await write(c.env, { kind: 'removeEdge', pid, from, to, actor: c.get('role') });
   return c.body(null, 204);
 });
 
@@ -404,37 +219,7 @@ app.delete('/api/projects/:pid/edges', async (c) => {
 app.post('/api/projects/:pid/nodes/:nid/blockers', async (c) => {
   const pid = pidParam(c);
   const input = ok(parseBlockerInput(await body(c)));
-  const db = dbOf(c.env);
-  await requireProject(db, pid);
-  const prev = await requireNode(db, pid, c.req.param('nid'));
-  const now = iso();
-  const blocker: Blocker = {
-    id: randomId('b_'),
-    projectId: pid,
-    nodeId: prev.id,
-    kind: input.kind,
-    question: input.question,
-    options: input.options ?? [],
-    accessLabel: input.accessLabel ?? null,
-    status: 'open',
-    resolution: null,
-    resolvedBy: null,
-    resolvedAt: null,
-    createdAt: now,
-  };
-  const node: DagNode = { ...prev, status: 'blocked', updatedAt: now };
-  await commit(
-    c.env,
-    pid,
-    c.get('role'),
-    now,
-    [insertBlocker(db, blocker), updateNode(db, node)],
-    [
-      { type: 'blocker.opened', payload: { blocker } },
-      { type: 'node.updated', payload: { node } },
-    ],
-  );
-  return c.json(blocker, 201);
+  return c.json(await write(c.env, { kind: 'openBlocker', pid, nid: c.req.param('nid'), input, actor: c.get('role') }), 201);
 });
 
 async function requireBlockerRow(c: C, pid: string) {
@@ -447,48 +232,13 @@ app.get('/api/projects/:pid/blockers/:bid', async (c) => c.json(toBlocker(await 
 app.post('/api/projects/:pid/blockers/:bid/resolve', async (c) => {
   requireOwner(c, 'Resolver un bloqueante');
   const pid = pidParam(c);
-  const db = dbOf(c.env);
+  // kind y opciones no cambian nunca: sirven para validar el body fuera de la transacción
   const prev = toBlocker(await requireBlockerRow(c, pid));
   if (prev.status === 'resolved') fail('conflict', 'Ese bloqueante ya está resuelto');
   const r = ok(parseResolveInput(await body(c), prev));
-  const now = iso();
-  const blocker: Blocker = {
-    ...prev,
-    status: 'resolved',
-    resolution: { choice: r.choice, note: r.note, hasValue: r.value !== null },
-    resolvedBy: 'owner',
-    resolvedAt: now,
-  };
-  const sealed = r.value !== null ? await seal(c.env.VAULT_KEY, r.value) : null;
-  const prevNode = await requireNode(db, pid, prev.nodeId);
-  const othersOpen = (await openBlockerCount(db, pid, prev.nodeId)) - 1;
-  const node: DagNode = othersOpen > 0 ? { ...prevNode, updatedAt: now } : { ...prevNode, status: 'working', updatedAt: now };
-  // el mensaje del sistema solo cuando la tarea de verdad se destraba
-  const message: Message | null =
-    othersOpen > 0
-      ? null
-      : { id: randomId('m_'), projectId: pid, nodeId: node.id, from: signature(node), text: RESUME_TEXT, reportUrl: null, createdAt: now };
-  await commit(
-    c.env,
-    pid,
-    'owner',
-    now,
-    [
-      db
-        .prepare(
-          `UPDATE blockers SET status = 'resolved', resolution = ?, resolved_by = 'owner', resolved_at = ?, access_value = ?
-           WHERE project_id = ? AND id = ? AND status = 'open'`,
-        )
-        .bind(JSON.stringify(blocker.resolution), now, sealed, pid, blocker.id),
-      updateNode(db, node),
-      ...(message ? [insertMessage(db, message)] : []),
-    ],
-    [
-      { type: 'blocker.resolved', payload: { blocker } },
-      { type: 'node.updated', payload: { node } },
-      ...(message ? [{ type: 'message.posted' as const, payload: { message } }] : []),
-    ],
-  );
+  // cifrar es async, así que va antes; la verificación de que sigue abierto va dentro de la transacción
+  const sealed = r.value !== null ? await seal(c.env.VAULT_KEY, r.value, accessAad(pid, prev.id)) : null;
+  const blocker = await write(c.env, { kind: 'resolveBlocker', pid, bid: prev.id, expectKind: prev.kind, choice: r.choice, note: r.note, sealed });
   return c.json(blocker);
 });
 
@@ -505,7 +255,8 @@ app.get('/api/projects/:pid/blockers/:bid/wait', async (c) => {
   }
   const blocker = toBlocker(row);
   const canSee = blocker.kind === 'access' && blocker.status === 'resolved' && c.get('role') === 'agent' && !!row.access_value;
-  const result: BlockerWaitResult = { blocker, value: canSee ? await unseal(c.env.VAULT_KEY, row.access_value as string) : null };
+  const value = canSee ? await unseal(c.env.VAULT_KEY, row.access_value as string, accessAad(pid, blocker.id)) : null;
+  const result: BlockerWaitResult = { blocker, value };
   return c.json(result);
 });
 
@@ -514,30 +265,7 @@ app.get('/api/projects/:pid/blockers/:bid/wait', async (c) => {
 app.post('/api/projects/:pid/nodes/:nid/messages', async (c) => {
   const pid = pidParam(c);
   const input = ok(parseMessageInput(await body(c)));
-  const db = dbOf(c.env);
-  await requireProject(db, pid);
-  const prev = await requireNode(db, pid, c.req.param('nid'));
-  const now = iso();
-  const message: Message = {
-    id: randomId('m_'),
-    projectId: pid,
-    nodeId: prev.id,
-    from: input.from ?? signature(prev),
-    text: input.text,
-    reportUrl: input.reportUrl ?? null,
-    createdAt: now,
-  };
-  const adopt = message.reportUrl !== null && prev.reportUrl === null;
-  const node: DagNode = { ...prev, reportUrl: message.reportUrl, updatedAt: now };
-  await commit(
-    c.env,
-    pid,
-    c.get('role'),
-    now,
-    [insertMessage(db, message), ...(adopt ? [updateNode(db, node)] : [])],
-    [{ type: 'message.posted', payload: { message } }, ...(adopt ? [{ type: 'node.updated' as const, payload: { node } }] : [])],
-  );
-  return c.json(message, 201);
+  return c.json(await write(c.env, { kind: 'postMessage', pid, nid: c.req.param('nid'), input, actor: c.get('role') }), 201);
 });
 
 /* ------------------------------------------------------------------ tiempo real */

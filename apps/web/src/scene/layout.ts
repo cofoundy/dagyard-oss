@@ -220,31 +220,33 @@ export function layoutGraph(graph: SceneGraph, opts: LayoutOptions & { metrics?:
       const rows: string[][] = [];
       for (let i = 0; i < sorted.length; i += perRow) rows.push(sorted.slice(i, i + perRow));
       for (const r of rows) r.sort((p, q) => list.indexOf(p) - list.indexOf(q)); // izquierda→derecha por baricentro
+      // franja propia del rótulo: ancla `header`; su texto queda encima. La elipse empieza un colchón más abajo.
       const header = cursor;
-      let y = header - M.pad - M.halo;
-      const firstY = y;
+      const ringTop = header - M.pad * 1.5;
+      let y = ringTop - M.pad * 0.5 - M.halo;
       let bottom = y;
       rows.forEach((row, ri) => {
         let lowest = 0;
         row.forEach((id, i) => {
-          const x = (i - (row.length - 1) / 2) * step + signed(id, 1) * step * 0.05;
-          positions.set(id, { x, y: y + signed(id, 2) * step * 0.02, z: signed(id, 3) * depth });
+          const x = (i - (row.length - 1) / 2) * step + signed(id, 1) * step * 0.04;
+          positions.set(id, { x, y: y + signed(id, 2) * step * 0.015, z: signed(id, 3) * depth * 0.4 });
           lowest = Math.max(lowest, M.below(id));
         });
         bottom = y - lowest;
         if (ri < rows.length - 1) y = bottom - M.pad - M.halo;
       });
       const widest = Math.max(1, ...rows.map((r) => r.length));
-      const top = firstY + M.halo + M.pad * 0.5;
+      const ringBottom = bottom - M.pad * 0.5;
       stages.push({
         index: s,
-        center: { x: 0, y: (top + bottom) / 2, z: 0 },
-        rx: ((widest - 1) / 2) * step + step * 0.56,
-        ry: (top - bottom) / 2 + M.pad * 0.5,
+        center: { x: 0, y: (ringTop + ringBottom) / 2, z: 0 },
+        rx: ((widest - 1) / 2) * step + step * 0.5,
+        ry: (ringTop - ringBottom) / 2,
         header: { x: 0, y: header, z: 0 },
         count: n,
       });
-      cursor = bottom - M.pad * 2 - M.headerAbove - spread;
+      // el rótulo siguiente empieza dos colchones bajo la elipse: nada pisa su franja
+      cursor = ringBottom - M.pad * 2 - M.headerAbove - spread;
     }
   }
   if (o === 'portrait' && stages.length) {

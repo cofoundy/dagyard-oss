@@ -242,7 +242,8 @@ export function createSky(opts: CreateSkyOptions): Sky {
     const curve = new CubicBezierCurve3(new Vector3(), new Vector3(), new Vector3(), new Vector3());
     const geo = new BufferGeometry();
     geo.setAttribute('position', new BufferAttribute(new Float32Array((SEGMENTS + 1) * 3), 3));
-    const mat = new LineDashedMaterial({ color: COL.pending, transparent: true, opacity: 0.25, dashSize: 0.3, gapSize: 0.3, depthWrite: false, blending: AdditiveBlending });
+    geo.setAttribute('color', new BufferAttribute(new Float32Array((SEGMENTS + 1) * 3).fill(1), 3));
+    const mat = new LineDashedMaterial({ color: COL.pending, vertexColors: true, transparent: true, opacity: 0.25, dashSize: 0.3, gapSize: 0.3, depthWrite: false, blending: AdditiveBlending });
     const line = new Line(geo, mat);
     line.frustumCulled = false;
     world.add(line);
@@ -321,7 +322,7 @@ export function createSky(opts: CreateSkyOptions): Sky {
     else if (a === 'done') { c = 0x8fa0b8; o = 0.3; }
     // las que saltan etapas cruzan media carta: más tenues para no ensuciarla
     const sa = nodes.get(e.from)?.data.stage ?? 0, sb = nodes.get(e.to)?.data.stage ?? 0;
-    if (Math.abs(sb - sa) >= 2) o *= 0.5;
+    if (Math.abs(sb - sa) >= 2) o *= solution?.orientation === 'portrait' ? 0.3 : 0.5;
     e.mat.color.set(c);
     e.baseO = o;
     e.mat.dashSize = solid ? 1000 : 0.3;
@@ -341,7 +342,8 @@ export function createSky(opts: CreateSkyOptions): Sky {
         pts.push(new Vector3(st.center.x + Math.cos(a) * st.rx, st.center.y + Math.sin(a) * st.ry, st.center.z));
       }
       const g = new BufferGeometry().setFromPoints(pts);
-      const mat = new LineDashedMaterial({ color: 0x2a3a52, dashSize: 0.22, gapSize: 0.34, transparent: true, opacity: st.count ? 0.9 : 0, depthWrite: false });
+      g.setAttribute('color', new BufferAttribute(new Float32Array(pts.length * 3).fill(1), 3));
+      const mat = new LineDashedMaterial({ color: 0x2a3a52, vertexColors: true, dashSize: 0.22, gapSize: 0.34, transparent: true, opacity: st.count ? 0.9 : 0, depthWrite: false });
       const ring = new Line(g, mat);
       ring.computeLineDistances();
       world.add(ring);
@@ -403,7 +405,11 @@ export function createSky(opts: CreateSkyOptions): Sky {
     const sz = labels.sizer();
     labelBelow.clear();
     for (const id of sol.layout.positions.keys()) labelBelow.set(id, LABEL.drop + (LABEL.gap + sz.node(id, sol.labelWidth).h + 3) / ppu);
-    for (const e of edges.values()) shapeEdge(e);
+    // la orientación cambia el trazo y la opacidad de las aristas que saltan etapas
+    for (const e of edges.values()) {
+      shapeEdge(e);
+      styleEdge(e);
+    }
   }
 
   function stageCam(i: number): CamState | null {
@@ -587,6 +593,31 @@ export function createSky(opts: CreateSkyOptions): Sky {
     dirtyLayout = true;
   });
 
+  // ---------- líneas bajo el texto ----------
+  const boxes: { x0: number; x1: number; y0: number; y1: number; o: number }[] = [];
+  const pv = new Vector3();
+  /** Multiplica el color de cada vértice por cuánto lo tapa un título (en px de pantalla, con la cámara actual). */
+  function shadeUnderText(geo: BufferGeometry, upTo: number) {
+    const pos = geo.getAttribute('position') as BufferAttribute;
+    const col = geo.getAttribute('color') as BufferAttribute | undefined;
+    if (!col) return;
+    const n = Math.min(pos.count, upTo);
+    const w = vp.width, h = vp.height;
+    let changed = false;
+    for (let i = 0; i < n; i++) {
+      pv.fromBufferAttribute(pos, i).project(camera);
+      const x = (pv.x * 0.5 + 0.5) * w, y = (-pv.y * 0.5 + 0.5) * h;
+      let cover = 0;
+      for (const b of boxes) if (x > b.x0 && x < b.x1 && y > b.y0 && y < b.y1 && b.o > cover) cover = b.o;
+      const k = 1 - 0.92 * cover;
+      if (Math.abs(col.getX(i) - k) > 0.01) {
+        col.setXYZ(i, k, k, k);
+        changed = true;
+      }
+    }
+    if (changed) col.needsUpdate = true;
+  }
+
   // ---------- loop ----------
   let last = performance.now();
   let elapsed = 0;
@@ -766,6 +797,9 @@ export function createSky(opts: CreateSkyOptions): Sky {
     // etiquetas: proyección con la cámara real (view offset incluido)
     const w = vp.width, h = vp.height;
     const labelIn = mode === 'intro' ? MathUtils.clamp((introK - 0.55) / 0.4, 0, 1) : 1;
+    const sizer = labels.sizer();
+    const lw = solution?.labelWidth ?? 160;
+    boxes.length = 0;
     for (const v of nodes.values()) {
       v3.set(v.pos.x, v.pos.y - LABEL.drop, v.pos.z).project(camera);
       const vis = v3.z < 1 && Math.abs(v3.x) < 1.2 && Math.abs(v3.y) < 1.2;
@@ -778,6 +812,10 @@ export function createSky(opts: CreateSkyOptions): Sky {
       if (v.id === hoverId) o = Math.max(o, 1);
       o *= labelIn * Math.max(0, Math.min(1, v.born * 1.4)) * (v.dying >= 0 ? v.dying : 1);
       labels.placeNode(v.id, x, y, o);
+      if (o > 0.05) {
+        const sz = sizer.node(v.id, lw);
+        boxes.push({ x0: x - sz.w / 2 - 3, x1: x + sz.w / 2 + 3, y0: y + LABEL.gap - 2, y1: y + LABEL.gap + sz.h + 2, o });
+      }
     }
     solution?.layout.stages.forEach((st, i) => {
       v3.set(st.header.x, st.header.y, st.header.z).project(camera);
@@ -785,8 +823,16 @@ export function createSky(opts: CreateSkyOptions): Sky {
       let o = vis ? 0.95 : 0;
       if (focusId) o *= 0.1;
       else if (mode === 'stage') o *= i === stageSel ? 1 : 0.15;
-      labels.placeStage(i, (v3.x * 0.5 + 0.5) * w, (-v3.y * 0.5 + 0.5) * h, o * labelIn);
+      const hx = (v3.x * 0.5 + 0.5) * w, hy = (-v3.y * 0.5 + 0.5) * h;
+      labels.placeStage(i, hx, hy, o * labelIn);
+      if (o * labelIn > 0.05) {
+        const sz = sizer.header(i);
+        boxes.push({ x0: hx - sz.w / 2 - 6, x1: hx + sz.w / 2 + 6, y0: hy - LABEL.headerGap - sz.h - 3, y1: hy - LABEL.headerGap + 3, o: o * labelIn });
+      }
     });
+    // ninguna línea pasa por encima de un título: bajo cada caja de texto la arista o la órbita se apaga
+    for (const e of edges.values()) shadeUnderText(e.geo, Math.floor(e.draw));
+    for (const st of stageViews) shadeUnderText(st.ring.geometry, Infinity);
 
     composer.render();
   }

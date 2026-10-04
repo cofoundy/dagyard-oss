@@ -21,6 +21,8 @@ const g = labGraph();
 const CASES: { name: string; vp: Viewport; safe: SafeArea }[] = [
   { name: '1440×900', vp: { width: 1440, height: 900 }, safe: { top: 104, right: 20, bottom: 92, left: 20 } },
   { name: '390×844', vp: { width: 390, height: 844 }, safe: { top: 124, right: 16, bottom: 90, left: 16 } },
+  // la app real en móvil: los botones bajan bajo la marca y el carril ocupa más
+  { name: '390×844 (HUD de la app)', vp: { width: 390, height: 844 }, safe: { top: 150, right: 16, bottom: 84, left: 16 } },
 ];
 
 describe.each(CASES)('encuadre de la vista general a $name', ({ vp, safe }) => {
@@ -73,6 +75,47 @@ describe.each(CASES)('encuadre de la vista general a $name', ({ vp, safe }) => {
         if (a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1) hits.push(`${a.id}×${b.id}`);
       }
     expect(hits).toEqual([]);
+  });
+});
+
+describe.each(CASES.filter((c) => c.vp.width < c.vp.height))('franja del rótulo de etapa en retrato a $name', ({ vp, safe }) => {
+  const sizer = estimateSizer(g, true);
+  const sol = solveOverview(g, vp, safe, sizer);
+  const cam = scratchCamera(vp);
+  placeCamera(cam, sol.fit.cam);
+  const px = (p: { x: number; y: number; z: number }) => {
+    const q = projectPx(cam, p, vp);
+    return { x: q.x - sol.fit.cam.ox, y: q.y - sol.fit.cam.oy };
+  };
+  const headers = sol.layout.stages.map((st) => {
+    const a = px(st.header);
+    const s = sizer.header(st.index);
+    return { i: st.index, x0: a.x - s.w / 2, x1: a.x + s.w / 2, y0: a.y - 6 - s.h, y1: a.y - 6 };
+  });
+  const labels = [...sol.layout.positions].map(([id, p]) => {
+    const a = px({ x: p.x, y: p.y - 0.72, z: p.z });
+    const s = sizer.node(id, sol.labelWidth);
+    return { id, x0: a.x - s.w / 2, x1: a.x + s.w / 2, y0: a.y + 5, y1: a.y + 5 + s.h };
+  });
+
+  it('ninguna etiqueta de nodo pisa un rótulo de etapa', () => {
+    const hits: string[] = [];
+    for (const h of headers)
+      for (const l of labels) if (h.x0 < l.x1 && l.x0 < h.x1 && h.y0 < l.y1 && l.y0 < h.y1) hits.push(`${h.i}×${l.id}`);
+    expect(hits).toEqual([]);
+  });
+
+  it('las elipses quedan fuera de la franja del rótulo (con colchón)', () => {
+    sol.layout.stages.forEach((st, i) => {
+      const top = px({ x: st.center.x, y: st.center.y + st.ry, z: st.center.z }).y;
+      expect(top).toBeGreaterThan(headers[i]!.y1 + 4); // su propia elipse empieza bajo el rótulo
+      const prev = sol.layout.stages[i - 1];
+      if (prev) expect(px({ x: prev.center.x, y: prev.center.y - prev.ry, z: prev.center.z }).y).toBeLessThan(headers[i]!.y0 - 4);
+    });
+  });
+
+  it('las columnas llenan el ancho: etiquetas de al menos 100 px', () => {
+    expect(sol.labelWidth).toBeGreaterThanOrEqual(100);
   });
 });
 

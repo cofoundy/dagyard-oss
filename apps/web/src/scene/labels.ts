@@ -12,7 +12,8 @@ const CSS = `
   font: 400 13px/1.25 var(--font-body, "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif);
   letter-spacing: 0; text-align: center; white-space: normal; text-wrap: balance; overflow-wrap: anywhere;
   width: max-content; color: #8494ad;
-  text-shadow: 0 0 6px #04060a, 0 0 2px #04060a;
+  /* halo del color del cielo: las aristas que pasan por debajo desaparecen bajo el texto */
+  text-shadow: 0 0 2px #04060a, 0 0 4px #04060a, 0 0 8px #04060a, 0 0 12px #04060a;
   transition: color .6s;
 }
 .sky-lbl.done { color: #a29c90; }
@@ -23,7 +24,7 @@ const CSS = `
 .sky-stage {
   display: grid; justify-items: center; gap: 4px; white-space: nowrap; text-align: center;
   font-family: var(--font-mono, "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace);
-  text-shadow: 0 0 10px #04060a, 0 0 5px #04060a, 0 0 2px #04060a;
+  text-shadow: 0 0 2px #04060a, 0 0 5px #04060a, 0 0 10px #04060a, 0 0 16px #04060a;
 }
 .sky-stage b { font-weight: 500; font-size: 11px; line-height: 13px; letter-spacing: .26em; text-transform: uppercase; color: #8e9bb2; }
 .sky-stage span { font-size: 10px; line-height: 13px; letter-spacing: .06em; color: #4c5a71; font-variant-numeric: tabular-nums; }

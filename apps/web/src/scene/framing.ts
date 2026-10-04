@@ -267,9 +267,10 @@ function solveSpread(
   labelWidth: number,
   metrics: LabelMetrics,
   maxPerRow: number,
+  stepOverride?: number,
 ) {
   const D = LAYOUT_DEFAULTS[o];
-  const step = D.step;
+  const step = stepOverride ?? D.step;
   const camera = scratchCamera(vp);
   const angles = overviewAngles();
   const run = (spread: number) => {
@@ -326,20 +327,23 @@ export function solveOverview(graph: SceneGraph, vp: Viewport, safe: SafeArea, s
   const maxPerRow = vp.width - safe.left - safe.right < 480 ? 3 : LAYOUT_DEFAULTS.maxPerRow;
 
   if (o === 'portrait') {
-    const lwFor = (p: number) => Math.round(MathUtils.clamp(step * p - 12, W.min, W.max));
+    // Retrato: cada fila reparte su ancho en `maxPerRow` columnas fijas en píxeles, así el ancho de las
+    // etiquetas no depende de la escala vertical (si dependiera, menos alto → etiquetas más angostas y altas
+    // → todavía menos alto). El paso en mundo se deriva de la escala supuesta `p`.
+    const colPx = (vp.width - safe.left - safe.right - FRAME_PAD * 2) / maxPerRow;
+    const lw = Math.round(MathUtils.clamp(colPx - 12, W.min, W.max));
     const attempt = (p: number) => {
-      const lw = lwFor(p);
-      const s = solveSpread(graph, vp, safe, sizer, o, lw, metricsFor(graph, sizer, p, lw), maxPerRow);
+      const s = solveSpread(graph, vp, safe, sizer, o, lw, metricsFor(graph, sizer, p, lw), maxPerRow, colPx / p);
       return { s, lw, ppu: pxPerUnit(s.fit.cam, vp) };
     };
-    // consistente = la escala resultante alcanza la supuesta y la etiqueta cabe entre vecinos de fila
-    const score = (p: number, a: ReturnType<typeof attempt>) => Math.min(a.ppu / p, (step * a.ppu - 12) / a.lw);
-    let lo = 2;
-    let hi = Math.max(4, (vp.width - safe.left - safe.right) / step);
+    // consistente = la escala resultante alcanza la supuesta (entonces nada se pisa)
+    const score = (p: number, a: ReturnType<typeof attempt>) => a.ppu / p;
+    let lo = 1;
+    let hi = Math.max(4, vp.width / 4);
     let best = attempt(lo);
     let bestScore = score(lo, best);
     let found = bestScore >= 0.999;
-    for (let i = 0; i < 11; i++) {
+    for (let i = 0; i < 14; i++) {
       const mid = (lo + hi) / 2;
       const a = attempt(mid);
       const sc = score(mid, a);
@@ -350,7 +354,6 @@ export function solveOverview(graph: SceneGraph, vp: Viewport, safe: SafeArea, s
         found = true;
       } else {
         hi = mid;
-        // sin solución exacta (pantalla demasiado baja): el intento que menos se pisa
         if (!found && sc > bestScore) {
           best = a;
           bestScore = sc;

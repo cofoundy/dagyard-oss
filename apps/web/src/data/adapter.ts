@@ -1,121 +1,33 @@
-// Único punto de traducción entre el cable del servidor (docs/api.md de nucleo, `@dagyard/model`) y el
-// modelo de la UI (`./types`). Cuando `@dagyard/model` entre al workspace, los tipos `Wire*` de abajo se
-// reemplazan por `import type { … } from '@dagyard/model'` y nada más cambia: la UI y la escena siguen
-// consumiendo `./types`.
+// Único punto de traducción entre el cable del servidor (`@dagyard/model`, docs/api.md de nucleo) y el
+// modelo de la UI (`./types`). Los tipos del cable vienen del paquete, no de copias: si el servidor cambia
+// su contrato, el typecheck de la web se rompe aquí. La UI y la escena siguen consumiendo `./types`.
 
+import type {
+  Blocker as WireBlocker,
+  DagEvent as WireEvent,
+  DagNode as WireNode,
+  Edge as WireEdge,
+  Message as WireMessage,
+  ProjectSnapshot as WireSnapshot,
+  ProjectSummary as WireProjectSummary,
+  ResolveInput as WireResolveInput,
+  ServerFrame as WireServerFrame,
+  Stage as WireStage,
+} from '@dagyard/model';
 import type { Blocker, DagEvent, DagNode, Edge, Message, ProjectSummary, Resolution, Snapshot, Stage } from './types';
 
-/* ------------------------------------------------------------------ cable (espejo de @dagyard/model) */
-
-type WireStatus = DagNode['status'];
-type WireRole = 'owner' | 'agent';
-
-export interface WireStage {
-  id: string;
-  name: string;
-}
-
-export interface WireProject {
-  id: string;
-  name: string;
-  stages: WireStage[];
-  createdAt?: string;
-  updatedAt?: string;
-}
-
-export interface WireNode {
-  id: string;
-  projectId?: string;
-  stage: string;
-  title: string;
-  status: WireStatus;
-  progress: number;
-  team: string | null;
-  goal: string | null;
-  reportUrl: string | null;
-  createdAt?: string;
-  updatedAt?: string;
-}
-
-export interface WireEdge {
-  projectId?: string;
-  from: string;
-  to: string;
-}
-
-export interface WireBlocker {
-  id: string;
-  projectId?: string;
-  nodeId: string;
-  kind: Blocker['kind'];
-  question: string;
-  options: string[];
-  accessLabel: string | null;
-  status: 'open' | 'resolved';
-  resolution: { choice: string | null; note: string | null; hasValue: boolean } | null;
-  resolvedBy: WireRole | null;
-  resolvedAt: string | null;
-  createdAt?: string;
-}
-
-export interface WireMessage {
-  id: string;
-  projectId?: string;
-  nodeId: string;
-  from: string;
-  text: string;
-  reportUrl: string | null;
-  createdAt: string;
-}
-
-export interface WireSnapshot {
-  project: WireProject;
-  nodes: WireNode[];
-  edges: WireEdge[];
-  blockers: WireBlocker[];
-  messages: WireMessage[];
-  seq: number;
-}
-
-export interface WireProjectSummary {
-  id: string;
-  name: string;
-  stages?: WireStage[];
-  openBlockers?: number;
-}
-
-interface WireEventBase<T extends string, P> {
-  seq: number;
-  projectId: string;
-  type: T;
-  actor?: WireRole;
-  at?: string;
-  payload: P;
-}
-
-export type WireEvent =
-  | WireEventBase<'project.replaced', { project: WireProject }>
-  | WireEventBase<'project.updated', { project: WireProject }>
-  | WireEventBase<'node.added', { node: WireNode }>
-  | WireEventBase<'node.updated', { node: WireNode }>
-  | WireEventBase<'node.removed', { nodeId: string }>
-  | WireEventBase<'edge.added', { edge: WireEdge }>
-  | WireEventBase<'edge.removed', { edge: WireEdge }>
-  | WireEventBase<'blocker.opened', { blocker: WireBlocker }>
-  | WireEventBase<'blocker.resolved', { blocker: WireBlocker }>
-  | WireEventBase<'message.posted', { message: WireMessage }>;
-
-export type WireServerFrame =
-  | { type: 'hello'; projectId: string; seq: number }
-  | { type: 'event'; event: WireEvent }
-  | { type: 'resync'; seq: number }
-  | { type: 'pong' };
-
-export interface WireResolveInput {
-  choice?: number | string;
-  value?: string;
-  note?: string | null;
-}
+export type {
+  WireBlocker,
+  WireEdge,
+  WireEvent,
+  WireMessage,
+  WireNode,
+  WireProjectSummary,
+  WireResolveInput,
+  WireServerFrame,
+  WireSnapshot,
+  WireStage,
+};
 
 /* ------------------------------------------------------------------ cable → UI */
 

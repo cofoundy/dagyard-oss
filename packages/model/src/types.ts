@@ -53,6 +53,8 @@ export interface DagNode {
   goal: string | null;
   /** informe en Basalt */
   reportUrl: string | null;
+  /** detalle técnico: URL del issue o del PR. La UI lo muestra como «Detalle técnico ↗», sin jerga */
+  link: string | null;
   createdAt: IsoDate;
   updatedAt: IsoDate;
 }
@@ -195,6 +197,8 @@ export interface NodeInput {
   team?: string | null;
   goal?: string | null;
   reportUrl?: string | null;
+  /** detalle técnico: URL del issue o del PR */
+  link?: string | null;
   /** ids de los nodos de los que depende (aristas from → este nodo) */
   deps?: string[];
 }

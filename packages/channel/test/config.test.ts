@@ -22,7 +22,7 @@ describe('config', () => {
     writeFileSync(join(dir, 'url'), 'https://y.dev\n');
     writeFileSync(join(dir, 'agent-key'), 'clave\n');
     writeFileSync(join(dir, 'project'), 'demo\n');
-    const c = loadChannelConfig({ DAGYARD_CONFIG_DIR: dir });
+    const c = loadChannelConfig({ DAGYARD_CONFIG_DIR: dir }, dir); // cwd sin .dagyard.json
     expect(c).toMatchObject({ url: 'https://y.dev', key: 'clave', project: 'demo', nodes: null });
   });
 

@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -34,7 +34,7 @@ let lockedProjects = new Set<string>();
 /** Un nodo del mock con defaults; `next` lo elige con `nextStartable` del modelo, como el Worker. */
 function mockNode(id: string, stage: string, status: DagNode['status'], goal: string | null = null): DagNode {
   const at = '2026-10-04T00:00:00.000Z';
-  return { id, projectId: 'demo', stage, title: id, status, progress: 0, team: null, goal, reportUrl: null, createdAt: at, updatedAt: at };
+  return { id, projectId: 'demo', stage, title: id, status, progress: 0, team: null, goal, reportUrl: null, link: null, createdAt: at, updatedAt: at };
 }
 
 function reply(res: ServerResponse, status: number, body?: unknown) {
@@ -148,10 +148,18 @@ beforeEach(() => {
   lockedProjects = new Set();
 });
 
-async function cli(argv: string[], env: Record<string, string> = {}) {
+/** `cwd` por defecto: una carpeta temporal vacía, así ningún `.dagyard.json` del repo se cuela en los tests. */
+async function cli(
+  argv: string[],
+  env: Record<string, string> = {},
+  cwd = mkdtempSync(join(tmpdir(), 'dagyard-cwd-')),
+  extra: { fetch?: typeof fetch } = {},
+) {
   let stdout = '';
   let stderr = '';
   const code = await run(argv, {
+    ...extra,
+    cwd,
     stdout: (s) => (stdout += s),
     stderr: (s) => (stderr += s),
     env: {
@@ -181,6 +189,7 @@ describe('ayuda', () => {
     ['msg'],
     ['next'],
     ['import'],
+    ['sync'],
   ])('%s %s --help', async (...cmd) => {
     const r = await cli([...cmd.filter(Boolean), '--help']);
     expect(r.code).toBe(EXIT.ok);
@@ -191,7 +200,7 @@ describe('ayuda', () => {
   it('sin argumentos lista todos los comandos', async () => {
     const r = await cli([]);
     expect(r.code).toBe(0);
-    for (const c of ['node add', 'edge add', 'block', 'wait', 'msg', 'next', 'import']) expect(r.stdout).toContain(c);
+    for (const c of ['node add', 'edge add', 'block', 'wait', 'msg', 'next', 'import', 'sync']) expect(r.stdout).toContain(c);
   });
 
   it('comando u opción desconocidos → exit 64', async () => {
@@ -424,6 +433,262 @@ describe('import', () => {
     expect(r.code).toBe(EXIT.api);
     expect(r.stderr).toContain('unauthorized');
     expect(r.stderr).not.toContain('--replace');
+  });
+});
+
+describe('opciones globales antes del comando (#45)', () => {
+  it('dagyard --project p --url u node start x funciona como si fueran después', async () => {
+    const r = await cli(['--project', 'Fabrica', '--url', baseUrl, 'node', 'start', 'x'], { DAGYARD_URL: '' });
+    expect(r.code).toBe(EXIT.ok);
+    expect(last()).toMatchObject({ method: 'PATCH', path: '/api/projects/fabrica/nodes/x', body: { status: 'working' } });
+  });
+
+  it('-p y --project=… también, con atajos y comandos de una palabra', async () => {
+    await cli(['-p', 'otro', 'start', 'x']);
+    expect(last().path).toBe('/api/projects/otro/nodes/x');
+    await cli(['--project=tercero', 'msg', 'x', 'hola']);
+    expect(last().path).toBe('/api/projects/tercero/nodes/x/messages');
+  });
+
+  it('la opción después del comando gana a la de antes', async () => {
+    await cli(['--project', 'antes', 'start', 'x', '--project', 'despues']);
+    expect(last().path).toBe('/api/projects/despues/nodes/x');
+  });
+
+  it('solo opciones globales, sin comando → ayuda', async () => {
+    const r = await cli(['--project', 'p']);
+    expect(r.code).toBe(EXIT.ok);
+    expect(r.stdout).toContain('Comandos:');
+  });
+
+  it('una opción global sin valor es error de uso', async () => {
+    const r = await cli(['--project']);
+    expect(r.code).toBe(EXIT.usage);
+    expect(r.stderr).toContain('--project');
+  });
+});
+
+describe('.dagyard.json (#45)', () => {
+  /** repo/.dagyard.json + repo/a/b (el cwd) */
+  function repoWith(content: string): { root: string; deep: string } {
+    const root = mkdtempSync(join(tmpdir(), 'dagyard-repo-'));
+    writeFileSync(join(root, '.dagyard.json'), content);
+    const deep = join(root, 'a', 'b');
+    mkdirSync(deep, { recursive: true });
+    return { root, deep };
+  }
+
+  it('lo busca subiendo desde el cwd y usa su project y url (de confianza)', async () => {
+    const { deep } = repoWith(JSON.stringify({ project: 'Dagyard', url: 'https://dagyard.run' }));
+    const r = await cli(['start', 'x'], { DAGYARD_URL: '', DAGYARD_PROJECT: '' }, deep, { fetch: capture.fetch });
+    expect(r.code).toBe(EXIT.ok);
+    expect(capture.urls).toEqual(['https://dagyard.run/api/projects/dagyard/nodes/x']);
+    expect(r.stderr).toBe('');
+  });
+
+  it('precedencia: flag > env > .dagyard.json > ~/.config/dagyard', async () => {
+    const { deep } = repoWith(JSON.stringify({ project: 'del-archivo', url: 'http://127.0.0.1:1' }));
+    const cfg = mkdtempSync(join(tmpdir(), 'dagyard-cfg-'));
+    writeFileSync(join(cfg, 'project'), 'global');
+    writeFileSync(join(cfg, 'url'), 'http://127.0.0.1:2');
+    // archivo > global
+    await cli(['start', 'x', '--url', baseUrl], { DAGYARD_PROJECT: '', DAGYARD_CONFIG_DIR: cfg }, deep);
+    expect(last().path).toBe('/api/projects/del-archivo/nodes/x');
+    // env > archivo (url y proyecto)
+    await cli(['start', 'x'], { DAGYARD_PROJECT: 'del-env', DAGYARD_CONFIG_DIR: cfg }, deep);
+    expect(last().path).toBe('/api/projects/del-env/nodes/x');
+    // flag > env
+    await cli(['start', 'x', '-p', 'del-flag'], { DAGYARD_PROJECT: 'del-env', DAGYARD_CONFIG_DIR: cfg }, deep);
+    expect(last().path).toBe('/api/projects/del-flag/nodes/x');
+    // sin archivo, el global
+    await cli(['start', 'x', '--url', baseUrl], { DAGYARD_PROJECT: '', DAGYARD_CONFIG_DIR: cfg });
+    expect(last().path).toBe('/api/projects/global/nodes/x');
+  });
+
+  it('la key NUNCA sale del archivo (se commitea)', async () => {
+    const { deep } = repoWith(JSON.stringify({ project: 'p', url: baseUrl, key: KEY }));
+    const r = await cli(['start', 'x'], { DAGYARD_KEY: '' }, deep);
+    expect(r.code).toBe(EXIT.usage);
+    expect(r.stderr).toContain('API key');
+    expect(seen).toHaveLength(0);
+  });
+
+  it('JSON inválido → error claro con la ruta', async () => {
+    const { root, deep } = repoWith('{ project: ');
+    const r = await cli(['start', 'x'], {}, deep);
+    expect(r.code).toBe(EXIT.usage);
+    expect(r.stderr).toContain(join(root, '.dagyard.json'));
+    expect(seen).toHaveLength(0);
+  });
+
+  it('un campo que no es texto también es error con la ruta', async () => {
+    const { root, deep } = repoWith(JSON.stringify({ project: 42 }));
+    const r = await cli(['start', 'x'], {}, deep);
+    expect(r.code).toBe(EXIT.usage);
+    expect(r.stderr).toContain(join(root, '.dagyard.json'));
+  });
+
+  it('un .dagyard.json roto no impide la ayuda', async () => {
+    const { deep } = repoWith('nope');
+    expect((await cli(['--help'], {}, deep)).code).toBe(EXIT.ok);
+  });
+});
+
+/** fetch que solo anota a dónde iría (y con qué credencial): ninguna red. */
+const capture = {
+  urls: [] as string[],
+  auths: [] as string[],
+  fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+    capture.urls.push(String(input));
+    capture.auths.push(String((init?.headers as Record<string, string>)?.authorization));
+    return new Response(JSON.stringify({ id: 'x' }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch,
+};
+beforeEach(() => {
+  capture.urls = [];
+  capture.auths = [];
+});
+
+describe('.dagyard.json: la url recibe la key solo si es de confianza (#50)', () => {
+  function repoWith(url: string, cfg: Record<string, string> = {}) {
+    const root = mkdtempSync(join(tmpdir(), 'dagyard-repo-'));
+    writeFileSync(join(root, '.dagyard.json'), JSON.stringify({ project: 'p', url }));
+    const dir = mkdtempSync(join(tmpdir(), 'dagyard-cfg-'));
+    for (const [k, v] of Object.entries(cfg)) writeFileSync(join(dir, k), v);
+    return { root, env: { DAGYARD_URL: '', DAGYARD_PROJECT: '', DAGYARD_CONFIG_DIR: dir } };
+  }
+  const go = (r: ReturnType<typeof repoWith>) => cli(['start', 'x'], r.env, r.root, { fetch: capture.fetch });
+
+  it.each([
+    ['https://dagyard.cofoundy-dev.workers.dev'],
+    ['https://dagyard.run/'],
+  ])('las constantes de confianza: %s', async (url) => {
+    const r = await go(repoWith(url));
+    expect(r.code).toBe(EXIT.ok);
+    expect(capture.urls[0]).toMatch(/^https:\/\/dagyard\.(run|cofoundy-dev\.workers\.dev)\/api\//);
+  });
+
+  it.each([
+    ['https://evil.example'],
+    ['http://dagyard.run'],
+    ['https://dagyard.run.evil.example'],
+    ['https://dagyard.run@evil.example'],
+    ['https://dagyard.run:8443'],
+  ])('una url ajena (%s) se ignora con aviso y cae a ~/.config/dagyard/url', async (url) => {
+    const r = await go(repoWith(url, { url: 'https://mio.example' }));
+    expect(r.code).toBe(EXIT.ok);
+    expect(capture.urls).toEqual(['https://mio.example/api/projects/p/nodes/x']);
+    expect(r.stderr).toContain('.dagyard.json');
+    expect(r.stderr).toContain('trusted-urls');
+    expect(r.stderr).not.toContain(KEY);
+  });
+
+  it('ajena y sin nada más: falta el servidor, y la key no viaja a ningún lado', async () => {
+    const r = await go(repoWith('https://evil.example'));
+    expect(r.code).toBe(EXIT.usage);
+    expect(r.stderr).toContain('falta el servidor');
+    expect(capture.urls).toEqual([]);
+    expect(seen).toHaveLength(0);
+  });
+
+  it('el origen de ~/.config/dagyard/url es de confianza (con otra ruta)', async () => {
+    const r = await go(repoWith('https://mio.example/base', { url: 'https://mio.example' }));
+    expect(r.code).toBe(EXIT.ok);
+    expect(capture.urls[0]).toBe('https://mio.example/base/api/projects/p/nodes/x');
+    expect(r.stderr).toBe('');
+  });
+
+  it('las líneas de ~/.config/dagyard/trusted-urls también (comentarios y vacías se ignoran)', async () => {
+    const r = await go(repoWith('https://equipo.example', { 'trusted-urls': '# mías\n\nhttps://otro.example\nhttps://equipo.example/\n' }));
+    expect(r.code).toBe(EXIT.ok);
+    expect(capture.urls[0]).toBe('https://equipo.example/api/projects/p/nodes/x');
+  });
+
+  it('con --url o DAGYARD_URL la url del archivo ni se mira: sin aviso', async () => {
+    const a = await cli(['start', 'x', '--url', 'https://mio.example'], { DAGYARD_URL: '' }, repoWith('https://evil.example').root, { fetch: capture.fetch });
+    const b = await cli(['start', 'x'], { DAGYARD_URL: 'https://mio.example' }, repoWith('https://evil.example').root, { fetch: capture.fetch });
+    expect(a.stderr + b.stderr).toBe('');
+    expect(capture.urls.every((u) => u.startsWith('https://mio.example/'))).toBe(true);
+  });
+});
+
+describe('.dagyard.json: la búsqueda para en la raíz del repo o en $HOME (#50)', () => {
+  it('para en el primer directorio con .git (carpeta): el de más arriba no cuenta', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dagyard-up-'));
+    writeFileSync(join(root, '.dagyard.json'), JSON.stringify({ project: 'plantado' }));
+    mkdirSync(join(root, 'repo', '.git'), { recursive: true });
+    mkdirSync(join(root, 'repo', 'src'));
+    const r = await cli(['start', 'x'], { DAGYARD_PROJECT: '' }, join(root, 'repo', 'src'));
+    expect(r.code).toBe(EXIT.usage);
+    expect(r.stderr).toContain('falta el proyecto');
+  });
+
+  it('un .git archivo (worktree) también marca la raíz, y el .dagyard.json de esa raíz sí cuenta', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dagyard-up-'));
+    mkdirSync(join(root, 'wt', 'src'), { recursive: true });
+    writeFileSync(join(root, 'wt', '.git'), 'gitdir: /x\n');
+    writeFileSync(join(root, 'wt', '.dagyard.json'), JSON.stringify({ project: 'del-repo' }));
+    writeFileSync(join(root, '.dagyard.json'), JSON.stringify({ project: 'plantado' }));
+    await cli(['start', 'x'], { DAGYARD_PROJECT: '' }, join(root, 'wt', 'src'));
+    expect(last().path).toBe('/api/projects/del-repo/nodes/x');
+  });
+
+  it('para en $HOME', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dagyard-up-'));
+    writeFileSync(join(root, '.dagyard.json'), JSON.stringify({ project: 'plantado' }));
+    mkdirSync(join(root, 'home', 'a'), { recursive: true });
+    const r = await cli(['start', 'x'], { DAGYARD_PROJECT: '', HOME: join(root, 'home') }, join(root, 'home', 'a'));
+    expect(r.code).toBe(EXIT.usage);
+    expect(r.stderr).toContain('falta el proyecto');
+  });
+});
+
+describe('--link (#45)', () => {
+  it('node add y node update mandan link', async () => {
+    await cli(['node', 'add', 'gh-7', '--title', 'Cobros', '--stage', 'construccion', '--link', 'https://github.com/o/r/issues/7']);
+    expect(last().body).toMatchObject({ id: 'gh-7', link: 'https://github.com/o/r/issues/7' });
+    await cli(['node', 'update', 'gh-7', '--link', 'https://github.com/o/r/pull/9']);
+    expect(last().body).toEqual({ link: 'https://github.com/o/r/pull/9' });
+  });
+
+  it('un link que no es http(s) se rechaza sin llamar', async () => {
+    const r = await cli(['node', 'update', 'gh-7', '--link', 'issue 7']);
+    expect(r.code).toBe(EXIT.usage);
+    expect(seen).toHaveLength(0);
+  });
+});
+
+describe('import: lo que pide algo a una persona (#38)', () => {
+  function tasks(files: Record<string, string>): string {
+    const dir = mkdtempSync(join(tmpdir(), 'dagyard-tasks-'));
+    for (const [f, text] of Object.entries(files)) writeFileSync(join(dir, f), text);
+    return dir;
+  }
+
+  it('dice «1 pide algo a una persona» y no dice «te esperan»', async () => {
+    const from = tasks({
+      'a.md': '---\nid: T-1\nstatus: done\n---\n# Base',
+      'b.md': '---\nid: T-2\nstatus: blocked  # ESCALATION REQUIRED\ndeps: [T-1]\n---\n# Escalada',
+    });
+    const r = await cli(['import', '--from', from, '--dry-run']);
+    expect(r.code).toBe(EXIT.ok);
+    expect(r.stdout).toContain('1 pide algo a una persona');
+    expect(r.stdout).not.toContain('te esperan');
+  });
+
+  it('en plural con varias', async () => {
+    const from = tasks({
+      'a.md': '---\nid: T-1\nstatus: blocked  # needs founder decision\n---\n# Una',
+      'b.md': '---\nid: T-2\nstatus: blocked  # ESCALATION REQUIRED\n---\n# Otra',
+    });
+    const r = await cli(['import', '--from', from, '--dry-run']);
+    expect(r.stdout).toContain('2 piden algo a una persona');
+  });
+
+  it('sin ninguna, no muestra un contador en cero', async () => {
+    const r = await cli(['import', '--from', join(__dirname, 'fixtures', 'pets'), '--dry-run']);
+    expect(r.stdout).not.toContain('te esperan');
+    expect(r.stdout).not.toContain('0 piden');
   });
 });
 

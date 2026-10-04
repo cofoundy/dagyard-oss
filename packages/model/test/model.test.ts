@@ -29,7 +29,7 @@ const node = (id: string, status: DagNode['status'], stage = 'construccion', cre
   progress: 0,
   team: null,
   goal: null,
-  reportUrl: null,
+  reportUrl: null, link: null,
   createdAt,
   updatedAt: createdAt,
 });

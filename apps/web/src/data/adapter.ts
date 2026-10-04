@@ -47,6 +47,7 @@ export function toNode(n: WireNode): DagNode {
     team: opt(n.team),
     goal: opt(n.goal),
     reportUrl: opt(n.reportUrl),
+    link: opt(n.link),
   };
 }
 

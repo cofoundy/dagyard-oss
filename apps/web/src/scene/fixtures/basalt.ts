@@ -1,6 +1,6 @@
-// Fixture real para los tests de densidad: el proyecto «Basalt» importado con `dagyard import` (88 tareas, 63/17/6/2
-// por etapa). Solo id, etapa, dependencias, estado y título; los títulos pueden cambiar (#21) y los tests no dependen
-// de su texto exacto, solo de que sean largos y muchos.
+// Fixture sintético para los tests de densidad: la forma de un proyecto importado con `dagyard import` (88 tareas,
+// 63/17/6/2 por etapa) con títulos inventados de largo parecido. Solo id, etapa, dependencias, estado y título; los tests
+// no dependen de su texto exacto, solo de que sean largos y muchos.
 import type { NodeStatus } from '../../data/types';
 import type { SceneGraph } from '../contract';
 import raw from './basalt-88.json';

@@ -1,7 +1,7 @@
 // Laboratorio de la escena (scene-lab.html): monta el cielo con el grafo local de 20 nodos y un HUD de réplica.
 // Parámetros: ?w=390&h=844 fuerza un marco de ese tamaño · ?mode=overview|focus|stage · ?node=comision · ?stage=1
 // · ?debug=1 dibuja el rectángulo seguro · ?live=1 simula eventos (estado, nacimiento) para ver las animaciones.
-// · ?graph=basalt monta el proyecto real importado (88 nodos, 63 en una etapa) para ver la vista densa.
+// · ?graph=basalt monta un proyecto importado sintético (88 nodos, 63 en una etapa) para ver la vista densa.
 import type { SafeArea, SceneGraph } from './contract';
 import { createSky } from './index';
 import { basaltGraph } from './fixtures/basalt';

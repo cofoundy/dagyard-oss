@@ -1,0 +1,28 @@
+{
+  "name": "@dagyard/cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CLI dagyard: los agentes de la fábrica mutan el DAG, piden decisiones y escriben al PM.",
+  "type": "module",
+  "bin": {
+    "dagyard": "dist/dagyard.mjs"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "node build.mjs"
+  },
+  "devDependencies": {
+    "@dagyard/model": "workspace:*",
+    "@types/node": "^22.20.5",
+    "esbuild": "^0.28.2",
+    "typescript": "5.9.3",
+    "vitest": "^3.2.4"
+  }
+}

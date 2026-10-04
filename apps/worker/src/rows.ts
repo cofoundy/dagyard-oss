@@ -23,6 +23,7 @@ export const toNode = (r: Row): DagNode => ({
   team: ns(r.team),
   goal: ns(r.goal),
   reportUrl: ns(r.report_url),
+  link: ns(r.link),
   createdAt: s(r.created_at),
   updatedAt: s(r.updated_at),
 });

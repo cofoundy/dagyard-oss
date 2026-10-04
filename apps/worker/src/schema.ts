@@ -82,4 +82,6 @@ export const MIGRATIONS: string[][] = [
      )`,
     `CREATE INDEX sessions_expires ON sessions(expires_at)`,
   ],
+  // v3: detalle técnico de la tarea (#45): URL del issue o del PR
+  [`ALTER TABLE nodes ADD COLUMN link TEXT`],
 ];

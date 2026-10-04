@@ -30,6 +30,12 @@ export interface HttpApiOptions {
   staleAfter?: number;
   /** Espera antes de cada reintento (ms), según el número de intento. */
   backoff?: (attempt: number) => number;
+  /**
+   * Un socket que recibió `hello` y se cerró (un deploy reinicia el proyecto) reconecta sin esperar, una
+   * vez por racha; la racha se renueva cuando un socket vive al menos esto (ms). Así un socket que saluda
+   * y muere en bucle vuelve al backoff en vez de martillar.
+   */
+  quickAfter?: number;
 }
 
 export const defaultBackoff = (attempt: number) =>
@@ -40,7 +46,7 @@ export class HttpApi implements AppApi {
   private readonly fetchImpl: typeof fetch;
   private readonly WS: typeof WebSocket;
   private readonly origin: string;
-  private readonly opts: Required<Pick<HttpApiOptions, 'pingEvery' | 'staleAfter' | 'backoff'>>;
+  private readonly opts: Required<Pick<HttpApiOptions, 'pingEvery' | 'staleAfter' | 'backoff' | 'quickAfter'>>;
   /** El contrato resuelve por id de bloqueante; la ruta necesita el proyecto. */
   private readonly blockerProject = new Map<string, string>();
 
@@ -49,7 +55,12 @@ export class HttpApi implements AppApi {
     this.fetchImpl = o.fetch ?? ((...a) => fetch(...a));
     this.WS = o.WebSocket ?? WebSocket;
     this.origin = o.origin ?? (typeof location !== 'undefined' ? location.origin : 'http://localhost');
-    this.opts = { pingEvery: o.pingEvery ?? 25_000, staleAfter: o.staleAfter ?? 60_000, backoff: o.backoff ?? defaultBackoff };
+    this.opts = {
+      pingEvery: o.pingEvery ?? 25_000,
+      staleAfter: o.staleAfter ?? 60_000,
+      backoff: o.backoff ?? defaultBackoff,
+      quickAfter: o.quickAfter ?? 1_000,
+    };
   }
 
   /* ---------------------------------------------------------------- sesión */
@@ -110,6 +121,10 @@ export class HttpApi implements AppApi {
     let retry: ReturnType<typeof setTimeout> | null = null;
     let ping: ReturnType<typeof setInterval> | null = null;
     let lastFrame = 0;
+    /** Cuándo saludó el socket actual (0: todavía no). */
+    let helloAt = 0;
+    /** Queda el reintento sin espera de esta racha. */
+    let quick = true;
     let status: 'live' | 'reconnecting' | null = null;
 
     const setStatus = (s: 'live' | 'reconnecting') => {
@@ -124,10 +139,11 @@ export class HttpApi implements AppApi {
       retry = ping = null;
     };
 
-    const scheduleReconnect = () => {
+    const scheduleReconnect = (now = false) => {
       if (closed || retry) return;
       setStatus('reconnecting');
-      const wait = this.opts.backoff(attempt++);
+      const wait = now ? 0 : this.opts.backoff(attempt);
+      attempt++;
       retry = setTimeout(() => {
         retry = null;
         void connect();
@@ -147,6 +163,7 @@ export class HttpApi implements AppApi {
       switch (f.type) {
         case 'hello':
           attempt = 0;
+          helloAt = Date.now();
           setStatus('live');
           break;
         case 'resync':
@@ -193,6 +210,7 @@ export class HttpApi implements AppApi {
         return;
       }
       ws = sock;
+      helloAt = 0;
       lastFrame = Date.now();
       sock.onmessage = (m) => onFrame(m.data);
       sock.onclose = () => {
@@ -200,7 +218,11 @@ export class HttpApi implements AppApi {
         ws = null;
         if (ping) clearInterval(ping);
         ping = null;
-        scheduleReconnect();
+        // Solo un socket que llegó a `hello` reconecta sin esperar: un servidor caído sigue con backoff.
+        if (helloAt && Date.now() - helloAt >= this.opts.quickAfter) quick = true;
+        const now = helloAt > 0 && quick;
+        if (now) quick = false;
+        scheduleReconnect(now);
       };
       sock.onerror = () => {
         try {

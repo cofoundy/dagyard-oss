@@ -42,7 +42,7 @@ Formas de presentarla (el servidor prueba en este orden):
 
 Qué puede cada rol: los dos leen y escriben el grafo y los mensajes. **Resolver un bloqueante es solo
 del `owner`** (es el humano quien desbloquea). **Recibir el valor de un acceso es solo del `agent`**
-(en `wait`); el valor nunca viaja en snapshots, listados ni eventos, y se guarda cifrado en D1.
+(en `wait`); el valor nunca viaja en snapshots, listados ni eventos, y se guarda cifrado (AES-GCM) en el Durable Object del proyecto.
 
 ### Sesión (UI)
 

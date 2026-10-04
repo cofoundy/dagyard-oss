@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { SafeArea } from './contract';
 import {
+  LABEL,
+  clampSizer,
   estimateSizer,
   fitItems,
   overviewAngles,
@@ -10,6 +12,7 @@ import {
   safeRect,
   scratchCamera,
   solveOverview,
+  type Box,
   type Viewport,
 } from './framing';
 import { labGraph } from './lab-graph';
@@ -23,6 +26,8 @@ const CASES: { name: string; vp: Viewport; safe: SafeArea }[] = [
   { name: '390×844', vp: { width: 390, height: 844 }, safe: { top: 124, right: 16, bottom: 90, left: 16 } },
   // la app real en móvil: los botones bajan bajo la marca y el carril ocupa más
   { name: '390×844 (HUD de la app)', vp: { width: 390, height: 844 }, safe: { top: 150, right: 16, bottom: 84, left: 16 } },
+  // el HUD real medido en #41: aquí la demo ya se veía entera y no debe empeorar
+  { name: '390×844 (HUD 142/79)', vp: { width: 390, height: 844 }, safe: { top: 142, right: 16, bottom: 79, left: 16 } },
 ];
 
 describe.each(CASES)('encuadre de la vista general a $name', ({ vp, safe }) => {
@@ -116,6 +121,79 @@ describe.each(CASES.filter((c) => c.vp.width < c.vp.height))('franja del rótulo
 
   it('las columnas llenan el ancho: etiquetas de al menos 100 px', () => {
     expect(sol.labelWidth).toBeGreaterThanOrEqual(100);
+  });
+});
+
+// #41: en celulares angostos o con HUD alto se escondían títulos de la demo (19/20 a 430×932, 17/20 a 360×780).
+// Ahí el retrato prueba respaldos (más aire entre vecinas, otra cantidad de columnas, títulos a dos líneas) hasta que
+// todos se ven; donde la rejilla de siempre ya los mostraba, no cambia nada.
+const NARROW: { name: string; vp: Viewport; safe: SafeArea }[] = [
+  { name: '430×932 (HUD 142/79)', vp: { width: 430, height: 932 }, safe: { top: 142, right: 16, bottom: 79, left: 16 } },
+  { name: '430×932 (HUD alto)', vp: { width: 430, height: 932 }, safe: { top: 170, right: 16, bottom: 96, left: 16 } },
+  { name: '360×780 (HUD alto)', vp: { width: 360, height: 780 }, safe: { top: 170, right: 16, bottom: 96, left: 16 } },
+  { name: '360×780 (HUD 142/79)', vp: { width: 360, height: 780 }, safe: { top: 142, right: 16, bottom: 79, left: 16 } },
+];
+
+describe.each(NARROW)('celular angosto: la demo se ve entera a $name', ({ vp, safe }) => {
+  const full = estimateSizer(g, true);
+  const sol = solveOverview(g, vp, safe, full);
+  const sizer = clampSizer(full, sol.maxLines); // como la pinta la vista general
+  const rect = safeRect(vp, safe);
+  const cam = scratchCamera(vp);
+
+  it('las 20 etiquetas a la vista', () => {
+    expect(sol.visible.size).toBe(20);
+  });
+
+  it('nodos, halos, etiquetas y rótulos dentro del rectángulo seguro, en todos los ángulos', () => {
+    const out: string[] = [];
+    for (const a of overviewAngles()) {
+      placeCamera(cam, { ...sol.fit.cam, theta: a.theta, phi: a.phi });
+      for (const it of overviewItems(sol.layout, sizer, sol.labelWidth)) {
+        const q = projectPx(cam, it.p, vp);
+        const x0 = q.x - sol.fit.cam.ox + it.box.x0, x1 = q.x - sol.fit.cam.ox + it.box.x1;
+        const y0 = q.y - sol.fit.cam.oy + it.box.y0, y1 = q.y - sol.fit.cam.oy + it.box.y1;
+        if (q.behind || x0 < rect.x0 - 0.5 || x1 > rect.x1 + 0.5 || y0 < rect.y0 - 0.5 || y1 > rect.y1 + 0.5) out.push(`${x0.toFixed(0)},${y0.toFixed(0)}`);
+      }
+    }
+    expect(out.slice(0, 5)).toEqual([]);
+  });
+
+  it('ninguna etiqueta pisa otra ni un rótulo de etapa, en todos los ángulos de respiración', () => {
+    const hits = new Set<string>();
+    for (const a of overviewAngles()) {
+      placeCamera(cam, { ...sol.fit.cam, theta: a.theta, phi: a.phi });
+      const labels = [...sol.layout.positions].map(([id, p]) => {
+        const q = projectPx(cam, { x: p.x, y: p.y - LABEL.drop, z: p.z }, vp);
+        const s = sizer.node(id, sol.labelWidth);
+        return { id, x0: q.x - s.w / 2, x1: q.x + s.w / 2, y0: q.y + LABEL.gap, y1: q.y + LABEL.gap + s.h };
+      });
+      const heads = sol.layout.stages.map((st) => {
+        const q = projectPx(cam, st.header, vp);
+        const s = sizer.header(st.index);
+        return { id: `etapa-${st.index}`, x0: q.x - s.w / 2, x1: q.x + s.w / 2, y0: q.y - LABEL.headerGap - s.h, y1: q.y - LABEL.headerGap };
+      });
+      const hit = (a: Box, b: Box) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+      for (let i = 0; i < labels.length; i++) {
+        for (let j = i + 1; j < labels.length; j++) if (hit(labels[i]!, labels[j]!)) hits.add(`${labels[i]!.id}×${labels[j]!.id}`);
+        for (const h of heads) if (hit(labels[i]!, h)) hits.add(`${labels[i]!.id}×${h.id}`);
+      }
+    }
+    expect([...hits]).toEqual([]);
+  });
+});
+
+describe('celular angosto: los respaldos no tocan lo que ya se veía bien', () => {
+  it.each(CASES)('a $name, la rejilla de siempre: títulos completos', ({ vp, safe }) => {
+    const sol = solveOverview(g, vp, safe, estimateSizer(g, orientationFor(vp.width, vp.height) === 'portrait'));
+    expect(sol.visible.size).toBe(20);
+    expect(sol.maxLines).toBeUndefined();
+  });
+
+  it('a 390×844 con el HUD de la app, el mismo ancho de etiqueta que antes de #41 (100 px) y a 1440×900 (171 px)', () => {
+    const [desk, , , phone] = CASES;
+    expect(solveOverview(g, phone!.vp, phone!.safe, estimateSizer(g, true)).labelWidth).toBe(100);
+    expect(solveOverview(g, desk!.vp, desk!.safe, estimateSizer(g)).labelWidth).toBe(171);
   });
 });
 

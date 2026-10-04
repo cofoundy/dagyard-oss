@@ -21,8 +21,9 @@ const p = encodeURIComponent;
 
 export const ROUTES = {
   /**
-   * GET: snapshot completo · PUT: reemplaza el grafo entero (idempotente). Con la API key, el PUT
-   * sobre un proyecto que tiene bloqueantes abiertos responde 409.
+   * GET: snapshot completo · PUT: reemplaza el grafo entero (idempotente). Con `If-None-Match: *` solo
+   * crea: 409 si ya existe. Con la API key conserva los bloqueantes (abiertos y respondidos) y responde
+   * 409 si el grafo nuevo quita una tarea que tiene alguno.
    */
   project: (projectId: string) => `/api/projects/${p(projectId)}`,
   /** GET: el siguiente nodo arrancable y su línea `/goal`. */
@@ -75,24 +76,13 @@ export class DagyardClient {
     this.fetchImpl = opts.fetch ?? fetch;
   }
 
-  putProject(projectId: string, graph: ProjectGraphInput): Promise<unknown> {
-    return this.json('PUT', ROUTES.project(projectId), graph);
+  /** `exclusive`: creación exclusiva (`If-None-Match: *`); si el proyecto ya existe, 409 sin tocarlo. */
+  putProject(projectId: string, graph: ProjectGraphInput, opts: { exclusive?: boolean } = {}): Promise<unknown> {
+    return this.json('PUT', ROUTES.project(projectId), graph, opts.exclusive ? { 'if-none-match': '*' } : {});
   }
 
   snapshot(projectId: string): Promise<ProjectSnapshot> {
     return this.json('GET', ROUTES.project(projectId));
-  }
-
-  /** `false` solo si la API responde 404 por ese proyecto; cualquier otro error se propaga. */
-  async projectExists(projectId: string): Promise<boolean> {
-    try {
-      const res = await this.request('GET', ROUTES.project(projectId));
-      await res.body?.cancel();
-      return true;
-    } catch (err) {
-      if (err instanceof ApiRequestError && err.status === 404) return false;
-      throw err;
-    }
   }
 
   next(projectId: string): Promise<NextResult> {
@@ -128,14 +118,15 @@ export class DagyardClient {
     return this.json('POST', ROUTES.messages(projectId, nodeId), input);
   }
 
-  private async json<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const res = await this.request(method, path, body);
+  private async json<T>(method: string, path: string, body?: unknown, extra: Record<string, string> = {}): Promise<T> {
+    const res = await this.request(method, path, body, extra);
     if (res.status === 204) return undefined as T;
     return (await res.json()) as T;
   }
 
-  private async request(method: string, path: string, body?: unknown): Promise<Response> {
+  private async request(method: string, path: string, body?: unknown, extra: Record<string, string> = {}): Promise<Response> {
     const headers: Record<string, string> = {
+      ...extra,
       authorization: `Bearer ${this.key}`,
       accept: 'application/json',
     };

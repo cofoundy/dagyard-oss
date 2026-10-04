@@ -1,5 +1,5 @@
 // Siembra la demo «Marketplace de reservas». Idempotente: PUT reemplaza el grafo entero.
-// La corre el dueño: si la demo ya tiene bloqueantes abiertos, un agente recibiría 409 al reemplazarla.
+// La corre el dueño: solo su PUT recrea los bloqueantes desde cero; el de un agente conserva los que ya están.
 // Uso: node scripts/seed.mjs <url>   (el token sale de ~/.config/dagyard/owner-token, nunca de argv)
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';

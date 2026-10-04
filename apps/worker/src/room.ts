@@ -89,9 +89,25 @@ export class ProjectRoom extends DurableObject<Env> {
       if (evs.length > REPLAY_LIMIT) ws.send(frame({ type: 'resync', seq }));
       else for (const event of evs) if (event.seq <= seq) ws.send(frame({ type: 'event', event }));
     }
+    const last = await this.getLastSent();
+    // El Store va por detrás de lo ya repartido: el proyecto se borró (y quizá se recreó) sin que llegara
+    // el `reset`. Lo que está conectado es del proyecto muerto.
+    if (last !== null && last > seq) this.closeStale(ws);
     ws.serializeAttachment({ pid, ready: true, seen: seq, session } satisfies Attachment);
     // Primer socket de esta instancia: lo anterior a `seq` ya lo tiene quien está conectado.
-    if ((await this.getLastSent()) === null) await this.setLastSent(seq);
+    if (last === null || last > seq) await this.setLastSent(seq);
+  }
+
+  /** Cierra las páginas ya saludadas (salvo `keep`): miran un proyecto que se borró. */
+  private closeStale(keep?: WebSocket): void {
+    for (const ws of this.ctx.getWebSockets()) {
+      if (ws === keep || !(ws.deserializeAttachment() as Attachment | null)?.ready) continue;
+      try {
+        ws.close(4004, 'proyecto eliminado');
+      } catch {
+        // ya cerrado
+      }
+    }
   }
 
   /** RPC desde el Worker tras cada escritura. */
@@ -105,6 +121,14 @@ export class ProjectRoom extends DurableObject<Env> {
       }
       const incoming = [...events].sort((a, b) => a.seq - b.seq);
       let last = await this.getLastSent();
+      // Eventos que no pasan de lo ya repartido: o una escritura concurrente ya los mandó, o el proyecto se
+      // borró y se recreó sin que llegara el `reset` (el Store quedó por detrás). En ese caso las páginas
+      // conectadas son del proyecto muerto: se cierran y el próximo `hello` arranca de cero.
+      if (last !== null && incoming[0]!.seq <= last && (await currentSeq(db(this.env), pid)) < last) {
+        this.closeStale();
+        await this.setLastSent(null);
+        return;
+      }
       if (last === null) last = incoming[0]!.seq - 1;
       let toSend = incoming.filter((e) => e.seq > last!);
       if (!toSend.length) return;

@@ -224,8 +224,14 @@ app.patch('/api/projects/:pid', async (c) => {
 app.delete('/api/projects/:pid', async (c) => {
   requireOwner(c, 'Borrar un proyecto');
   const pid = pidParam(c);
-  await run(c, { kind: 'deleteProject', pid });
+  // Primero el room: si falla (un deploy lo reinicia), el borrado no quedó y reintentar lo hace entero.
   await room(c, pid).reset();
+  await run(c, { kind: 'deleteProject', pid });
+  // Una página que se reconectó entre el reset y el borrado: si este segundo aviso se pierde, el room se
+  // corrige solo con el primer hello o evento del proyecto recreado.
+  await room(c, pid)
+    .reset()
+    .catch((err) => console.error(JSON.stringify({ msg: 'reset tras borrar falló', pid, err: String(err) })));
   return c.body(null, 204);
 });
 

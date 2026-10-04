@@ -13,11 +13,10 @@ binding = "ASSETS"
 not_found_handling = "single-page-application"
 run_worker_first = ["/api/*"]
 
-[[d1_databases]]
-binding = "DB"
-database_name = "dagyard"
-database_id = "<<D1_ID>>"
-migrations_dir = "migrations"
+# Sin D1 (el token de Cloudflare no tiene permiso): el SQL vive en un DO singleton con SQLite.
+[[durable_objects.bindings]]
+name = "STORE"
+class_name = "Store"
 
 [[durable_objects.bindings]]
 name = "PROJECT_ROOM"
@@ -25,4 +24,4 @@ class_name = "ProjectRoom"
 
 [[migrations]]
 tag = "v1"
-new_sqlite_classes = ["ProjectRoom"]
+new_sqlite_classes = ["Store", "ProjectRoom"]

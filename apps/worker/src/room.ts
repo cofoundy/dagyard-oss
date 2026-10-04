@@ -6,6 +6,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import type { DagEvent, ServerFrame } from '@dagyard/model';
 import { WS_PROTOCOL, offeredProtocols } from './auth.js';
+import { db } from './db.js';
 import type { Env } from './env.js';
 import { currentSeq, eventsSince } from './store.js';
 
@@ -70,10 +71,10 @@ export class ProjectRoom extends DurableObject<Env> {
   }
 
   private async greet(ws: WebSocket, pid: string, since: number | null): Promise<void> {
-    const seq = await currentSeq(this.env.DB, pid);
+    const seq = await currentSeq(db(this.env), pid);
     ws.send(frame({ type: 'hello', projectId: pid, seq }));
     if (since !== null && since < seq) {
-      const evs = await eventsSince(this.env.DB, pid, since, REPLAY_LIMIT + 1);
+      const evs = await eventsSince(db(this.env), pid, since, REPLAY_LIMIT + 1);
       if (evs.length > REPLAY_LIMIT) ws.send(frame({ type: 'resync', seq }));
       else for (const event of evs) if (event.seq <= seq) ws.send(frame({ type: 'event', event }));
     }
@@ -98,7 +99,7 @@ export class ProjectRoom extends DurableObject<Env> {
       if (!toSend.length) return;
       const contiguous = toSend.every((e, i) => e.seq === last! + 1 + i);
       // Una escritura concurrente se adelantó: lo que falta ya está commiteado en D1.
-      if (!contiguous) toSend = await eventsSince(this.env.DB, pid, last, REPLAY_LIMIT);
+      if (!contiguous) toSend = await eventsSince(db(this.env), pid, last, REPLAY_LIMIT);
       for (const ws of sockets) {
         const att = ws.deserializeAttachment() as Attachment | null;
         if (!att?.ready) continue;

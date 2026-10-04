@@ -1,8 +1,10 @@
 import type { Role } from '@dagyard/model';
+import type { Store } from './db.js';
 import type { ProjectRoom } from './room.js';
 
 export interface Env {
-  DB: D1Database;
+  /** el SQL de Dagyard (DO singleton con SQLite; sin D1) */
+  STORE: DurableObjectNamespace<Store>;
   PROJECT_ROOM: DurableObjectNamespace<ProjectRoom>;
   ASSETS: Fetcher;
   /** sha corto del deploy; `dev` en local */

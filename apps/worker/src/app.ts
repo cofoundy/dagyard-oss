@@ -29,6 +29,7 @@ import { Hono, type Context } from 'hono';
 import { deleteCookie, setCookie } from 'hono/cookie';
 import { SESSION_COOKIE, authenticate, offeredProtocols, requireOwner, roleOfToken } from './auth.js';
 import { randomId, seal, sessionValue, unseal } from './crypto.js';
+import { db as dbOf } from './db.js';
 import type { AppEnv } from './env.js';
 import { ApiFailure, errorResponse, fail, notFound } from './http.js';
 import {
@@ -140,7 +141,7 @@ app.get('/api/me', (c) => c.json({ role: c.get('role') }));
 /* ------------------------------------------------------------------ proyectos */
 
 app.get('/api/projects', async (c) => {
-  const db = c.env.DB;
+  const db = dbOf(c.env);
   const [p, n, b] = await db.batch<Record<string, unknown>>([
     db.prepare('SELECT * FROM projects ORDER BY updated_at DESC'),
     db.prepare('SELECT project_id, status, COUNT(*) AS n FROM nodes GROUP BY project_id, status'),
@@ -166,21 +167,21 @@ app.get('/api/projects', async (c) => {
 app.post('/api/projects', async (c) => {
   const input = ok(parseProjectInput(await body(c)));
   const id = input.id ?? slugify(input.name);
-  if (await getProject(c.env.DB, id)) fail('conflict', `Ya existe un proyecto «${id}»`);
+  if (await getProject(dbOf(c.env), id)) fail('conflict', `Ya existe un proyecto «${id}»`);
   const now = iso();
   const project: Project = { id, name: input.name, stages: toStages(input.stages), createdAt: now, updatedAt: now };
-  await c.env.DB.prepare('INSERT INTO projects (id, name, stages, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+  await dbOf(c.env).prepare('INSERT INTO projects (id, name, stages, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
     .bind(id, project.name, JSON.stringify(project.stages), now, now)
     .run();
   return c.json(project, 201);
 });
 
-app.get('/api/projects/:pid', async (c) => c.json(await snapshot(c.env.DB, pidParam(c))));
+app.get('/api/projects/:pid', async (c) => c.json(await snapshot(dbOf(c.env), pidParam(c))));
 
 app.put('/api/projects/:pid', async (c) => {
   const pid = pidParam(c);
   const g = ok(parseProjectGraphInput(await body(c)));
-  const db = c.env.DB;
+  const db = dbOf(c.env);
   const prev = await getProject(db, pid);
   const now = iso();
   const stages = g.stages ? toStages(g.stages) : (prev?.stages ?? toStages(undefined));
@@ -244,7 +245,7 @@ app.put('/api/projects/:pid', async (c) => {
 
 app.patch('/api/projects/:pid', async (c) => {
   const pid = pidParam(c);
-  const db = c.env.DB;
+  const db = dbOf(c.env);
   const prev = await requireProject(db, pid);
   const b = await body(c);
   if (typeof b !== 'object' || b === null || Array.isArray(b)) return fail('invalid', 'body: se esperaba un objeto');
@@ -276,7 +277,7 @@ app.patch('/api/projects/:pid', async (c) => {
 app.delete('/api/projects/:pid', async (c) => {
   requireOwner(c, 'Borrar un proyecto');
   const pid = pidParam(c);
-  const db = c.env.DB;
+  const db = dbOf(c.env);
   await requireProject(db, pid);
   await db.batch([
     ...clearGraph(db, pid),
@@ -288,16 +289,16 @@ app.delete('/api/projects/:pid', async (c) => {
 });
 
 app.get('/api/projects/:pid/next', async (c) => {
-  const { project, nodes, edges } = await loadGraph(c.env.DB, pidParam(c));
+  const { project, nodes, edges } = await loadGraph(dbOf(c.env), pidParam(c));
   return c.json(nextStartable(project.stages, nodes, edges));
 });
 
 app.get('/api/projects/:pid/events', async (c) => {
   const pid = pidParam(c);
-  await requireProject(c.env.DB, pid);
+  await requireProject(dbOf(c.env), pid);
   const raw = c.req.query('since') ?? '0';
   if (!/^\d+$/.test(raw)) fail('invalid', 'since: un número entero ≥ 0');
-  return c.json({ events: await eventsSince(c.env.DB, pid, Number(raw), 500) });
+  return c.json({ events: await eventsSince(dbOf(c.env), pid, Number(raw), 500) });
 });
 
 /* ------------------------------------------------------------------ nodos y aristas */
@@ -305,7 +306,7 @@ app.get('/api/projects/:pid/events', async (c) => {
 app.post('/api/projects/:pid/nodes', async (c) => {
   const pid = pidParam(c);
   const input = ok(parseNodeInput(await body(c)));
-  const db = c.env.DB;
+  const db = dbOf(c.env);
   const { project, nodes } = await loadGraph(db, pid);
   if (input.status === 'blocked') fail('invalid', 'status: «blocked» lo pone un bloqueante, no se pone a mano');
   if (nodes.length >= LIMITS.nodesPerProject) fail('invalid', `nodes: máximo ${LIMITS.nodesPerProject} por proyecto`);
@@ -329,7 +330,7 @@ app.post('/api/projects/:pid/nodes', async (c) => {
 app.patch('/api/projects/:pid/nodes/:nid', async (c) => {
   const pid = pidParam(c);
   const patch = ok(parseNodePatch(await body(c)));
-  const db = c.env.DB;
+  const db = dbOf(c.env);
   const project = await requireProject(db, pid);
   const prev = await requireNode(db, pid, c.req.param('nid'));
   if (patch.status === 'blocked') fail('invalid', 'status: «blocked» lo pone un bloqueante, no se pone a mano');
@@ -347,7 +348,7 @@ app.patch('/api/projects/:pid/nodes/:nid', async (c) => {
 
 app.delete('/api/projects/:pid/nodes/:nid', async (c) => {
   const pid = pidParam(c);
-  const db = c.env.DB;
+  const db = dbOf(c.env);
   const node = await requireNode(db, pid, c.req.param('nid'));
   const del = (t: string, col = 'node_id') => db.prepare(`DELETE FROM ${t} WHERE project_id = ? AND ${col} = ?`).bind(pid, node.id);
   await commit(
@@ -367,7 +368,7 @@ app.post('/api/projects/:pid/edges', async (c) => {
   const from = b?.from;
   const to = b?.to;
   if (!isSlug(from) || !isSlug(to)) return fail('invalid', 'from y to: ids de tareas');
-  const db = c.env.DB;
+  const db = dbOf(c.env);
   const { nodes, edges } = await loadGraph(db, pid);
   for (const id of [from, to]) if (!nodes.some((n) => n.id === id)) notFound(`La tarea «${id}»`);
   if (edges.some((e) => e.from === from && e.to === to)) fail('conflict', 'Esa dependencia ya existe');
@@ -382,7 +383,7 @@ app.delete('/api/projects/:pid/edges', async (c) => {
   const from = c.req.query('from');
   const to = c.req.query('to');
   if (!isSlug(from) || !isSlug(to)) return fail('invalid', 'from y to: ids de tareas');
-  const db = c.env.DB;
+  const db = dbOf(c.env);
   await requireProject(db, pid);
   const exists = await db.prepare('SELECT 1 FROM edges WHERE project_id = ? AND from_id = ? AND to_id = ?').bind(pid, from, to).first();
   if (!exists) notFound('Esa dependencia');
@@ -403,7 +404,7 @@ app.delete('/api/projects/:pid/edges', async (c) => {
 app.post('/api/projects/:pid/nodes/:nid/blockers', async (c) => {
   const pid = pidParam(c);
   const input = ok(parseBlockerInput(await body(c)));
-  const db = c.env.DB;
+  const db = dbOf(c.env);
   await requireProject(db, pid);
   const prev = await requireNode(db, pid, c.req.param('nid'));
   const now = iso();
@@ -438,7 +439,7 @@ app.post('/api/projects/:pid/nodes/:nid/blockers', async (c) => {
 
 async function requireBlockerRow(c: C, pid: string) {
   const bid = c.req.param('bid')!;
-  return (await getBlockerRow(c.env.DB, pid, bid)) ?? notFound(`El bloqueante «${bid}»`);
+  return (await getBlockerRow(dbOf(c.env), pid, bid)) ?? notFound(`El bloqueante «${bid}»`);
 }
 
 app.get('/api/projects/:pid/blockers/:bid', async (c) => c.json(toBlocker(await requireBlockerRow(c, pidParam(c)))));
@@ -446,7 +447,7 @@ app.get('/api/projects/:pid/blockers/:bid', async (c) => c.json(toBlocker(await 
 app.post('/api/projects/:pid/blockers/:bid/resolve', async (c) => {
   requireOwner(c, 'Resolver un bloqueante');
   const pid = pidParam(c);
-  const db = c.env.DB;
+  const db = dbOf(c.env);
   const prev = toBlocker(await requireBlockerRow(c, pid));
   if (prev.status === 'resolved') fail('conflict', 'Ese bloqueante ya está resuelto');
   const r = ok(parseResolveInput(await body(c), prev));
@@ -513,7 +514,7 @@ app.get('/api/projects/:pid/blockers/:bid/wait', async (c) => {
 app.post('/api/projects/:pid/nodes/:nid/messages', async (c) => {
   const pid = pidParam(c);
   const input = ok(parseMessageInput(await body(c)));
-  const db = c.env.DB;
+  const db = dbOf(c.env);
   await requireProject(db, pid);
   const prev = await requireNode(db, pid, c.req.param('nid'));
   const now = iso();
@@ -544,7 +545,7 @@ app.post('/api/projects/:pid/nodes/:nid/messages', async (c) => {
 app.get('/api/projects/:pid/live', async (c) => {
   const pid = pidParam(c);
   if (c.req.header('upgrade')?.toLowerCase() !== 'websocket') return fail('invalid', 'Esta ruta espera un WebSocket (Upgrade: websocket)');
-  await requireProject(c.env.DB, pid);
+  await requireProject(dbOf(c.env), pid);
   const since = c.req.query('since');
   const headers = new Headers(c.req.raw.headers);
   headers.set('x-dagyard-project', pid);

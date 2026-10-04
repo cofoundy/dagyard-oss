@@ -1,6 +1,7 @@
 import { applyEvent, type DagEvent, type Message, type ProjectSnapshot, type ServerFrame } from '@dagyard/model';
 import { SELF, evictDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
+import { db } from '../src/db.js';
 import { describe, expect, it } from 'vitest';
 import { AGENT, BASE, OWNER, api, json, openLive, seedDemo } from './helpers.js';
 
@@ -123,9 +124,9 @@ describe('Durable Object', () => {
     const at = new Date().toISOString();
     const mk = (seq: number): DagEvent => ({ seq, projectId: pid, type: 'node.removed', actor: 'agent', at, payload: { nodeId: `x${seq}` } });
     const [e1, e2] = [mk(s.seq + 1), mk(s.seq + 2)];
-    await env.DB.batch(
+    await db(env).batch(
       [e1, e2].map((e) =>
-        env.DB.prepare('INSERT INTO events (project_id, seq, type, actor, at, payload) VALUES (?, ?, ?, ?, ?, ?)').bind(pid, e.seq, e.type, e.actor, e.at, JSON.stringify(e.payload)),
+        db(env).prepare('INSERT INTO events (project_id, seq, type, actor, at, payload) VALUES (?, ?, ?, ?, ?, ?)').bind(pid, e.seq, e.type, e.actor, e.at, JSON.stringify(e.payload)),
       ),
     );
     const stub = env.PROJECT_ROOM.get(env.PROJECT_ROOM.idFromName(pid));

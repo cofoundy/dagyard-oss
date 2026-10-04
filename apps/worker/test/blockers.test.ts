@@ -1,5 +1,6 @@
 import type { Blocker, BlockerWaitResult, ProjectSnapshot } from '@dagyard/model';
 import { env } from 'cloudflare:workers';
+import { db } from '../src/db.js';
 import { describe, expect, it } from 'vitest';
 import { AGENT, OWNER, api, json, seedDemo } from './helpers.js';
 
@@ -69,7 +70,7 @@ describe('bloqueantes', () => {
       const text = await (await api(path)).text();
       expect(text, path).not.toContain(SECRET);
     }
-    const row = await env.DB.prepare('SELECT access_value FROM blockers WHERE id = ?').bind(access.id).first<{ access_value: string }>();
+    const row = await db(env).prepare('SELECT access_value FROM blockers WHERE id = ?').bind(access.id).first<{ access_value: string }>();
     expect(row!.access_value).toMatch(/^v1\./);
     expect(row!.access_value).not.toContain(SECRET);
   });

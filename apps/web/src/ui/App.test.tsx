@@ -5,6 +5,7 @@ import type { CreateSkyOptions } from '../scene/contract';
 import { FixtureApi } from '../data/fixture';
 import { measureSafeArea } from './useSafeArea';
 import { App } from './App';
+import { initialProject } from './Workspace';
 
 // La escena es de otro carril: aquí se reemplaza por un doble que registra lo que la interfaz le pide.
 const scene = vi.hoisted(() => ({ opts: null as CreateSkyOptions | null, calls: [] as Array<[string, unknown[]]> }));
@@ -195,6 +196,61 @@ describe('interfaz', () => {
     type(host.querySelector('#clave')!, 'clave-buena');
     await act(async () => void host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
     await until(() => text().includes('Marketplace de reservas'), 'entra');
+  });
+});
+
+// #29: el servidor lista por última actualización, así que lo último importado llega primero; al entrar sin elección
+// previa se abre la demo, y lo que el usuario elige se recuerda al recargar.
+describe('proyecto al entrar', () => {
+  const list = [
+    { id: 'basalt', name: 'Basalt' },
+    { id: P, name: 'Marketplace de reservas' },
+  ];
+
+  it('sin elección previa abre la demo aunque no sea la primera de la lista', () => {
+    expect(initialProject(list, null)).toBe(P);
+    expect(initialProject(list, 'ya-no-existe')).toBe(P);
+    expect(initialProject(list, 'basalt')).toBe('basalt');
+    expect(initialProject([{ id: 'basalt', name: 'Basalt' }], null)).toBe('basalt');
+    expect(initialProject([], null)).toBeNull();
+  });
+
+  /** La fixture con la lista como la manda el servidor: el último actualizado primero. */
+  class LatestFirst extends FixtureApi {
+    override async listProjects() {
+      return (await super.listProjects()).reverse();
+    }
+  }
+
+  // el localStorage de Node tapa al de jsdom: uno en memoria, como un navegador limpio
+  beforeEach(() => {
+    const m = new Map<string, string>();
+    vi.stubGlobal('localStorage', {
+      getItem: (k: string) => m.get(k) ?? null,
+      setItem: (k: string, v: string) => void m.set(k, String(v)),
+      removeItem: (k: string) => void m.delete(k),
+      clear: () => m.clear(),
+    });
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('un navegador limpio entra a la demo; si eligió otro y recarga, sigue en ese', async () => {
+    const api = new LatestFirst({ storage: null });
+    await api.login('clave-de-prueba');
+    expect((await api.listProjects())[0]!.id).not.toBe(P);
+    act(() => root.render(<App api={api} demo />));
+    await until(() => text().includes('Descubrimiento'), 'carga la demo');
+    expect(host.querySelector('.proj')?.textContent).toBe('Marketplace de reservas');
+
+    click(host.querySelector('.proj')!);
+    click(button('Renovación del sitio web'));
+    await until(() => host.querySelector('.proj')?.textContent === 'Renovación del sitio web', 'cambia de proyecto');
+
+    act(() => root.unmount());
+    root = createRoot(host);
+    act(() => root.render(<App api={api} demo />));
+    await until(() => !!host.querySelector('.rail'), 'recarga');
+    expect(host.querySelector('.proj')?.textContent).toBe('Renovación del sitio web');
   });
 });
 

@@ -220,6 +220,11 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
   .brand { max-width: calc(100vw - 32px); }
   .picker { left: 0; }
 }
+/* 360 px con «Nada te espera»: la campana y los espacios se angostan para que la fila respete el margen */
+@media (max-width: 380px) {
+  .actions { gap: 6px; }
+  .notify { padding: 10px 9px; }
+}
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }

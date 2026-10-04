@@ -1,8 +1,10 @@
 // Laboratorio de la escena (scene-lab.html): monta el cielo con el grafo local de 20 nodos y un HUD de réplica.
 // Parámetros: ?w=390&h=844 fuerza un marco de ese tamaño · ?mode=overview|focus|stage · ?node=comision · ?stage=1
 // · ?debug=1 dibuja el rectángulo seguro · ?live=1 simula eventos (estado, nacimiento) para ver las animaciones.
+// · ?graph=basalt monta el proyecto real importado (88 nodos, 63 en una etapa) para ver la vista densa.
 import type { SafeArea, SceneGraph } from './contract';
 import { createSky } from './index';
+import { basaltGraph } from './fixtures/basalt';
 import { labGraph } from './lab-graph';
 import { roman } from './labels';
 
@@ -19,7 +21,7 @@ if (w || h) {
 }
 if (q.get('debug')) document.body.classList.add('debug');
 
-const graph: SceneGraph = labGraph();
+const graph: SceneGraph = q.get('graph') === 'basalt' ? basaltGraph() : labGraph();
 
 function renderRail(sel: number | null) {
   $<HTMLElement>('#rail').innerHTML = graph.stages
@@ -66,7 +68,7 @@ addEventListener('keydown', (e) => e.key === 'Escape' && sky.overview());
 $('#overview').addEventListener('click', () => sky.overview());
 const blocked = graph.nodes.filter((n) => n.status === 'blocked');
 let bi = -1;
-$('#waiting').addEventListener('click', () => sky.focus(blocked[(bi = (bi + 1) % blocked.length)]!.id));
+$('#waiting').addEventListener('click', () => blocked.length && sky.focus(blocked[(bi = (bi + 1) % blocked.length)]!.id));
 
 const mode = q.get('mode');
 if (mode && mode !== 'overview') {

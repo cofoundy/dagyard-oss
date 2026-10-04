@@ -1,7 +1,8 @@
 // Layout «carta estelar»: el plan como una carta celeste leída de frente.
 // Puro y determinista (nada de Math.random): mismo grafo + mismas opciones = mismas posiciones.
 //
-// Apaisado: cada etapa es una columna (una constelación) de izquierda a derecha.
+// Apaisado: cada etapa es una columna (una constelación) de izquierda a derecha. Si una etapa trae muchos nodos
+// (`maxPerCol`), se reparte en una rejilla de sub-columnas dentro de su columna; el encuadre elige la rejilla.
 // Retrato: se transpone; cada etapa es una fila de arriba abajo, con dos sub-filas en zigzag si tiene muchos nodos.
 // Dentro de cada etapa los nodos se ordenan por baricentro de sus dependencias (menos cruces de aristas).
 
@@ -45,6 +46,13 @@ export interface LayoutOptions {
   step?: number;
   /** Retrato: más de esto en una fila → dos sub-filas. */
   maxPerRow?: number;
+  /**
+   * Apaisado denso: una etapa con más de esto se reparte en una rejilla de sub-columnas (fila a fila, dependencias
+   * arriba). Sin definir, cada etapa es una sola columna (la carta de siempre).
+   */
+  maxPerCol?: number;
+  /** Apaisado denso: paso entre sub-columnas de una misma etapa. Por defecto, 0,8 × spread. */
+  colStep?: number;
 }
 
 export const LAYOUT_DEFAULTS = {
@@ -177,6 +185,22 @@ export function layoutGraph(graph: SceneGraph, opts: LayoutOptions & { metrics?:
   const depth = LAYOUT_DEFAULTS.depth;
   const pad = step * 0.08;
   let cursor = 0; // retrato: y del ancla del encabezado de la etapa en curso
+  // apaisado denso: sub-columnas por etapa y centros de columna acumulados por ancho (una etapa ancha empuja a las demás)
+  const dense = o === 'landscape' && opts.maxPerCol !== undefined && Number.isFinite(opts.maxPerCol);
+  const colStep = opts.colStep ?? spread * 0.8;
+  const cols = order.map((l) => (dense && l.length > opts.maxPerCol! ? Math.ceil(l.length / Math.max(1, opts.maxPerCol!)) : 1));
+  const denseX: number[] = [];
+  if (dense) {
+    let x = 0;
+    cols.forEach((c, s) => {
+      const w = (c - 1) * colStep;
+      if (s) x += ((cols[s - 1]! - 1) * colStep) / 2 + spread + w / 2;
+      denseX.push(x);
+    });
+    const span = S ? denseX[S - 1]! + ((cols[S - 1]! - 1) * colStep) / 2 - (denseX[0]! - ((cols[0]! - 1) * colStep) / 2) : 0;
+    const left = S ? denseX[0]! - ((cols[0]! - 1) * colStep) / 2 : 0;
+    for (let s = 0; s < S; s++) denseX[s] = denseX[s]! - left - span / 2;
+  }
 
   for (let s = 0; s < S; s++) {
     const list = order[s]!;
@@ -184,7 +208,40 @@ export function layoutGraph(graph: SceneGraph, opts: LayoutOptions & { metrics?:
     const n = list.length;
     const maxRank = Math.max(0, ...list.map((id) => ranks.get(id) ?? 0));
 
-    if (o === 'landscape') {
+    if (o === 'landscape' && dense) {
+      const along = denseX[s]!;
+      const c = cols[s]!;
+      const rows = c > 1 ? Math.ceil(n / c) : n;
+      // rejilla fila a fila: el orden por baricentro baja de arriba abajo y las dependencias quedan en las filas altas
+      const sorted = [...list].sort((p, q) => (ranks.get(p) ?? 0) - (ranks.get(q) ?? 0) || list.indexOf(p) - list.indexOf(q));
+      let minX = Infinity, maxX = -Infinity, maxY = -Infinity, bottom = Infinity;
+      sorted.forEach((id, i) => {
+        const row = Math.floor(i / c);
+        const inRow = Math.min(c, n - row * c);
+        const col = i % c;
+        const x = along + (col - (inRow - 1) / 2) * colStep + signed(id, 1) * step * 0.05;
+        const y = -(row - (rows - 1) / 2) * step + signed(id, 2) * step * 0.03;
+        positions.set(id, { x, y, z: signed(id, 3) * depth });
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+        bottom = Math.min(bottom, y - M.below(id));
+      });
+      if (!n) {
+        minX = maxX = along;
+        maxY = 0;
+        bottom = 0;
+      }
+      const top = maxY + M.halo + pad * 2;
+      stages.push({
+        index: s,
+        center: { x: (minX + maxX) / 2, y: (top + bottom) / 2, z: 0 },
+        rx: Math.max(step * 0.6, (maxX - minX) / 2 + step * 0.48),
+        ry: (top - bottom) / 2 + pad * 2,
+        header: { x: (minX + maxX) / 2, y: top + pad * 4, z: 0 },
+        count: n,
+      });
+    } else if (o === 'landscape') {
       const along = (s - (S - 1) / 2) * spread;
       const sub = step * 0.62; // separación entre sub-columnas (dependencias dentro de la etapa)
       let minX = Infinity, maxX = -Infinity, maxY = -Infinity, bottom = Infinity;

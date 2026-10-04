@@ -19,7 +19,9 @@ const CSS = `
 .sky-lbl.done { color: #a29c90; }
 .sky-lbl.working { color: #9fd3ff; }
 .sky-lbl.blocked { color: #ffb547; }
-.sky-lbl.hover { color: #f4eee2; }
+.sky-lbl.hover { color: #f4eee2; z-index: 1; }
+/* vista general densa: el título se recorta a dos líneas; completo al pasar el mouse, enfocar o volar a su etapa */
+.sky-lbl.clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
 .sky-portrait .sky-lbl { font-size: 12px; }
 .sky-stage {
   display: grid; justify-items: center; gap: 4px; white-space: nowrap; text-align: center;
@@ -88,7 +90,8 @@ export class LabelLayer {
       for (const k of [...this.sizes.keys()]) if (k.startsWith(id + '|')) this.sizes.delete(k);
     }
     const cls = `sky-lbl ${status}`;
-    if (!el.className.startsWith(cls)) el.className = cls + (el.classList.contains('hover') ? ' hover' : '');
+    if (!el.className.startsWith(cls))
+      el.className = cls + (el.classList.contains('hover') ? ' hover' : '') + (el.classList.contains('clamp') ? ' clamp' : '');
   }
 
   removeNode(id: string) {
@@ -126,14 +129,17 @@ export class LabelLayer {
   /** Mide en el DOM real (con la fuente cargada); lo que se mide es lo que el encuadre usa. */
   sizer(): Sizer {
     return {
-      node: (id, maxWidth) => {
-        const key = `${id}|${maxWidth}`;
+      node: (id, maxWidth, lines) => {
+        const key = `${id}|${maxWidth}|${lines ?? 0}`;
         let s = this.sizes.get(key);
         if (!s) {
           const el = this.nodes.get(id);
           if (!el) return { w: 0, h: 0 };
+          const was = el.classList.contains('clamp');
+          el.classList.toggle('clamp', !!lines);
           el.style.maxWidth = `${maxWidth}px`;
           s = { w: Math.ceil(el.offsetWidth), h: Math.ceil(el.offsetHeight) };
+          el.classList.toggle('clamp', was);
           this.sizes.set(key, s);
         }
         return s;
@@ -168,6 +174,12 @@ export class LabelLayer {
     if (!el) return;
     el.style.transform = `translate(${x.toFixed(1)}px, ${(y - LABEL.headerGap).toFixed(1)}px) translate(-50%, -100%)`;
     el.style.opacity = opacity.toFixed(3);
+  }
+
+  /** Recorta (o no) el título de un nodo a dos líneas: la vista general densa lo recorta salvo que se pida verlo. */
+  setClamp(id: string, on: boolean) {
+    const el = this.nodes.get(id);
+    if (el && el.classList.contains('clamp') !== on) el.classList.toggle('clamp', on);
   }
 
   setHover(id: string | null) {

@@ -4,6 +4,7 @@
 // Solo usa matemática de three (sin WebGL), así que corre en tests.
 
 import { MathUtils, PerspectiveCamera, Vector3 } from 'three';
+import type { NodeStatus } from '../data/types';
 import type { SafeArea, SceneGraph } from './contract';
 import { layoutGraph, LAYOUT_DEFAULTS, orientationFor, type LabelMetrics, type LayoutResult, type Orientation, type Vec3 } from './layout';
 
@@ -43,8 +44,8 @@ export interface Size {
 }
 
 export interface Sizer {
-  /** Tamaño en px de la etiqueta del nodo con ese ancho máximo. */
-  node(id: string, maxWidth: number): Size;
+  /** Tamaño en px de la etiqueta del nodo con ese ancho máximo (y, si se da, recortada a ese número de líneas). */
+  node(id: string, maxWidth: number, lines?: number): Size;
   /** Tamaño en px del encabezado de etapa (nombre + contador). */
   header(stage: number): Size;
 }
@@ -248,12 +249,85 @@ export function pxPerUnit(cam: CamState, vp: Viewport): number {
   return Math.abs(b.x - a.x);
 }
 
+/** Un sizer que mide las etiquetas recortadas a `lines` líneas (vista general densa). */
+export function clampSizer(sizer: Sizer, lines: number | undefined): Sizer {
+  if (!lines) return sizer;
+  return { node: (id, maxWidth) => sizer.node(id, maxWidth, lines), header: (i) => sizer.header(i) };
+}
+
 export interface OverviewSolution {
   layout: LayoutResult;
   fit: FitResult;
   orientation: Orientation;
   /** Ancho máximo de las etiquetas de nodo (px) con el que se resolvió el encuadre. */
   labelWidth: number;
+  /** Etiquetas que se ven en la vista general; las demás chocan y aparecen al pasar el mouse, enfocar o volar a su etapa. */
+  visible: Set<string>;
+  /** Vista general densa: los títulos se recortan a este número de líneas (completos al pasar el mouse o enfocar). */
+  maxLines?: number;
+}
+
+/** Qué etiqueta gana cuando dos chocan: lo que espera al PM primero, lo terminado al final. */
+export const LABEL_PRIORITY: Record<NodeStatus, number> = { blocked: 3, working: 2, pending: 1, done: 0 };
+
+/**
+ * Elige qué etiquetas de nodo se muestran sin pisarse: por prioridad (Te espera > En progreso > Pendiente > Lista),
+ * luego la más baja primero (caben más) y luego el orden del layout. Cada caja es la unión de su proyección en todos
+ * los ángulos dados, así que tampoco chocan con la respiración ni el paralaje. Los rótulos de etapa son obstáculos fijos.
+ */
+export function declutter(
+  graph: SceneGraph,
+  layout: LayoutResult,
+  cam: CamState,
+  vp: Viewport,
+  sizer: Sizer,
+  labelWidth: number,
+  opts: { onlyStage?: number; angles?: { theta: number; phi: number }[]; margin?: number } = {},
+): Set<string> {
+  const camera = scratchCamera(vp);
+  const angles = opts.angles ?? overviewAngles();
+  const m = opts.margin ?? 0;
+  const status = new Map(graph.nodes.map((n) => [n.id, n.status]));
+  const ids = [...layout.positions.keys()].filter((id) => opts.onlyStage === undefined || layout.stageOf.get(id) === opts.onlyStage);
+  const stages = layout.stages.filter((st) => opts.onlyStage === undefined || st.index === opts.onlyStage);
+  const empty = (): Box => ({ x0: Infinity, x1: -Infinity, y0: Infinity, y1: -Infinity });
+  const boxes = new Map(ids.map((id) => [id, empty()]));
+  const heads = stages.map(empty);
+  const grow = (b: Box, x0: number, x1: number, y0: number, y1: number) => {
+    b.x0 = Math.min(b.x0, x0);
+    b.x1 = Math.max(b.x1, x1);
+    b.y0 = Math.min(b.y0, y0);
+    b.y1 = Math.max(b.y1, y1);
+  };
+  for (const a of angles) {
+    placeCamera(camera, { ...cam, theta: a.theta, phi: a.phi });
+    for (const id of ids) {
+      const p = layout.positions.get(id)!;
+      const q = projectPx(camera, { x: p.x, y: p.y - LABEL.drop, z: p.z }, vp);
+      const s = sizer.node(id, labelWidth);
+      grow(boxes.get(id)!, q.x - s.w / 2, q.x + s.w / 2, q.y + LABEL.gap, q.y + LABEL.gap + s.h);
+    }
+    stages.forEach((st, i) => {
+      const q = projectPx(camera, st.header, vp);
+      const s = sizer.header(st.index);
+      grow(heads[i]!, q.x - s.w / 2, q.x + s.w / 2, q.y - LABEL.headerGap - s.h, q.y - LABEL.headerGap);
+    });
+  }
+  const order = new Map(ids.map((id, i) => [id, i]));
+  const h = (id: string) => boxes.get(id)!.y1 - boxes.get(id)!.y0;
+  const ranked = [...ids].sort(
+    (a, b) => LABEL_PRIORITY[status.get(b) ?? 'pending'] - LABEL_PRIORITY[status.get(a) ?? 'pending'] || h(a) - h(b) || order.get(a)! - order.get(b)!,
+  );
+  const taken: Box[] = heads.filter((b) => Number.isFinite(b.x0));
+  const visible = new Set<string>();
+  for (const id of ranked) {
+    const b = boxes.get(id)!;
+    const hit = taken.some((t) => b.x0 - m < t.x1 && t.x0 < b.x1 + m && b.y0 - m < t.y1 && t.y0 < b.y1 + m);
+    if (hit) continue;
+    taken.push(b);
+    visible.add(id);
+  }
+  return visible;
 }
 
 const LABEL_WIDTH = { landscape: { min: 120, max: 200 }, portrait: { min: 80, max: 150 } } as const;
@@ -314,55 +388,92 @@ function metricsFor(graph: SceneGraph, sizer: Sizer, ppu: number, labelWidth: nu
   };
 }
 
+/** Más nodos que esto en una etapa = proyecto denso: rejilla elegida por cuántas etiquetas deja leer. */
+export const DENSE_STAGE = 8;
+/** Proyecto denso: líneas de título en la vista general (88 títulos largos no caben enteros a 1440×900). */
+export const DENSE_LINES = 2;
+/** Proyecto denso: aire mínimo en px entre dos etiquetas visibles. */
+const DENSE_MARGIN = 3;
+
+type BaseSolution = Omit<OverviewSolution, 'visible'>;
+
 /**
  * Resuelve la vista general completa: orientación, espaciado entre etapas que llena el cuadro, ancho de etiquetas
  * y cámara exacta. Las etiquetas miden en píxeles y el mundo en unidades, así que se supone una escala, se apila
- * con ella y se acepta solo si la escala resultante es al menos la supuesta (así nada se pisa).
+ * con ella y se acepta solo si la escala resultante es al menos la supuesta (así nada se pisa). Si aun así dos
+ * etiquetas chocan (proyectos densos), `visible` dice cuáles se muestran.
  */
 export function solveOverview(graph: SceneGraph, vp: Viewport, safe: SafeArea, sizer: Sizer): OverviewSolution {
   const o = orientationFor(vp.width, vp.height);
-  const W = LABEL_WIDTH[o];
-  const step = LAYOUT_DEFAULTS[o].step;
+  const counts = new Map<number, number>();
+  for (const n of graph.nodes) counts.set(n.stage, (counts.get(n.stage) ?? 0) + 1);
+  const maxN = Math.max(0, ...counts.values());
+  const withVisible = (b: BaseSolution): OverviewSolution => ({ ...b, visible: declutter(graph, b.layout, b.fit.cam, vp, sizer, b.labelWidth) });
+
+  if (o === 'landscape') {
+    if (maxN > DENSE_STAGE) return solveDenseLandscape(graph, vp, safe, sizer, maxN);
+    return withVisible(solveLandscape(graph, vp, safe, sizer));
+  }
   // en pantallas angostas una fila de 4 deja etiquetas de 80 px: se parte desde 4
   const maxPerRow = vp.width - safe.left - safe.right < 480 ? 3 : LAYOUT_DEFAULTS.maxPerRow;
+  if (maxN <= DENSE_STAGE) return withVisible(solvePortrait(graph, vp, safe, sizer, maxPerRow));
+  // retrato denso: más filas, títulos recortados; se prueba cuántas columnas por fila dejan leer más etiquetas
+  const short = clampSizer(sizer, DENSE_LINES);
+  let best: OverviewSolution | null = null;
+  for (const per of [2, 3, 4].filter((k) => k <= maxPerRow + 1)) {
+    const b = solvePortrait(graph, vp, safe, short, per);
+    const visible = declutter(graph, b.layout, b.fit.cam, vp, short, b.labelWidth, { margin: DENSE_MARGIN });
+    if (!best || visible.size > best.visible.size) best = { ...b, visible, maxLines: DENSE_LINES };
+  }
+  return best!;
+}
 
-  if (o === 'portrait') {
-    // Retrato: cada fila reparte su ancho en `maxPerRow` columnas fijas en píxeles, así el ancho de las
-    // etiquetas no depende de la escala vertical (si dependiera, menos alto → etiquetas más angostas y altas
-    // → todavía menos alto). El paso en mundo se deriva de la escala supuesta `p`.
-    const colPx = (vp.width - safe.left - safe.right - FRAME_PAD * 2) / maxPerRow;
-    const lw = Math.round(MathUtils.clamp(colPx - 12, W.min, W.max));
-    const attempt = (p: number) => {
-      const s = solveSpread(graph, vp, safe, sizer, o, lw, metricsFor(graph, sizer, p, lw), maxPerRow, colPx / p);
-      return { s, lw, ppu: pxPerUnit(s.fit.cam, vp) };
-    };
-    // consistente = la escala resultante alcanza la supuesta (entonces nada se pisa)
-    const score = (p: number, a: ReturnType<typeof attempt>) => a.ppu / p;
-    let lo = 1;
-    let hi = Math.max(4, vp.width / 4);
-    let best = attempt(lo);
-    let bestScore = score(lo, best);
-    let found = bestScore >= 0.999;
-    for (let i = 0; i < 14; i++) {
-      const mid = (lo + hi) / 2;
-      const a = attempt(mid);
-      const sc = score(mid, a);
-      if (sc >= 0.999) {
-        lo = mid;
+function solvePortrait(graph: SceneGraph, vp: Viewport, safe: SafeArea, sizer: Sizer, maxPerRow: number): BaseSolution {
+  // Retrato: cada fila reparte su ancho en `maxPerRow` columnas fijas en píxeles, así el ancho de las
+  // etiquetas no depende de la escala vertical (si dependiera, menos alto → etiquetas más angostas y altas
+  // → todavía menos alto). El paso en mundo se deriva de la escala supuesta `p`.
+  const o: Orientation = 'portrait';
+  const W = LABEL_WIDTH[o];
+  const colPx = (vp.width - safe.left - safe.right - FRAME_PAD * 2) / maxPerRow;
+  const lw = Math.round(MathUtils.clamp(colPx - 12, W.min, W.max));
+  const attempt = (p: number) => {
+    const s = solveSpread(graph, vp, safe, sizer, o, lw, metricsFor(graph, sizer, p, lw), maxPerRow, colPx / p);
+    return { s, lw, ppu: pxPerUnit(s.fit.cam, vp) };
+  };
+  // consistente = la escala resultante alcanza la supuesta (entonces nada se pisa); si ninguna lo es (demasiados
+  // nodos para el alto), al menos un encuadre que entre en el rectángulo seguro
+  const fits = (a: ReturnType<typeof attempt>) => a.s.fit.fill.x <= 1.001 && a.s.fit.fill.y <= 1.001;
+  const score = (p: number, a: ReturnType<typeof attempt>) => (fits(a) ? a.ppu / p : -1);
+  let lo = 1;
+  let hi = Math.max(4, vp.width / 4);
+  let best = attempt(lo);
+  let bestScore = score(lo, best);
+  let found = bestScore >= 0.999;
+  for (let i = 0; i < 14; i++) {
+    const mid = (lo + hi) / 2;
+    const a = attempt(mid);
+    const sc = score(mid, a);
+    if (sc >= 0.999) {
+      lo = mid;
+      best = a;
+      bestScore = sc;
+      found = true;
+    } else {
+      hi = mid;
+      if (!found && sc > bestScore) {
         best = a;
         bestScore = sc;
-        found = true;
-      } else {
-        hi = mid;
-        if (!found && sc > bestScore) {
-          best = a;
-          bestScore = sc;
-        }
       }
     }
-    return { layout: best.s.layout, fit: best.s.fit, orientation: o, labelWidth: best.lw };
   }
+  return { layout: best.s.layout, fit: best.s.fit, orientation: o, labelWidth: best.lw };
+}
 
+function solveLandscape(graph: SceneGraph, vp: Viewport, safe: SafeArea, sizer: Sizer): BaseSolution {
+  const o: Orientation = 'landscape';
+  const W = LABEL_WIDTH[o];
+  const step = LAYOUT_DEFAULTS[o].step;
+  const maxPerRow = vp.width - safe.left - safe.right < 480 ? 3 : LAYOUT_DEFAULTS.maxPerRow;
   let p = 16;
   let lw: number = W.max;
   let s = solveSpread(graph, vp, safe, sizer, o, lw, metricsFor(graph, sizer, p, lw), maxPerRow);
@@ -378,6 +489,50 @@ export function solveOverview(graph: SceneGraph, vp: Viewport, safe: SafeArea, s
   return { layout: s.layout, fit: s.fit, orientation: o, labelWidth: lw };
 }
 
+/**
+ * Apaisado denso: la etapa más grande se reparte en una rejilla de sub-columnas. Se prueban varias rejillas (filas)
+ * y proporciones de celda, y gana la que deja ver más etiquetas sin pisarse; a igualdad, la de mayor escala.
+ * Los títulos se miden recortados a `DENSE_LINES` líneas, que es como se pintan en la vista general.
+ */
+function solveDenseLandscape(graph: SceneGraph, vp: Viewport, safe: SafeArea, full: Sizer, maxN: number): OverviewSolution {
+  const o: Orientation = 'landscape';
+  const sizer = clampSizer(full, DENSE_LINES);
+  const W = LABEL_WIDTH[o];
+  const step = LAYOUT_DEFAULTS[o].step;
+  const camera = scratchCamera(vp);
+  const angles = overviewAngles();
+  const rowsSet = new Set<number>();
+  for (let c = 2; c <= Math.min(12, maxN); c++) rowsSet.add(Math.ceil(maxN / c));
+  const evaluate = (rows: number, aspect: number) => {
+    const colStep = aspect * step;
+    const spread = colStep + step * 0.9;
+    let p = 10;
+    let lw: number = W.max;
+    let layout!: LayoutResult;
+    let fit!: FitResult;
+    let ppu = p;
+    for (let k = 0; k < 3; k++) {
+      layout = layoutGraph(graph, { orientation: o, spread, step, maxPerCol: rows, colStep, metrics: metricsFor(graph, sizer, p, lw) });
+      fit = fitItems(overviewItems(layout, sizer, lw), vp, safe, contentCenter(layout), angles, { camera });
+      ppu = pxPerUnit(fit.cam, vp);
+      // el ancho de etiqueta llena la sub-columna a la escala resultante
+      const lw2 = Math.round(MathUtils.clamp(colStep * ppu - 14, W.min, W.max));
+      if (k === 2 || (Math.abs(lw2 - lw) <= 3 && Math.abs(ppu - p) / p < 0.05)) break;
+      p = ppu;
+      lw = lw2;
+    }
+    const visible = declutter(graph, layout, fit.cam, vp, sizer, lw, { margin: DENSE_MARGIN });
+    return { sol: { layout, fit, orientation: o, labelWidth: lw, visible, maxLines: DENSE_LINES }, ppu };
+  };
+  let best: ReturnType<typeof evaluate> | null = null;
+  for (const rows of rowsSet)
+    for (const aspect of [1.6, 2.1, 2.7, 3.4]) {
+      const c = evaluate(rows, aspect);
+      if (!best || c.sol.visible.size > best.sol.visible.size || (c.sol.visible.size === best.sol.visible.size && c.ppu > best.ppu)) best = c;
+    }
+  return best!.sol;
+}
+
 /** Estimación de tamaño de etiquetas sin DOM (tests, y primer cuadro antes de que carguen las fuentes). */
 export function estimateSizer(graph: SceneGraph, portrait = false): Sizer {
   const title = new Map(graph.nodes.map((n) => [n.id, n.title]));
@@ -385,7 +540,7 @@ export function estimateSizer(graph: SceneGraph, portrait = false): Sizer {
   const cw = fs * 0.56;
   const lh = Math.round(fs * 1.25);
   return {
-    node(id, maxWidth) {
+    node(id, maxWidth, maxLines) {
       const words = (title.get(id) ?? '').split(/\s+/);
       let lines = 1, line = 0, widest = 0;
       for (const w of words) {
@@ -398,7 +553,7 @@ export function estimateSizer(graph: SceneGraph, portrait = false): Sizer {
         } else line += add;
       }
       widest = Math.max(widest, line);
-      return { w: Math.min(maxWidth, Math.ceil(widest)), h: lines * lh };
+      return { w: Math.min(maxWidth, Math.ceil(widest)), h: Math.min(lines, maxLines ?? Infinity) * lh };
     },
     header(stage) {
       const st = graph.stages[stage];

@@ -41,6 +41,7 @@ import {
   LABEL,
   PARALLAX,
   contentCenter,
+  declutter,
   fitItems,
   fovFor,
   overviewItems,
@@ -165,6 +166,10 @@ export function createSky(opts: CreateSkyOptions): Sky {
   let focusId: string | null = null;
   let stageSel: number | null = null;
   let hoverId: string | null = null;
+  /** Al volar a una etapa densa: qué etiquetas de esa etapa caben con la cámara de la etapa (títulos completos). */
+  let stageVisible: Set<string> | null = null;
+  /** Opacidad suavizada de cada etiqueta: ocultar o mostrar por choque es un fundido, no un parpadeo. */
+  const labelK = new Map<string, number>();
   let started = false;
   let structureKey = '';
   let dirtyLayout = true;
@@ -236,6 +241,7 @@ export function createSky(opts: CreateSkyOptions): Sky {
     world.remove(v.group);
     for (const s of [v.glow, v.spike, v.ring, v.shock]) s.material.dispose();
     labels.removeNode(v.id);
+    labelK.delete(v.id);
   }
 
   function buildEdge(from: string, to: string, draw: number): EdgeView {
@@ -404,7 +410,9 @@ export function createSky(opts: CreateSkyOptions): Sky {
     const ppu = pxPerUnit(sol.fit.cam, vp);
     const sz = labels.sizer();
     labelBelow.clear();
-    for (const id of sol.layout.positions.keys()) labelBelow.set(id, LABEL.drop + (LABEL.gap + sz.node(id, sol.labelWidth).h + 3) / ppu);
+    for (const id of sol.layout.positions.keys()) labelBelow.set(id, LABEL.drop + (LABEL.gap + sz.node(id, sol.labelWidth, sol.maxLines).h + 3) / ppu);
+    stageVisible = null;
+    if (mode === 'stage' && stageSel !== null) stageVisible = stageLabels(stageSel, stageCam(stageSel));
     // la orientación cambia el trazo y la opacidad de las aristas que saltan etapas
     for (const e of edges.values()) {
       shapeEdge(e);
@@ -418,6 +426,15 @@ export function createSky(opts: CreateSkyOptions): Sky {
     const angle = { theta: 0.5, phi: 1.3 };
     const fit = fitItems(items, vp, safe, contentCenter(solution.layout, i), [angle]);
     return { ...fit.cam, r: Math.max(fit.cam.r, 14) };
+  }
+
+  /** Etiquetas de la etapa `i` que caben sin pisarse con la cámara de esa etapa (títulos completos). */
+  function stageLabels(i: number, c: CamState | null): Set<string> | null {
+    if (!solution || !c) return null;
+    return declutter(graph, solution.layout, c, vp, labels.sizer(), solution.labelWidth, {
+      onlyStage: i,
+      angles: [{ theta: c.theta, phi: c.phi }],
+    });
   }
 
   /** Desplazamiento que pone el punto mirado en el centro del rectángulo seguro (y más arriba en retrato, sobre la hoja). */
@@ -800,22 +817,51 @@ export function createSky(opts: CreateSkyOptions): Sky {
     const sizer = labels.sizer();
     const lw = solution?.labelWidth ?? 160;
     boxes.length = 0;
+    // Proyecto denso: no todas las etiquetas caben. Se ven las que eligió el encuadre (`visible`); las demás
+    // aparecen al pasar el mouse, al enfocar su nodo (o uno vecino) o al volar a su etapa.
+    const shown = solution?.visible;
+    const clampLines = solution?.maxLines;
+    const placed: { v: NodeView; x: number; y: number; o: number; lines?: number }[] = [];
+    let hovered: { x0: number; x1: number; y0: number; y1: number } | null = null;
     for (const v of nodes.values()) {
       v3.set(v.pos.x, v.pos.y - LABEL.drop, v.pos.z).project(camera);
       const vis = v3.z < 1 && Math.abs(v3.x) < 1.2 && Math.abs(v3.y) < 1.2;
       const x = (v3.x * 0.5 + 0.5) * w, y = (-v3.y * 0.5 + 0.5) * h;
+      const inStage = mode === 'stage' && stageSel === v.data.stage;
+      const asked = v.id === hoverId || (!!focusId && rel.has(v.id)) || inStage;
+      const fits = !shown || shown.has(v.id);
       let o: number;
       if (!vis) o = 0;
       else if (focusId) o = rel.has(v.id) ? 1 : 0.1;
       else if (mode === 'stage') o = stageSel === v.data.stage ? 1 : 0.12;
       else o = v.data.status === 'done' ? 0.78 : 1;
       if (v.id === hoverId) o = Math.max(o, 1);
-      o *= labelIn * Math.max(0, Math.min(1, v.born * 1.4)) * (v.dying >= 0 ? v.dying : 1);
-      labels.placeNode(v.id, x, y, o);
-      if (o > 0.05) {
+      // compuerta por choque (en la demo siempre 1): se funde para que ocultar o mostrar no parpadee
+      const gate = inStage ? (!stageVisible || stageVisible.has(v.id) ? 1 : 0) : v.id === hoverId || (!!focusId && rel.has(v.id)) || fits ? 1 : 0;
+      const k0 = labelK.get(v.id) ?? gate;
+      const k = k0 + (gate - k0) * Math.min(1, dt * 7);
+      labelK.set(v.id, k);
+      o *= k * labelIn * Math.max(0, Math.min(1, v.born * 1.4)) * (v.dying >= 0 ? v.dying : 1);
+      // recortado salvo que se pida verlo entero
+      const lines = clampLines && !asked ? clampLines : undefined;
+      labels.setClamp(v.id, !!lines);
+      placed.push({ v, x, y, o, lines });
+      // oculta o recortada: al pedirla con el mouse crece, así que se le abre espacio
+      if (v.id === hoverId && (!fits || !!clampLines) && o > 0.05) {
         const sz = sizer.node(v.id, lw);
-        boxes.push({ x0: x - sz.w / 2 - 3, x1: x + sz.w / 2 + 3, y0: y + LABEL.gap - 2, y1: y + LABEL.gap + sz.h + 2, o });
+        hovered = { x0: x - sz.w / 2 - 4, x1: x + sz.w / 2 + 4, y0: y + LABEL.gap - 4, y1: y + LABEL.gap + sz.h + 4 };
       }
+    }
+    for (const it of placed) {
+      const sz = sizer.node(it.v.id, lw, it.lines);
+      let o = it.o;
+      // la etiqueta oculta que se pidió con el mouse se lee limpia: lo que choca con ella se apaga
+      if (hovered && it.v.id !== hoverId) {
+        const hb = hovered;
+        if (it.x - sz.w / 2 < hb.x1 && hb.x0 < it.x + sz.w / 2 && it.y + LABEL.gap < hb.y1 && hb.y0 < it.y + LABEL.gap + sz.h) o *= 0.12;
+      }
+      labels.placeNode(it.v.id, it.x, it.y, o);
+      if (o > 0.05) boxes.push({ x0: it.x - sz.w / 2 - 3, x1: it.x + sz.w / 2 + 3, y0: it.y + LABEL.gap - 2, y1: it.y + LABEL.gap + sz.h + 2, o });
     }
     solution?.layout.stages.forEach((st, i) => {
       v3.set(st.header.x, st.header.y, st.header.z).project(camera);
@@ -861,6 +907,7 @@ export function createSky(opts: CreateSkyOptions): Sky {
     },
     flyStage(i: number) {
       const c = stageCam(i);
+      stageVisible = stageLabels(i, c);
       focusId = null;
       stageSel = i;
       mode = 'stage';

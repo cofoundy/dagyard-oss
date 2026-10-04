@@ -35,12 +35,12 @@ import {
   requireOwner,
   roleOfToken,
 } from './auth.js';
-import { seal, unseal } from './crypto.js';
+import { hmac, seal, unseal } from './crypto.js';
 import { db as dbOf } from './db.js';
 import type { AppEnv } from './env.js';
 import { ApiFailure, errorResponse, fail, notFound } from './http.js';
 import { toBlocker, toProject } from './rows.js';
-import { UNAVAILABLE, eventsSince, getBlockerRow, isUnavailable, loadGraph, requireProject, snapshot, write } from './store.js';
+import { eventsSince, getBlockerRow, loadGraph, requireProject, snapshot, unavailableFailure, write } from './store.js';
 import type { WriteOp, WriteValues } from './writes.js';
 
 type C = Context<AppEnv>;
@@ -61,18 +61,8 @@ const room = (c: C, pid: string) => c.env.PROJECT_ROOM.get(c.env.PROJECT_ROOM.id
 /** AAD del valor de un acceso: lo amarra a su proyecto y su bloqueante. */
 const accessAad = (pid: string, bid: string) => `${pid}/${bid}`;
 
-/**
- * `Idempotency-Key` (opcional, en cualquier escritura): el CLI manda una por invocación y la repite en
- * cada reintento; la misma clave en el mismo proyecto devuelve lo de la primera vez sin volver a escribir.
- */
-function idemKey(c: C): string | undefined {
-  const key = c.req.header('idempotency-key');
-  if (key === undefined) return undefined;
-  return /^[\x21-\x7e]{1,200}$/.test(key) ? key : fail('invalid', 'Idempotency-Key: de 1 a 200 caracteres visibles (p. ej. un uuid)');
-}
-
-/** Una escritura con la clave de idempotencia del pedido, si trae. */
-const run = <K extends WriteOp['kind']>(c: C, op: Extract<WriteOp, { kind: K }>): Promise<WriteValues[K]> => write(c.env, op, idemKey(c));
+/** Una escritura con la clave de idempotencia del pedido, si trae (ver el middleware de `Idempotency-Key`). */
+const run = <K extends WriteOp['kind']>(c: C, op: Extract<WriteOp, { kind: K }>): Promise<WriteValues[K]> => write(c.env, op, c.get('idem'));
 
 function pidParam(c: C): string {
   const pid = c.req.param('pid')!;
@@ -83,8 +73,9 @@ function pidParam(c: C): string {
 
 app.onError((err, c) => {
   if (err instanceof ApiFailure) return errorResponse(err.code, err.message);
-  // un deploy reinició un Durable Object en medio de una lectura: no es un error nuestro, se puede repetir
-  if (isUnavailable(err)) return errorResponse('unavailable', UNAVAILABLE);
+  // un deploy reinició un Durable Object en medio de una lectura (o está sobrecargado): no es un error nuestro
+  const unavailable = unavailableFailure(err);
+  if (unavailable) return errorResponse(unavailable.code, unavailable.message);
   console.error(JSON.stringify({ msg: 'error no controlado', path: c.req.path, err: String(err), stack: (err as Error).stack }));
   return errorResponse('internal', 'Algo falló de nuestro lado. Inténtalo de nuevo.');
 });
@@ -144,6 +135,24 @@ app.use('/api/*', async (c, next) => {
   if (foreignOrigin(c, auth, live)) return errorResponse('forbidden', FOREIGN);
   c.set('role', auth.role);
   if (auth.session) c.set('session', auth.session);
+  await next();
+});
+
+/**
+ * `Idempotency-Key` (opcional, en cualquier escritura): el CLI manda una por invocación y la repite en cada
+ * reintento; la misma clave en el mismo proyecto devuelve lo de la primera vez sin volver a escribir. La
+ * huella es un HMAC del pedido crudo (método, ruta y cuerpo, antes de parsearlo): no cambia entre versiones
+ * del Worker y no guarda en claro el valor de un acceso.
+ */
+app.use('/api/*', async (c, next) => {
+  const key = c.req.header('idempotency-key');
+  if (key !== undefined && c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+    if (!/^[\x21-\x7e]{1,200}$/.test(key)) fail('invalid', 'Idempotency-Key: de 1 a 200 caracteres visibles (p. ej. un uuid)');
+    const url = new URL(c.req.url);
+    // `text()` queda en caché: el `json()` de la ruta parsea estos mismos bytes
+    const fp = await hmac(c.env.VAULT_KEY, `dagyard-idem-v1\n${c.req.method}\n${url.pathname}${url.search}\n${await c.req.text()}`);
+    c.set('idem', { key, fp });
+  }
   await next();
 });
 
@@ -292,7 +301,7 @@ app.post('/api/projects/:pid/blockers/:bid/resolve', async (c) => {
   // kind y opciones no cambian nunca: sirven para validar el body fuera de la transacción
   const prev = toBlocker(await requireBlockerRow(c, pid));
   // con clave, el reintento de una resolución que ya quedó lo responde el Store con lo guardado
-  if (prev.status === 'resolved' && idemKey(c) === undefined) fail('conflict', 'Ese bloqueante ya está resuelto');
+  if (prev.status === 'resolved' && !c.get('idem')) fail('conflict', 'Ese bloqueante ya está resuelto');
   const r = ok(parseResolveInput(await body(c), prev));
   // cifrar es async, así que va antes; la verificación de que sigue abierto va dentro de la transacción
   const sealed = r.value !== null ? await seal(c.env.VAULT_KEY, r.value, accessAad(pid, prev.id)) : null;

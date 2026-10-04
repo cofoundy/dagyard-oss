@@ -1,11 +1,13 @@
 import type { Message, ProjectSnapshot } from '@dagyard/model';
 import { env } from 'cloudflare:workers';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { db } from '../src/db.js';
 import type { Env } from '../src/env.js';
 import { ApiFailure } from '../src/http.js';
-import { write } from '../src/store.js';
+import { STORE_RETRY_MS, jitter, write } from '../src/store.js';
 import type { Idem, WriteOp } from '../src/writes.js';
-import { api, json, seedDemo } from './helpers.js';
+import { BASE, api, json, seedDemo } from './helpers.js';
+import { SELF } from 'cloudflare:test';
 
 const msgPath = (s: ProjectSnapshot) => `/api/projects/${s.project.id}/nodes/${s.nodes[0]!.id}/messages`;
 const messagesOf = async (pid: string, text: string) =>
@@ -51,23 +53,48 @@ describe('Idempotency-Key (#54)', () => {
     await json(await api(`/api/projects/${s.project.id}/nodes/no-existe/messages`, { method: 'POST', body: { text: 'x' }, headers: keyed(key) }), 404);
   });
 
+  it('la huella es del pedido crudo: los mismos datos con otros bytes, u otra ruta, con la misma clave → 409', async () => {
+    const s = await seedDemo();
+    const key = crypto.randomUUID();
+    const path = msgPath(s);
+    const raw = (body: string) => SELF.fetch(`${BASE}${path}`, { method: 'POST', headers: { ...keyed(key), 'content-type': 'application/json' }, body });
+    await json(await raw('{"text":"crudo","from":"Ana"}'), 201);
+    await json(await raw('{"text":"crudo","from":"Ana"}'), 201);
+    await json(await raw('{"from":"Ana","text":"crudo"}'), 409);
+    const other = `/api/projects/${s.project.id}/nodes/${s.nodes[1]!.id}/messages`;
+    await json(await api(other, { method: 'POST', body: { text: 'crudo', from: 'Ana' }, headers: keyed(key) }), 409);
+    expect(await messagesOf(s.project.id, 'crudo')).toHaveLength(1);
+  });
+
+  it('resolver un acceso con la misma clave reproduce la respuesta (el valor va en la huella, nunca en claro)', async () => {
+    const s = await seedDemo();
+    const b = s.blockers.find((x) => x.kind === 'access' && x.status === 'open')!;
+    const path = `/api/projects/${s.project.id}/blockers/${b.id}/resolve`;
+    const headers = { authorization: 'Bearer test-owner-token', 'idempotency-key': crypto.randomUUID() };
+    const first = await json(await api(path, { method: 'POST', body: { value: 'sk_live_123' }, headers }), 200);
+    expect(await json(await api(path, { method: 'POST', body: { value: 'sk_live_123' }, headers }), 200)).toEqual(first);
+    await json(await api(path, { method: 'POST', body: { value: 'otro' }, headers }), 409);
+    const rows = await db(env).prepare('SELECT fp FROM idempotency WHERE key = ?').bind(headers['idempotency-key']).all<{ fp: string }>();
+    expect(rows.results[0]!.fp).not.toContain('sk_live_123');
+  });
+
   it('una clave inválida → 400', async () => {
     const s = await seedDemo();
     await json(await api(msgPath(s), { method: 'POST', body: { text: 'x' }, headers: keyed('con espacios') }), 400);
   });
 });
 
-/** Un Store que falla como lo hace durante un deploy: según `mode`, antes o después de commitear. */
-function flakyEnv(failures: Array<'before' | 'after'>, error: object = { retryable: true }) {
+/** Un Store que falla como lo hace durante un deploy, intento por intento: se reinicia antes o después de commitear, o responde. */
+function flakyEnv(steps: Array<'before' | 'after' | 'ok'>, error: object = { retryable: true }) {
   const real = env.STORE.get(env.STORE.idFromName('db'));
   let calls = 0;
   const stub = {
     async write(op: WriteOp, idem?: Idem) {
-      const mode = failures[calls++];
+      const step = steps[calls++] ?? 'ok';
       const boom = Object.assign(new Error('Durable Object reset because its code was updated.'), error);
-      if (mode === 'before') throw boom;
+      if (step === 'before') throw boom;
       const res = await real.write(op, idem);
-      if (mode === 'after') throw boom; // commiteó, pero la respuesta se perdió
+      if (step === 'after') throw boom; // commiteó, pero la respuesta se perdió
       return res;
     },
   };
@@ -75,16 +102,17 @@ function flakyEnv(failures: Array<'before' | 'after'>, error: object = { retryab
   return { env: fake, calls: () => calls };
 }
 
-describe('write(): el Store no disponible (#54)', () => {
-  const NO_WAIT = [0, 0, 0];
-  const msgOp = (s: ProjectSnapshot, text: string) =>
-    ({ kind: 'postMessage', pid: s.project.id, nid: s.nodes[0]!.id, input: { text }, actor: 'agent' }) as const;
+const NO_WAIT = [0, 0, 0];
+const idem = (fp = 'fp-de-prueba'): Idem => ({ key: crypto.randomUUID(), fp });
+const msgOp = (s: ProjectSnapshot, text: string, from?: string) =>
+  ({ kind: 'postMessage', pid: s.project.id, nid: s.nodes[0]!.id, input: { text, ...(from && { from }) }, actor: 'agent' }) as const;
 
+describe('write(): el Store no disponible (#54)', () => {
   it('con clave, un reset después de commitear se reintenta y no duplica el mensaje', async () => {
     const s = await seedDemo();
     const text = 'Reset tras el commit.';
     const f = flakyEnv(['after']);
-    const m = await write(f.env, msgOp(s, text), crypto.randomUUID(), NO_WAIT);
+    const m = await write(f.env, msgOp(s, text), idem(), NO_WAIT);
     expect(f.calls()).toBe(2);
     expect(await messagesOf(s.project.id, text)).toEqual([m]);
   });
@@ -93,43 +121,56 @@ describe('write(): el Store no disponible (#54)', () => {
     const s = await seedDemo();
     const text = 'Reset antes del commit.';
     const f = flakyEnv(['before', 'before']);
-    await write(f.env, msgOp(s, text), crypto.randomUUID(), NO_WAIT);
+    await write(f.env, msgOp(s, text), idem(), NO_WAIT);
     expect(f.calls()).toBe(3);
     expect(await messagesOf(s.project.id, text)).toHaveLength(1);
   });
 
-  it('sin clave, un msg no se reintenta: 503 unavailable que dice que no sabe si quedó', async () => {
+  it('la huella es la del pedido, no la del op: otra versión del Worker que lo parsea distinto reproduce igual', async () => {
+    const s = await seedDemo();
+    const text = 'Parseado por dos versiones.';
+    const i = idem();
+    const f = flakyEnv(['ok', 'ok']);
+    const first = await write(f.env, msgOp(s, text), i, NO_WAIT);
+    // la versión nueva agrega un campo al op (aquí, la firma): misma clave, mismo pedido crudo
+    const again = await write(f.env, msgOp(s, text, 'Equipo nuevo'), i, NO_WAIT);
+    expect(again).toEqual(first);
+    expect(await messagesOf(s.project.id, text)).toHaveLength(1);
+  });
+
+  it('sin clave, un msg no se reintenta: 503 uncertain, «no sé si quedó»', async () => {
     const s = await seedDemo();
     const f = flakyEnv(['before']);
     const err = await write(f.env, msgOp(s, 'sin clave'), undefined, NO_WAIT).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiFailure);
-    expect((err as ApiFailure).code).toBe('unavailable');
+    expect((err as ApiFailure).code).toBe('uncertain');
     expect((err as ApiFailure).status).toBe(503);
-    expect((err as ApiFailure).message).toMatch(/no sé si la escritura quedó/);
+    expect((err as ApiFailure).message).toMatch(/no sé si quedó/);
     expect(f.calls()).toBe(1);
   });
 
-  it('sin clave, un PATCH (repetible) sí se reintenta', async () => {
+  it('sin clave, un PATCH tampoco se reintenta: reaplicarlo podría pisar una escritura posterior', async () => {
     const s = await seedDemo();
     const nid = s.nodes.find((n) => n.status === 'pending')!.id;
     const f = flakyEnv(['after']);
-    const node = await write(f.env, { kind: 'patchNode', pid: s.project.id, nid, patch: { progress: 0.5 }, actor: 'agent' }, undefined, NO_WAIT);
-    expect(node.progress).toBe(0.5);
-    expect(f.calls()).toBe(2);
+    const err = await write(f.env, { kind: 'patchNode', pid: s.project.id, nid, patch: { status: 'working' }, actor: 'agent' }, undefined, NO_WAIT).catch((e: unknown) => e);
+    expect((err as ApiFailure).code).toBe('uncertain');
+    expect(f.calls()).toBe(1);
   });
 
-  it('sobrecargado no se reintenta (empeoraría): 503', async () => {
+  it('sobrecargado no se reintenta (empeoraría): 503 overloaded, distinto de unavailable', async () => {
     const s = await seedDemo();
     const f = flakyEnv(['before'], { retryable: true, overloaded: true });
-    const err = await write(f.env, msgOp(s, 'sobrecarga'), crypto.randomUUID(), NO_WAIT).catch((e: unknown) => e);
-    expect((err as ApiFailure).code).toBe('unavailable');
+    const err = await write(f.env, msgOp(s, 'sobrecarga'), idem(), NO_WAIT).catch((e: unknown) => e);
+    expect((err as ApiFailure).code).toBe('overloaded');
+    expect((err as ApiFailure).status).toBe(503);
     expect(f.calls()).toBe(1);
   });
 
   it('agotados los reintentos: 503 unavailable, no 500', async () => {
     const s = await seedDemo();
     const f = flakyEnv(['before', 'before', 'before', 'before']);
-    const err = await write(f.env, msgOp(s, 'nunca'), crypto.randomUUID(), NO_WAIT).catch((e: unknown) => e);
+    const err = await write(f.env, msgOp(s, 'nunca'), idem(), NO_WAIT).catch((e: unknown) => e);
     expect((err as ApiFailure).code).toBe('unavailable');
     expect(f.calls()).toBe(4);
     expect(await messagesOf(s.project.id, 'nunca')).toHaveLength(0);
@@ -138,7 +179,7 @@ describe('write(): el Store no disponible (#54)', () => {
   it('un error que no es de disponibilidad sigue siendo un error (500)', async () => {
     const s = await seedDemo();
     const f = flakyEnv(['before'], {});
-    const err = await write(f.env, msgOp(s, 'bug'), crypto.randomUUID(), NO_WAIT).catch((e: unknown) => e);
+    const err = await write(f.env, msgOp(s, 'bug'), idem(), NO_WAIT).catch((e: unknown) => e);
     expect(err).not.toBeInstanceOf(ApiFailure);
     expect(f.calls()).toBe(1);
   });

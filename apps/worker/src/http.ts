@@ -9,6 +9,8 @@ const STATUS: Record<ErrorCode, number> = {
   conflict: 409,
   internal: 500,
   unavailable: 503,
+  overloaded: 503,
+  uncertain: 503,
 };
 
 /** Error con la forma del contrato: `{"error": {"code", "message"}}`, mensaje en español. */

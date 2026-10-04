@@ -1,6 +1,5 @@
 /** Lecturas de Dagyard sobre el Db (DO `Store`) y el puente de escrituras (writes.ts) con el tiempo real. */
 import { MESSAGES_IN_SNAPSHOT, type DagEvent, type DagNode, type Edge, type Project, type ProjectSnapshot } from '@dagyard/model';
-import { digest } from './crypto.js';
 import type { Db, Row } from './db.js';
 import type { Env } from './env.js';
 import { ApiFailure, notFound } from './http.js';
@@ -80,49 +79,48 @@ export async function eventsSince(db: Db, pid: string, since: number, limit: num
 type DoError = { retryable?: boolean; overloaded?: boolean };
 const doError = (err: unknown): DoError => (typeof err === 'object' && err !== null ? (err as DoError) : {});
 
-/** ¿El Durable Object no estuvo disponible? (no es un error del código ni del pedido) */
-export const isUnavailable = (err: unknown): boolean => doError(err).retryable === true || doError(err).overloaded === true;
+/** El error de la plataforma como respuesta: sobrecarga, o el Durable Object no estuvo disponible. `null` = es otra cosa. */
+export function unavailableFailure(err: unknown): ApiFailure | null {
+  const e = doError(err);
+  if (e.overloaded) return new ApiFailure('overloaded', OVERLOADED);
+  return e.retryable ? new ApiFailure('unavailable', UNAVAILABLE) : null;
+}
 
-export const UNAVAILABLE = 'El servidor se está actualizando. Inténtalo de nuevo en unos segundos.';
-const UNSURE = 'El servidor se está actualizando y no sé si la escritura quedó: revisa antes de repetirla, o mándala con una Idempotency-Key.';
+const UNAVAILABLE = 'El servidor se está actualizando. Inténtalo de nuevo en unos segundos.';
+const OVERLOADED = 'El servidor está sobrecargado. Espera un poco antes de reintentar.';
+const UNSURE = 'El servidor se reinició a mitad de la escritura y no sé si quedó: revisa antes de repetirla.';
 
-/** Escrituras que se pueden repetir sin clave: dejan el mismo estado y responden lo mismo. */
-const repeatable = (op: WriteOp) => op.kind === 'patchNode' || op.kind === 'patchProject' || (op.kind === 'replaceGraph' && !op.exclusive);
-
-/** Esperas entre reintentos del RPC al Store (≈1 s en total: lo que tarda en volver tras un deploy). */
+/** Esperas base entre reintentos del RPC al Store (≈1 s en total: lo que tarda en volver tras un deploy). */
 export const STORE_RETRY_MS = [50, 250, 750];
-
-/** Huella de la escritura para su clave: el valor cifrado de un acceso cambia en cada intento (IV aleatorio), no cuenta. */
-const fingerprint = (op: WriteOp) => digest(JSON.stringify(op, (k, v) => (k === 'sealed' ? undefined : v)));
+/** ×0,5 a ×1,5: los Workers que reintentan a la vez no le caen juntos al Store recién levantado. */
+export const jitter = (ms: number) => Math.round(ms * (0.5 + Math.random()));
 
 /**
  * Corre una escritura en el Store (una transacción: ver writes.ts) y reparte sus eventos al
  * Durable Object del proyecto. Un error de dominio llega como dato y se relanza como ApiFailure.
- * Si el Store no está disponible (un deploy lo reinicia), reintenta solo si repetir es seguro: la
- * escritura es repetible o trae `key` (`Idempotency-Key`), que el Store registra en la misma transacción.
- * Si no puede reintentar, responde `503 unavailable` en vez de `500`.
+ * Si el Store se reinicia (un deploy), reintenta solo con `idem` (`Idempotency-Key`), que el Store
+ * registra en la misma transacción. Si no puede reintentar, `503 uncertain`; agotados los intentos,
+ * `503 unavailable`; sobrecargado, `503 overloaded`.
  */
 export async function write<K extends WriteOp['kind']>(
   env: Env,
   op: Extract<WriteOp, { kind: K }>,
-  key?: string,
+  idem?: Idem,
   retryMs: readonly number[] = STORE_RETRY_MS,
 ): Promise<WriteValues[K]> {
-  const idem: Idem | undefined = key ? { key, fp: await fingerprint(op) } : undefined;
-  const safe = idem !== undefined || repeatable(op);
   for (let attempt = 0; ; attempt++) {
     let res;
     try {
       // un stub nuevo por intento: tras una excepción el anterior puede quedar roto
       res = await env.STORE.get(env.STORE.idFromName('db')).write(op, idem);
     } catch (err) {
-      if (!isUnavailable(err)) throw err;
-      const e = doError(err);
-      if (safe && e.retryable && !e.overloaded && attempt < retryMs.length) {
-        await new Promise((r) => setTimeout(r, retryMs[attempt]));
-        continue;
-      }
-      throw new ApiFailure('unavailable', safe ? UNAVAILABLE : UNSURE);
+      const failure = unavailableFailure(err);
+      if (!failure || failure.code === 'overloaded') throw failure ?? err;
+      // sin clave no se sabe si el intento commiteó: reaplicarlo podría duplicarlo o pisar una escritura posterior
+      if (!idem) throw new ApiFailure('uncertain', UNSURE);
+      if (attempt >= retryMs.length) throw failure;
+      await new Promise((r) => setTimeout(r, jitter(retryMs[attempt]!)));
+      continue;
     }
     if (!res.ok) throw new ApiFailure(res.error.code, res.error.message);
     await publish(env, op.pid, res.events as DagEvent[]);

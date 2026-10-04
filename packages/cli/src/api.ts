@@ -59,8 +59,19 @@ export class ApiRequestError extends Error {
   }
 }
 
-/** Esperas entre intentos ante un `503` o un error de red (≈1,2 s en total: lo que dura el corte de un deploy). */
+/**
+ * Esperas base entre intentos ante un `503 unavailable` o un corte de red (≈1,2 s: lo que dura el corte de
+ * un deploy). Cada una lleva jitter de ×0,5 a ×1,5, así que nunca suman más de 1,8 s.
+ */
 export const RETRY_DELAYS_MS = [300, 900];
+const jitter = (ms: number) => Math.round(ms * (0.5 + Math.random()));
+
+/**
+ * ¿Repetir es seguro y útil? Un corte de red o un `503` del Worker que no escribió (`unavailable`) o que no
+ * llegó al Worker (sin cuerpo de error). `overloaded` (reintentar empeora) y `uncertain` (la escritura pudo
+ * quedar sin su clave) no se repiten.
+ */
+const transient = (err: ApiRequestError) => err.status === 0 || (err.status === 503 && (err.code === 'unavailable' || err.code === 'http_503'));
 
 export interface ClientOptions {
   baseUrl: string;
@@ -136,7 +147,7 @@ export class DagyardClient {
 
   /**
    * Una invocación de la API. Toda escritura lleva una `Idempotency-Key` nueva, la misma en cada reintento:
-   * así reintentar un `503` o un corte de red (la escritura pudo quedar) nunca la duplica.
+   * así reintentar un `503 unavailable` o un corte de red (la escritura pudo quedar) nunca la duplica.
    */
   private async request(method: string, path: string, body?: unknown, extra: Record<string, string> = {}): Promise<Response> {
     const headers: Record<string, string> = {
@@ -150,9 +161,8 @@ export class DagyardClient {
       try {
         return await this.attempt(method, path, headers, body);
       } catch (err) {
-        const transient = err instanceof ApiRequestError && (err.status === 0 || err.status === 503);
-        if (!transient || attempt >= this.retryDelaysMs.length) throw err;
-        await this.sleep(this.retryDelaysMs[attempt]!);
+        if (!(err instanceof ApiRequestError) || !transient(err) || attempt >= this.retryDelaysMs.length) throw err;
+        await this.sleep(jitter(this.retryDelaysMs[attempt]!));
       }
     }
   }

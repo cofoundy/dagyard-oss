@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ApiRequestError, DagyardClient, RETRY_DELAYS_MS } from '../src/api.js';
 import { EXIT, run } from '../src/cli.js';
 
-type Step = number | 'network';
+type Step = number | 'network' | 'overloaded' | 'uncertain' | 'html503';
 const UNAVAILABLE = { error: { code: 'unavailable', message: 'El servidor se está actualizando. Inténtalo de nuevo en unos segundos.' } };
 
 /** Un fetch que responde en orden: un status (503 con el cuerpo de error, 2xx con `{ok}`) o un corte de red. */
@@ -16,6 +16,10 @@ function scripted(steps: Step[]) {
     calls.push({ method: init.method ?? 'GET', key: headers['idempotency-key'] });
     const step = steps[Math.min(calls.length - 1, steps.length - 1)]!;
     if (step === 'network') throw new TypeError('fetch failed');
+    if (step === 'html503') return new Response('<html>503</html>', { status: 503, headers: { 'content-type': 'text/html' } });
+    if (step === 'overloaded' || step === 'uncertain') {
+      return new Response(JSON.stringify({ error: { code: step, message: step } }), { status: 503, headers: { 'content-type': 'application/json' } });
+    }
     const body = step >= 400 ? (step === 503 ? UNAVAILABLE : { error: { code: 'x', message: `status ${step}` } }) : { ok: true };
     return new Response(JSON.stringify(body), { status: step, headers: { 'content-type': 'application/json' } });
   });
@@ -38,8 +42,35 @@ describe('reintentos del cliente (#54)', () => {
     expect(s.calls).toHaveLength(3);
     expect(s.calls[0]!.key).toMatch(/^[0-9a-f-]{36}$/);
     expect(new Set(s.calls.map((c) => c.key)).size).toBe(1);
-    expect(s.slept).toEqual(RETRY_DELAYS_MS);
-    expect(RETRY_DELAYS_MS.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(2000);
+    expect(s.slept).toHaveLength(RETRY_DELAYS_MS.length);
+  });
+
+  it('las esperas llevan jitter (×0,5 a ×1,5) y nunca suman más de 2 s', async () => {
+    for (const r of [0, 0.999]) {
+      const spy = vi.spyOn(Math, 'random').mockReturnValue(r);
+      try {
+        const s = scripted([503, 503, 201]);
+        await s.client.postMessage('p', 'n', { text: 'hola' });
+        expect(s.slept).toEqual(RETRY_DELAYS_MS.map((ms) => Math.round(ms * (0.5 + r))));
+        expect(s.slept.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(2000);
+      } finally {
+        spy.mockRestore();
+      }
+    }
+  });
+
+  it('un 503 que no viene del Worker (sin cuerpo de error, p. ej. del borde) también se reintenta', async () => {
+    const s = scripted(['html503', 201]);
+    await s.client.postMessage('p', 'n', { text: 'hola' });
+    expect(s.calls).toHaveLength(2);
+  });
+
+  it.each(['overloaded', 'uncertain'] as const)('un 503 «%s» no se reintenta', async (code) => {
+    const s = scripted([code, 201]);
+    const err = await s.client.postMessage('p', 'n', { text: 'hola' }).catch((e: unknown) => e);
+    expect((err as ApiRequestError).code).toBe(code);
+    expect(s.calls).toHaveLength(1);
+    expect(s.slept).toEqual([]);
   });
 
   it('un corte de red también se reintenta (la escritura pudo quedar: la clave la protege)', async () => {

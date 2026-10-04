@@ -506,7 +506,10 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
   },
 };
 
-/** Clave de idempotencia (header `Idempotency-Key`) y huella de la escritura que la trae. */
+/**
+ * Clave de idempotencia (header `Idempotency-Key`) y huella del pedido que la trae (HMAC del método, la
+ * ruta y el cuerpo crudo: no depende de cómo una versión del Worker lo parsee).
+ */
 export interface Idem {
   key: string;
   fp: string;

@@ -23,21 +23,30 @@
 | 404 | `not_found` | proyecto, nodo o bloqueante inexistente |
 | 409 | `conflict` | id repetido; resolver un bloqueante ya resuelto; cambiar el `status` de un nodo con un bloqueante abierto, o declararlo `done` en un `PUT`; un agente que haría desaparecer un bloqueante, abierto o resuelto (`PUT` que quita su tarea o `DELETE` del nodo); o un `PUT` con `If-None-Match: *` sobre un proyecto que ya existe |
 | 500 | `internal` | lo demás |
-| 503 | `unavailable` | el servidor se está reiniciando (un deploy). Repetir con la misma `Idempotency-Key` es seguro; sin clave, el mensaje dice si la escritura pudo quedar |
+| 503 | `unavailable` | el servidor se está reiniciando (un deploy) y no escribió nada, o la escritura quedó con su `Idempotency-Key`: repetir con la misma clave es seguro |
+| 503 | `overloaded` | el servidor está sobrecargado: espera antes de reintentar (reintentar enseguida empeora) |
+| 503 | `uncertain` | el servidor se reinició a mitad de una escritura sin `Idempotency-Key` y no sabe si quedó: revisa antes de repetirla |
 
 ### Idempotency-Key y reintentos
 
 Toda escritura (`POST`, `PUT`, `PATCH`, `DELETE`) acepta el header opcional `Idempotency-Key` (1 a 200
 caracteres visibles; el CLI manda un uuid nuevo por invocación y el mismo en cada reintento). El Store
-registra la clave en la misma transacción que la escritura, por proyecto: repetir la clave devuelve el
-mismo status y el mismo cuerpo que la primera vez, sin volver a escribir (sus eventos se vuelven a
-repartir, y el tiempo real ignora los que ya mandó). La misma clave con otra escritura → `409`. Una
-escritura que falló (4xx) no gasta la clave. Las claves se olvidan a las 24 h.
+registra la clave en la misma transacción que la escritura, por proyecto, con una huella del pedido: un
+HMAC (con `VAULT_KEY`) del método, la ruta con su query y el cuerpo **crudo**, calculado antes de parsearlo,
+así no cambia entre versiones del Worker y el valor de un acceso nunca se guarda en claro. Repetir la clave
+con los mismos bytes devuelve el mismo status y el mismo cuerpo que la primera vez, sin volver a escribir
+(sus eventos se vuelven a repartir y el tiempo real ignora los que ya mandó). La misma clave con otra ruta u
+otro cuerpo, aunque sea el mismo JSON con otro orden, → `409`. Una escritura que falló (4xx) no gasta la
+clave. Las claves se olvidan a las 24 h.
 
-Si un deploy reinicia el Store en medio de una escritura, el Worker la reintenta (≈1 s) solo cuando
-repetirla es seguro: trae clave, o es un `PATCH` o un `PUT` sin `If-None-Match: *`. Si no, o si se agotan
-los intentos, responde `503 unavailable` (nunca `500`). El CLI reintenta los `503` y los cortes de red dos
-veces (300 ms y 900 ms); los demás errores no se reintentan.
+Si un deploy reinicia el Store en medio de una escritura, el Worker la reintenta (≈1 s, con jitter) **solo
+si trae clave**; sin clave responde `503 uncertain` (reaplicar a ciegas podría duplicarla o pisar una
+escritura posterior). Agotados los intentos, `503 unavailable`. Sobrecargado, `503 overloaded`, sin
+reintentar.
+
+El CLI reintenta dos veces (≈300 ms y ≈900 ms, con jitter de ×0,5 a ×1,5) los cortes de red y los `503
+unavailable` (o un `503` sin cuerpo de error, que no llegó al Worker). `overloaded`, `uncertain` y los demás
+errores no se reintentan.
 
 ## Auth
 
@@ -62,7 +71,7 @@ Formas de presentarla (el servidor prueba en este orden):
 Qué puede cada rol: los dos leen y escriben el grafo y los mensajes. **Resolver un bloqueante es solo
 del `owner`** (es el humano quien desbloquea). **Recibir el valor de un acceso es solo del `agent`**
 (en `wait`); el valor nunca viaja en snapshots, listados ni eventos, y se guarda cifrado (AES-GCM, amarrado a su proyecto y bloqueante) en el Durable Object `Store` (SQLite).
-Sin el secret `VAULT_KEY`, resolver un acceso o recibir su valor responde `500`: nunca se guarda ni se entrega en claro.
+Sin el secret `VAULT_KEY`, resolver un acceso, recibir su valor o mandar una escritura con `Idempotency-Key` responde `500`: nunca se guarda ni se entrega en claro.
 
 ### Sesión (UI)
 

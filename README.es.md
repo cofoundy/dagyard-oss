@@ -101,4 +101,4 @@ v0, construido a la vista por la fábrica de agentes de Cofoundy, que usa Dagyar
 
 ## Licencia
 
-Mira [LICENSE](LICENSE).
+MIT, mira [LICENSE](LICENSE).

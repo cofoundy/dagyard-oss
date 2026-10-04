@@ -104,4 +104,4 @@ v0, built in the open by Cofoundy's own agent factory, which uses Dagyard to pla
 
 ## License
 
-See [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).

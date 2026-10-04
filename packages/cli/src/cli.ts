@@ -1,10 +1,12 @@
 import { ApiRequestError, DagyardClient } from './api.js';
 import { assertKnownFlags, flag, parseArgs, UsageError, type ParsedArgs } from './args.js';
-import { loadConfig } from './config.js';
+import { loadConfig, loadKey } from './config.js';
 import type { BlockerInput, BlockerKind, BlockerWaitResult, NodeInput, NodePatch, NodeStatus } from '@dagyard/model';
 import { BLOCKER_KINDS, LIMITS, NODE_STATUSES, parseProjectGraphInput, slugify } from '@dagyard/model';
 import { buildImport, projectNameFromDir, readTasksDir, readTitles, type ImportResult } from './tasks/import.js';
 import { oneLine } from './tasks/parse.js';
+import { ghCliSource, type GithubSource } from './sync/github.js';
+import { formatSync, syncGithub } from './sync/sync.js';
 
 export const VERSION = '0.1.0';
 
@@ -14,6 +16,10 @@ export interface Io {
   env: NodeJS.ProcessEnv;
   fetch?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
+  /** de dónde se busca `.dagyard.json` (default `process.cwd()`) */
+  cwd?: string;
+  /** la cola de GitHub de `sync` (default: `gh api`) */
+  github?: GithubSource;
 }
 
 /** Exit codes: 0 ok · 1 error de la API o de red · 2 `wait` venció · 3 `next` sin nada arrancable · 64 uso. */
@@ -35,19 +41,21 @@ interface Command {
 
 const GLOBAL_FLAGS = ['project', 'url'] as const;
 
-const HELP_GLOBAL = `Opciones comunes:
-  -p, --project <p>   proyecto (o DAGYARD_PROJECT, o ~/.config/dagyard/project)
-  --url <url>         servidor (o DAGYARD_URL, o ~/.config/dagyard/url)
+const HELP_GLOBAL = `Opciones comunes (antes o después del comando):
+  -p, --project <p>   proyecto (o DAGYARD_PROJECT, .dagyard.json o ~/.config/dagyard/project)
+  --url <url>         servidor (o DAGYARD_URL, .dagyard.json o ~/.config/dagyard/url)
   -h, --help          esta ayuda
-La API key sale de DAGYARD_KEY o ~/.config/dagyard/agent-key; nunca se imprime.`;
+.dagyard.json = {"project": "…", "url": "…"}, el primero subiendo desde la carpeta actual; se commitea.
+La API key sale solo de DAGYARD_KEY o ~/.config/dagyard/agent-key; nunca se imprime.`;
 
 const COMMANDS: Record<string, Command> = {
   'node add': {
-    usage: 'dagyard node add <nodo> --title "…" --stage <etapa> [--goal "…"] [--team "…"] [--dep <nodo>]… [--status <estado>]',
+    usage: 'dagyard node add <nodo> --title "…" --stage <etapa> [--goal "…"] [--team "…"] [--dep <nodo>]… [--status <estado>] [--link <url>]',
     summary: 'agrega una tarea al plan',
     help: `<nodo> es un id corto (T-314-A se guarda como t-314-a). --dep se repite o va separado por comas.
-Estados: pending, working, done (blocked lo pone dagyard block).`,
-    flags: ['title', 'stage', 'goal', 'team', 'dep', 'status', 'report', ...GLOBAL_FLAGS],
+Estados: pending, working, done (blocked lo pone dagyard block).
+--link es el detalle técnico (URL del issue o del PR); la ficha lo muestra como «Detalle técnico ↗».`,
+    flags: ['title', 'stage', 'goal', 'team', 'dep', 'status', 'report', 'link', ...GLOBAL_FLAGS],
     async run({ io, args }) {
       const [id] = need(args, ['nodo']);
       const input: NodeInput = {
@@ -64,16 +72,18 @@ Estados: pending, working, done (blocked lo pone dagyard block).`,
       if (status !== undefined) input.status = statusArg(status);
       const report = optional(args, 'report', LIMITS.url);
       if (report !== undefined) input.reportUrl = report;
+      const link = linkArg(args);
+      if (link !== undefined) input.link = link;
       const node = await client(io, args).addNode(project(io, args), input);
       io.stdout(`${node?.id ?? input.id}\n`);
       return EXIT.ok;
     },
   },
   'node update': {
-    usage: 'dagyard node update <nodo> [--title "…"] [--stage <etapa>] [--goal "…"] [--team "…"] [--status <estado>] [--progress <p>] [--report <url>]',
+    usage: 'dagyard node update <nodo> [--title "…"] [--stage <etapa>] [--goal "…"] [--team "…"] [--status <estado>] [--progress <p>] [--report <url>] [--link <url>]',
     summary: 'cambia campos de una tarea',
-    help: '--progress acepta 0..1 o un porcentaje (40%).',
-    flags: ['title', 'stage', 'goal', 'team', 'status', 'progress', 'report', ...GLOBAL_FLAGS],
+    help: '--progress acepta 0..1 o un porcentaje (40%). --link: URL del issue o del PR («Detalle técnico ↗»).',
+    flags: ['title', 'stage', 'goal', 'team', 'status', 'progress', 'report', 'link', ...GLOBAL_FLAGS],
     async run({ io, args }) {
       const [id] = need(args, ['nodo']);
       const patch: NodePatch = {};
@@ -91,6 +101,8 @@ Estados: pending, working, done (blocked lo pone dagyard block).`,
       if (progress !== undefined) patch.progress = progressArg(progress);
       const report = optional(args, 'report', LIMITS.url);
       if (report !== undefined) patch.reportUrl = report;
+      const link = linkArg(args);
+      if (link !== undefined) patch.link = link;
       if (Object.keys(patch).length === 0) throw new UsageError('no hay nada que cambiar');
       await client(io, args).updateNode(project(io, args), nodeId(id), patch);
       io.stdout(`${nodeId(id)}\n`);
@@ -327,6 +339,35 @@ caracteres solo avisan.
       return EXIT.ok;
     },
   },
+  sync: {
+    usage: 'dagyard sync --github <owner/repo> [--label <l>] [--stage <etapa>] [--all] [--dry-run] [--json]',
+    summary: 'crea o actualiza las tareas gh-<n> desde los issues de GitHub',
+    help: `Usa gh (GitHub CLI) autenticado. Nunca reemplaza el grafo: solo agrega y avanza, cada cambio en vivo.
+Tarea nueva = issue abierto (con --all también los cerrados, ya Listos), en --stage o «construccion» o la primera etapa,
+con el enlace al issue. A una tarea que ya existe nunca le cambia título, etapa, equipo ni misión; el enlace, solo si
+no tiene. El estado solo avanza: cerrado → Lista; abierto con un PR abierto que dice «closes #n» → En progreso.
+«Parte de #n» → la tarea n necesita esta; «depende de #n», «blocked by #n» o «bloqueado por #n» → esta necesita la n.
+La etiqueta founder-input abre una decisión con las opciones del cuerpo (- **A:** …, - A) …), una sola vez.
+--dry-run lee pero no escribe nada.`,
+    flags: ['github', 'label', 'stage', ...GLOBAL_FLAGS],
+    bools: ['all', 'dry-run', 'json'],
+    async run({ io, args }) {
+      need(args, []);
+      const repo = required(args, 'github');
+      if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) throw new UsageError(`--github va como owner/repo: «${repo}»`);
+      const label = optional(args, 'label');
+      const stage = optional(args, 'stage');
+      const report = await syncGithub(client(io, args), io.github ?? ghCliSource(), project(io, args), {
+        repo,
+        ...(label ? { label } : {}),
+        ...(stage ? { stage } : {}),
+        all: args.bools.has('all'),
+        dryRun: args.bools.has('dry-run'),
+      });
+      io.stdout(args.bools.has('json') ? `${JSON.stringify(report, null, 2)}\n` : formatSync(report));
+      return EXIT.ok;
+    },
+  },
 };
 
 const SHORTCUTS: Record<string, string> = { start: 'node start', progress: 'node progress', done: 'node done' };
@@ -334,7 +375,9 @@ const SHORTCUTS: Record<string, string> = { start: 'node start', progress: 'node
 export async function run(argv: string[], io: Io): Promise<number> {
   let key: string | null = null;
   try {
-    key = loadConfig(io.env).key;
+    key = loadKey(io.env);
+    const lead = leadingGlobals(argv);
+    argv = lead.rest;
     const [first, second] = argv;
     if (!first || first === 'help' || first === '--help' || first === '-h') {
       io.stdout(globalHelp());
@@ -359,7 +402,8 @@ export async function run(argv: string[], io: Io): Promise<number> {
     }
     const cmd = COMMANDS[name];
     if (!cmd) throw new UsageError(`no conozco el comando «${name}»`);
-    const args = parseArgs(rest, cmd.bools ?? []);
+    // las globales de antes del comando van primero: si se repiten después, gana la de después
+    const args = parseArgs([...lead.globals, ...rest], cmd.bools ?? []);
     if (args.bools.has('help')) {
       io.stdout(commandHelp(cmd));
       return EXIT.ok;
@@ -386,17 +430,41 @@ export async function run(argv: string[], io: Io): Promise<number> {
 
 /* ------------------------------------------------------------------ helpers */
 
+/**
+ * `dagyard --project p --url u node start x`: las opciones globales que van antes del comando
+ * (el kickoff de la fábrica las pone ahí). Se separan para que el comando las reciba como suyas.
+ */
+function leadingGlobals(argv: string[]): { globals: string[]; rest: string[] } {
+  const globals: string[] = [];
+  let i = 0;
+  for (; i < argv.length; i++) {
+    const m = /^(?:--(project|url)|-(p))(=.*)?$/.exec(argv[i]!);
+    if (!m) break;
+    globals.push(argv[i]!);
+    if (m[3] !== undefined) continue;
+    const value = argv[i + 1];
+    if (value === undefined) throw new UsageError(`a --${m[1] ?? 'project'} le falta el valor`);
+    globals.push(value);
+    i++;
+  }
+  return { globals, rest: argv.slice(i) };
+}
+
+function config(io: Io) {
+  return loadConfig(io.env, io.cwd ?? process.cwd());
+}
+
 function client(io: Io, args: ParsedArgs): DagyardClient {
-  const cfg = loadConfig(io.env);
+  const cfg = config(io);
   const url = flag(args, 'url') ?? cfg.url;
-  if (!url) throw new UsageError('falta el servidor: DAGYARD_URL, --url o ~/.config/dagyard/url');
+  if (!url) throw new UsageError('falta el servidor: --url, DAGYARD_URL, .dagyard.json o ~/.config/dagyard/url');
   if (!cfg.key) throw new UsageError('falta la API key: DAGYARD_KEY o ~/.config/dagyard/agent-key');
   return new DagyardClient({ baseUrl: url, key: cfg.key, ...(io.fetch ? { fetch: io.fetch } : {}) });
 }
 
 function project(io: Io, args: ParsedArgs): string {
-  const p = flag(args, 'project') ?? loadConfig(io.env).project;
-  if (!p) throw new UsageError('falta el proyecto: --project, DAGYARD_PROJECT o ~/.config/dagyard/project');
+  const p = flag(args, 'project') ?? config(io).project;
+  if (!p) throw new UsageError('falta el proyecto: --project, DAGYARD_PROJECT, .dagyard.json o ~/.config/dagyard/project');
   return slugify(p);
 }
 
@@ -439,6 +507,14 @@ function optional(args: ParsedArgs, key: string, max?: number): string | undefin
   return v;
 }
 
+function linkArg(args: ParsedArgs): string | undefined {
+  const link = optional(args, 'link', LIMITS.url);
+  if (link !== undefined && !/^https?:\/\/\S+$/i.test(link)) {
+    throw new UsageError(`--link debe ser una URL http(s) (la del issue o del PR): «${link}»`);
+  }
+  return link;
+}
+
 function statusArg(s: string): NodeStatus {
   if (s === 'blocked') throw new UsageError('blocked no se pone a mano: lo pone «dagyard block»');
   if (!NODE_STATUSES.includes(s as NodeStatus)) throw new UsageError(`--status debe ser ${MANUAL_STATUSES}`);
@@ -476,7 +552,11 @@ function formatImport(r: ImportResult, dry: boolean, replace: boolean): string {
     `Proyecto «${r.graph.name}» (${r.projectId})${dry ? ' — simulación, no se envió nada' : done}`,
     `${s.nodes} nodos · ${s.edges} aristas · ${s.stages.length} etapas (${how})`,
     ...s.stages.map((st) => `  ${st.name}: ${st.nodes}`),
-    `Estados: ${s.status.pending} pendientes · ${s.status.working} en progreso · ${s.status.blocked} te esperan · ${s.status.done} listas`,
+    // desde #35 el import nunca manda `blocked`: «te esperan» siempre daba 0 (#38); se cuentan los avisos
+    [
+      `Estados: ${s.status.pending} pendientes · ${s.status.working} en progreso · ${s.status.done} listas`,
+      ...(s.asksHuman ? [s.asksHuman === 1 ? '1 pide algo a una persona' : `${s.asksHuman} piden algo a una persona`] : []),
+    ].join(' · '),
   ];
   if (s.titled !== undefined) lines.push(`Títulos de --titles: ${s.titled} de ${s.nodes}`);
   if (r.warnings.length) {

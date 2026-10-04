@@ -84,18 +84,56 @@ function notice($: any, v: View): void {
   }
 }
 
+/**
+ * Esperas base entre intentos ante un `503 unavailable` o un corte de red (≈1,2 s: lo que dura el corte de
+ * un deploy), con jitter de ×0,5 a ×1,5. Las mismas que `packages/cli/src/api.ts` (el mod no lo importa:
+ * corre con `$.http.fetch`, no se empaqueta).
+ */
+const RETRY_DELAYS_MS = [300, 900]
+const jitter = (ms: number) => Math.round(ms * (0.5 + Math.random()))
+
+/**
+ * ¿Repetir es seguro y útil? Un corte de red o un `503` del Worker que no escribió (`unavailable`) o que no
+ * llegó al Worker (sin cuerpo de error). `overloaded` (reintentar empeora) y `uncertain` (la escritura pudo
+ * quedar sin su clave) no se repiten.
+ */
+function transient(res: { status: number; text: string } | null): boolean {
+  if (!res) return true
+  if (res.status !== 503) return false
+  try {
+    const code = JSON.parse(res.text)?.error?.code
+    return !code || code === 'unavailable'
+  } catch {
+    return true
+  }
+}
+
+/**
+ * Una invocación de la API. Toda escritura lleva una `Idempotency-Key` nueva, la misma en cada reintento:
+ * así reintentar un `503 unavailable` o un corte de red (la escritura pudo quedar) nunca la duplica.
+ */
 async function api($: any, path: string, method: string, body: unknown, owner: boolean): Promise<any> {
   const token = await key($, owner ? 'owner-token' : 'agent-key')
   if (!token) throw new Error('falta la clave en ~/.config/dagyard')
   const headers: Record<string, string> = { authorization: `Bearer ${token}`, 'user-agent': 'dagyard-mod/0.2' }
   if (body !== undefined) headers['content-type'] = 'application/json'
-  const res = await $.http.fetch(`${base}${path}`, {
-    method,
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
-  if (!res.ok) throw new Error(String(res.status))
-  return res.text ? JSON.parse(res.text) : null
+  if (method !== 'GET' && method !== 'HEAD') headers['idempotency-key'] = crypto.randomUUID()
+  const init = { method, headers, body: body === undefined ? undefined : JSON.stringify(body) }
+  for (let attempt = 0; ; attempt++) {
+    let res: { status: number; ok: boolean; text: string } | null = null
+    let cut: unknown = null
+    try {
+      res = await $.http.fetch(`${base}${path}`, init)
+    } catch (err) {
+      cut = err
+    }
+    if (res?.ok) return res.text ? JSON.parse(res.text) : null
+    if (!transient(res) || attempt >= RETRY_DELAYS_MS.length) {
+      if (res) throw new Error(String(res.status))
+      throw cut instanceof Error ? cut : new Error(String(cut))
+    }
+    await $.clock.sleep(jitter(RETRY_DELAYS_MS[attempt]!))
+  }
 }
 
 async function refresh($: any): Promise<void> {

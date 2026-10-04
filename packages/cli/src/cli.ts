@@ -1,9 +1,8 @@
 import { ApiRequestError, DagyardClient } from './api.js';
 import { assertKnownFlags, flag, parseArgs, UsageError, type ParsedArgs } from './args.js';
 import { loadConfig } from './config.js';
-import type { BlockerInput, BlockerKind, BlockerWaitResult, NodeInput, NodePatch, NodeStatus } from './model.js';
-import { BLOCKER_KINDS, LIMITS, NODE_STATUSES } from './model.js';
-import { slugify } from './slug.js';
+import type { BlockerInput, BlockerKind, BlockerWaitResult, NodeInput, NodePatch, NodeStatus } from '@dagyard/model';
+import { BLOCKER_KINDS, LIMITS, NODE_STATUSES, parseProjectGraphInput, slugify } from '@dagyard/model';
 import { buildImport, projectNameFromDir, readTasksDir, type ImportResult } from './tasks/import.js';
 import { oneLine } from './tasks/parse.js';
 
@@ -47,7 +46,7 @@ const COMMANDS: Record<string, Command> = {
     usage: 'dagyard node add <nodo> --title "…" --stage <etapa> [--goal "…"] [--team "…"] [--dep <nodo>]… [--status <estado>]',
     summary: 'agrega una tarea al plan',
     help: `<nodo> es un id corto (T-314-A se guarda como t-314-a). --dep se repite o va separado por comas.
-Estados: ${NODE_STATUSES.join(', ')}.`,
+Estados: pending, working, done (blocked lo pone dagyard block).`,
     flags: ['title', 'stage', 'goal', 'team', 'dep', 'status', 'report', ...GLOBAL_FLAGS],
     async run({ io, args }) {
       const [id] = need(args, ['nodo']);
@@ -116,11 +115,11 @@ Estados: ${NODE_STATUSES.join(', ')}.`,
   'node progress': {
     usage: 'dagyard node progress <nodo> <p>',
     summary: 'reporta avance (0..1 o 40%)',
-    help: 'Deja la tarea En progreso. Atajo: dagyard progress <nodo> <p>.',
+    help: 'Atajo: dagyard progress <nodo> <p>.',
     flags: [...GLOBAL_FLAGS],
     async run({ io, args }) {
       const [id, p] = need(args, ['nodo', 'avance']);
-      await client(io, args).updateNode(project(io, args), nodeId(id), { status: 'working', progress: progressArg(p) });
+      await client(io, args).updateNode(project(io, args), nodeId(id), { progress: progressArg(p) });
       io.stdout(`${nodeId(id)}\n`);
       return EXIT.ok;
     },
@@ -132,7 +131,7 @@ Estados: ${NODE_STATUSES.join(', ')}.`,
     flags: ['report', ...GLOBAL_FLAGS],
     async run({ io, args }) {
       const [id] = need(args, ['nodo']);
-      const patch: NodePatch = { status: 'done', progress: 1 };
+      const patch: NodePatch = { status: 'done' }; // el servidor fija progress = 1
       const report = optional(args, 'report', LIMITS.url);
       if (report !== undefined) patch.reportUrl = report;
       await client(io, args).updateNode(project(io, args), nodeId(id), patch);
@@ -186,7 +185,8 @@ Imprime el id del bloqueante, para pasarlo a dagyard wait --blocker.`,
   wait: {
     usage: 'dagyard wait <nodo> [--blocker <id>] [--timeout <seg>] [--json]',
     summary: 'espera a que el humano resuelva y devuelve la resolución',
-    help: `Primera línea: la opción elegida (o el valor del acceso). Si hay nota, sigue «nota: …».
+    help: `Sin --blocker espera el último bloqueante abierto del nodo (o devuelve el último resuelto).
+Primera línea: la opción elegida (o el valor del acceso). Si hay nota, sigue «nota: …».
 Sin --timeout espera para siempre. Exit 2 si vence.`,
     flags: ['blocker', 'timeout', ...GLOBAL_FLAGS],
     bools: ['json'],
@@ -198,7 +198,7 @@ Sin --timeout espera para siempre. Exit 2 si vence.`,
       const sleep = io.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
       const api = client(io, args);
       const proj = project(io, args);
-      const blockerId = flag(args, 'blocker');
+      const blockerId = flag(args, 'blocker') ?? (await blockerOf(api, proj, nodeId(id)));
       const deadline = timeout > 0 ? Date.now() + timeout * 1000 : Infinity;
       for (;;) {
         const left = Math.ceil((deadline - Date.now()) / 1000);
@@ -208,10 +208,7 @@ Sin --timeout espera para siempre. Exit 2 si vence.`,
         }
         let result: BlockerWaitResult | null;
         try {
-          result = await api.waitOnce(proj, nodeId(id), {
-            ...(blockerId ? { blockerId } : {}),
-            timeoutSec: Math.min(25, left),
-          });
+          result = await api.waitOnce(proj, blockerId, Math.min(25, left));
         } catch (err) {
           if (err instanceof ApiRequestError && (err.status === 0 || err.status >= 502)) {
             await sleep(2000); // red o proxy caídos: reintenta sin perder la espera
@@ -294,6 +291,8 @@ Etapas: phase si todas las tareas lo traen; si no, por profundidad («Etapa 1»,
         ...(flag(args, 'project') ? { projectId: flag(args, 'project')! } : {}),
         ...(name ? { name } : {}),
       });
+      const check = parseProjectGraphInput(result.graph);
+      if (!check.ok) throw new Error(`el grafo importado no pasa la validación del modelo: ${check.message}`);
       const dry = args.bools.has('dry-run');
       if (!dry) await client(io, args).putProject(result.projectId, result.graph);
       io.stdout(args.bools.has('json') ? `${JSON.stringify(result, null, 2)}\n` : formatImport(result, dry));
@@ -384,9 +383,18 @@ function need(args: ParsedArgs, names: string[]): [string, string] {
 }
 
 function nodeId(raw: string): string {
-  const id = slugify(raw);
-  if (!id) throw new UsageError(`«${raw}» no sirve como id de nodo`);
-  return id;
+  if (!/[a-z0-9]/i.test(raw.normalize('NFD'))) throw new UsageError(`«${raw}» no sirve como id de nodo`);
+  return slugify(raw);
+}
+
+/** El último bloqueante abierto del nodo; si no hay, el último resuelto. */
+async function blockerOf(api: DagyardClient, proj: string, node: string): Promise<string> {
+  const mine = (await api.snapshot(proj)).blockers
+    .filter((b) => b.nodeId === node)
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const pick = mine.filter((b) => b.status === 'open').pop() ?? mine.pop();
+  if (!pick) throw new UsageError(`${node} no tiene bloqueantes; ábrelo con «dagyard block ${node} …»`);
+  return pick.id;
 }
 
 function required(args: ParsedArgs, key: string, max?: number): string {
@@ -404,9 +412,12 @@ function optional(args: ParsedArgs, key: string, max?: number): string | undefin
 }
 
 function statusArg(s: string): NodeStatus {
-  if (!NODE_STATUSES.includes(s as NodeStatus)) throw new UsageError(`--status debe ser ${NODE_STATUSES.join(', ')}`);
+  if (s === 'blocked') throw new UsageError('blocked no se pone a mano: lo pone «dagyard block»');
+  if (!NODE_STATUSES.includes(s as NodeStatus)) throw new UsageError(`--status debe ser ${MANUAL_STATUSES}`);
   return s as NodeStatus;
 }
+
+const MANUAL_STATUSES = NODE_STATUSES.filter((s) => s !== 'blocked').join(', ');
 
 export function progressArg(raw: string): number {
   const pct = raw.trim().endsWith('%');

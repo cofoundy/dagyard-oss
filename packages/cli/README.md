@@ -1,6 +1,6 @@
 # `dagyard` — el CLI de los agentes
 
-Un solo archivo (`dist/dagyard.mjs`, Node ≥20, sin dependencias en runtime) sobre la API REST.
+Un solo archivo (`dist/dagyard.mjs`, Node ≥22, sin dependencias en runtime) sobre la API REST.
 
 ```bash
 pnpm install && pnpm build
@@ -23,9 +23,10 @@ Exit codes: 0 ok · 1 API o red · 2 `wait` venció · 3 `next` vacío · 64 uso
 
 ## Contrato REST
 
-Las rutas viven solo en `src/api.ts` (`ROUTES`). Mientras `docs/api.md` no esté en `main`, son una
-propuesta; si nucleo publica otras, se cambian ahí. La que más importa acordar es `wait`:
-`GET /api/projects/:p/nodes/:n/wait?timeout=<s>[&blocker=<id>]` → 200 `BlockerWaitResult` o 204 si vence.
+`docs/api.md` (tipos y validación de `@dagyard/model`, que esbuild mete en el bundle). Las rutas viven
+solo en `src/api.ts` (`ROUTES`). `wait` sin `--blocker` lee el snapshot del proyecto y espera el último
+bloqueante abierto del nodo en `GET /api/projects/:p/blockers/:b/wait`. `import` valida el grafo con
+`parseProjectGraphInput` antes de enviarlo (también en `--dry-run`).
 
 ## Import tolerante
 
@@ -33,4 +34,5 @@ propuesta; si nucleo publica otras, se cambian ahí. La que más importa acordar
 `## `). `deps ∪ blockedBy`, solo ids que existen en el directorio; `—`, `none` o `[]` al inicio = sin
 dependencias, y lo que va entre paréntesis se ignora. `blocked` que espera a otra tarea queda
 Pendiente; solo es «Te espera» si no espera a nadie o si el status nombra a un humano. Etapas por
-`phase` si todas la traen; si no, por profundidad. Los títulos visibles no llevan `T-xxx` (D10).
+`phase` si todas la traen; si no, por profundidad (máximo 12, lo que acepta el modelo). Los títulos
+visibles no llevan `T-xxx` (D10).

@@ -6,8 +6,8 @@
  * `` - `blockedBy: []` ``, `status: ready` o `**Role owner:** x · **blockedBy:** L1 (…), L2 (…)`.
  * La cabecera es todo lo que hay antes del primer `## `.
  */
-import type { NodeStatus } from '../model.js';
-import { LIMITS } from '../model.js';
+import type { NodeStatus } from '@dagyard/model';
+import { LIMITS } from '@dagyard/model';
 
 export interface ParsedTask {
   /** nombre del archivo, p. ej. `T-314-A.md` */

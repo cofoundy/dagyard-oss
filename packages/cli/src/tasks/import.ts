@@ -1,13 +1,13 @@
 /**
  * `.cofoundy/tasks` → `ProjectGraphInput` (lo que recibe `PUT /api/projects/:id`).
  * Dependencias = `deps` ∪ `blockedBy`, solo ids que existen en el directorio. Etapas = `phase:` si
- * todas las tareas lo traen; si no, la profundidad topológica («Etapa 1», «Etapa 2», …).
+ * todas las tareas lo traen; si no, la profundidad topológica («Etapa 1», «Etapa 2», …), con tope de 12.
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import type { NodeInput, NodeStatus, ProjectGraphInput, StageInput } from '../model.js';
-import { LIMITS } from '../model.js';
-import { slugify } from '../slug.js';
+import type { NodeInput, NodeStatus, ProjectGraphInput, StageInput } from '@dagyard/model';
+import { LIMITS } from '@dagyard/model';
+import { slugify } from '@dagyard/model';
 import { humanize, oneLine, parseTask, type ParsedTask } from './parse.js';
 
 export interface TaskFile {
@@ -41,6 +41,9 @@ export interface ImportOptions {
   /** cómo se nombra el directorio en el `goal` (default `.cofoundy/tasks`) */
   tasksPath?: string;
 }
+
+/** `parseProjectGraphInput` acepta hasta 12 etapas. */
+export const MAX_STAGES = 12;
 
 const SKIP_FILES = /^(readme|index|_.*)\.md$/i;
 
@@ -124,7 +127,7 @@ export function buildImport(files: TaskFile[], opts: ImportOptions = {}): Import
     deps: deps[i]!.map((d) => nodeIds[d]!),
   }));
 
-  const projectId = slugify(opts.projectId ?? opts.dirName ?? '') || 'proyecto';
+  const projectId = slugify(opts.projectId || opts.dirName || 'proyecto');
   const name = oneLine(opts.name ?? humanize(opts.dirName ?? projectId), LIMITS.name);
 
   const status: Record<NodeStatus, number> = { pending: 0, working: 0, blocked: 0, done: 0 };
@@ -196,7 +199,8 @@ function inferStages(
   tasks: ParsedTask[],
   depth: number[],
 ): { stages: StageInput[]; stageOf: string[]; source: 'phase' | 'depth' } {
-  if (tasks.length > 0 && tasks.every((t) => t.phase)) {
+  const phases = new Set(tasks.map((t) => t.phase?.toLowerCase()));
+  if (tasks.length > 0 && tasks.every((t) => t.phase) && phases.size <= MAX_STAGES) {
     const order: Array<{ id: string; name: string; rank: number; minDepth: number }> = [];
     const stageOf = tasks.map((t, i) => {
       const word = t.phase!.toLowerCase();
@@ -211,7 +215,12 @@ function inferStages(
     order.sort((a, b) => a.rank - b.rank || a.minDepth - b.minDepth);
     return { stages: order.map(({ id, name }) => ({ id, name })), stageOf, source: 'phase' };
   }
-  const max = depth.length ? Math.max(...depth) : 0;
-  const stages = Array.from({ length: max + 1 }, (_, d) => ({ id: `etapa-${d + 1}`, name: `Etapa ${d + 1}` }));
-  return { stages, stageOf: depth.map((d) => `etapa-${d + 1}`), source: 'depth' };
+  // más de 12 niveles: los más profundos comparten la última etapa
+  const max = Math.min(depth.length ? Math.max(...depth) : 0, MAX_STAGES - 1);
+  const capped = depth.length > 0 && Math.max(...depth) > max;
+  const stages = Array.from({ length: max + 1 }, (_, d) => ({
+    id: `etapa-${d + 1}`,
+    name: capped && d === max ? `Etapa ${d + 1} en adelante` : `Etapa ${d + 1}`,
+  }));
+  return { stages, stageOf: depth.map((d) => `etapa-${Math.min(d, max) + 1}`), source: 'depth' };
 }

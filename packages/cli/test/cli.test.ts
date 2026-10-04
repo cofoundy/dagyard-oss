@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { EXIT, goalLine, progressArg, run } from '../src/cli.js';
-import type { Blocker } from '../src/model.js';
+import type { Blocker } from '@dagyard/model';
 
 const KEY = 'clave-secreta-123';
 
@@ -45,11 +45,19 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   const parts = url.pathname.split('/').filter(Boolean); // api projects :p ...
   const [, , projectId, kind, nodeId, sub] = parts;
   if (req.method === 'PUT' && parts.length === 3) return reply(res, 200, { ok: true });
+  if (req.method === 'GET' && parts.length === 3) {
+    return reply(res, 200, { project: { id: projectId }, nodes: [], edges: [], blockers: [...blockers.values()], messages: [], seq: 0 });
+  }
   if (req.method === 'GET' && kind === 'next') {
     return reply(res, 200, { node: nextGoal ? { id: 'pagos' } : null, goalLine: nextGoal });
   }
   if (req.method === 'POST' && kind === 'nodes' && !nodeId) return reply(res, 201, { ...(body as object), projectId });
-  if (req.method === 'PATCH' && kind === 'nodes' && nodeId) return reply(res, 200, { id: nodeId });
+  if (req.method === 'PATCH' && kind === 'nodes' && nodeId) {
+    if ((body as { status?: string }).status === 'blocked') {
+      return reply(res, 400, { error: { code: 'invalid', message: 'blocked no se pone a mano' } });
+    }
+    return reply(res, 200, { id: nodeId });
+  }
   if (req.method === 'POST' && kind === 'edges') return reply(res, 201, { projectId, ...(body as object) });
   if (req.method === 'POST' && sub === 'messages') {
     const text = (body as { text: string }).text;
@@ -76,19 +84,13 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
     blockers.set(id, b);
     return reply(res, 201, b);
   }
-  if (req.method === 'GET' && sub === 'wait') {
-    const pick = () =>
-      url.searchParams.get('blocker')
-        ? blockers.get(url.searchParams.get('blocker')!)
-        : [...blockers.values()].reverse().find((b) => b.nodeId === nodeId);
+  if (req.method === 'GET' && kind === 'blockers' && sub === 'wait') {
+    // contrato: 200 apenas se resuelve, o al vencer con el bloqueante todavía open
+    const b = blockers.get(nodeId!); // aquí el 5.º segmento es el id del bloqueante
+    if (!b) return reply(res, 404, { error: { code: 'not_found', message: 'bloqueante' } });
     const deadline = Date.now() + Math.min(Number(url.searchParams.get('timeout')) * 1000, 300);
-    while (Date.now() < deadline) {
-      const b = pick();
-      if (b?.status === 'resolved') return reply(res, 200, { blocker: b, value: accessValues.get(b.id) ?? null });
-      await new Promise((r) => setTimeout(r, 20));
-    }
-    res.writeHead(204);
-    return res.end();
+    while (Date.now() < deadline && b.status !== 'resolved') await new Promise((r) => setTimeout(r, 20));
+    return reply(res, 200, { blocker: b, value: b.status === 'resolved' ? (accessValues.get(b.id) ?? null) : null });
   }
   reply(res, 404, { error: { code: 'not_found', message: url.pathname } });
 }
@@ -187,11 +189,18 @@ describe('mutar el DAG', () => {
     await cli(['node', 'start', 'pagos', '--team', 'Construcción']);
     expect(last()).toMatchObject({ method: 'PATCH', path: '/api/projects/demo/nodes/pagos', body: { status: 'working', team: 'Construcción' } });
     await cli(['progress', 'pagos', '40%']);
-    expect(last().body).toEqual({ status: 'working', progress: 0.4 });
+    expect(last().body).toEqual({ progress: 0.4 });
     await cli(['done', 'pagos', '--report', 'https://basalt.example/r']);
-    expect(last().body).toEqual({ status: 'done', progress: 1, reportUrl: 'https://basalt.example/r' });
+    expect(last().body).toEqual({ status: 'done', reportUrl: 'https://basalt.example/r' });
     await cli(['node', 'update', 'pagos', '--title', 'Cobros']);
     expect(last().body).toEqual({ title: 'Cobros' });
+  });
+
+  it('--status blocked se rechaza: lo pone dagyard block', async () => {
+    const r = await cli(['node', 'update', 'pagos', '--status', 'blocked']);
+    expect(r.code).toBe(EXIT.usage);
+    expect(r.stderr).toContain('dagyard block');
+    expect(seen).toHaveLength(0);
   });
 
   it('edge add', async () => {
@@ -245,7 +254,9 @@ describe('block + wait', () => {
     const w = await waiting;
     expect(w.code).toBe(0);
     expect(w.stdout).toBe('Niubiz\nnota: más barata\n');
-    expect(seen.filter((s) => s.path.endsWith('/wait')).length).toBeGreaterThanOrEqual(2);
+    const waits = seen.filter((s) => s.path.endsWith('/wait'));
+    expect(waits.length).toBeGreaterThanOrEqual(2);
+    expect(waits[0]!.path).toBe(`/api/projects/demo/blockers/${id}/wait`);
   });
 
   it('access: wait devuelve el valor; --json la resolución completa', async () => {
@@ -256,6 +267,25 @@ describe('block + wait', () => {
     const w = await cli(['wait', 'pagos', '--json']);
     expect(w.code).toBe(0);
     expect(JSON.parse(w.stdout)).toMatchObject({ value: 'sk_test_42', blocker: { id, status: 'resolved' } });
+  });
+
+  it('wait sin --blocker toma el último abierto del nodo desde el snapshot', async () => {
+    const a = (await cli(['block', 'pagos', '--kind', 'decision', '--q', '¿A?', '--opt', 'Sí'])).stdout.trim();
+    const b = (await cli(['block', 'pagos', '--kind', 'decision', '--q', '¿B?', '--opt', 'No'])).stdout.trim();
+    resolveByApi(a, 'Sí');
+    resolveByApi(b, 'No');
+    blockers.get(a)!.createdAt = '2026-01-01T00:00:00.000Z';
+    blockers.get(b)!.createdAt = '2026-01-02T00:00:00.000Z';
+    const w = await cli(['wait', 'pagos']);
+    expect(w.code).toBe(0);
+    expect(w.stdout).toBe('No\n');
+    expect(last().path).toBe(`/api/projects/demo/blockers/${b}/wait`);
+  });
+
+  it('wait de un nodo sin bloqueantes explica cómo abrir uno', async () => {
+    const w = await cli(['wait', 'otro']);
+    expect(w.code).toBe(EXIT.usage);
+    expect(w.stderr).toContain('dagyard block otro');
   });
 
   it('review sin --opt ofrece Aprobar / Pedir cambios', async () => {

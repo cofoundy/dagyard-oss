@@ -1,6 +1,5 @@
 /**
- * El único módulo que conoce la API REST. Las rutas son constantes: cuando `docs/api.md` de nucleo
- * llegue a `main`, se rebasea aquí y en ningún otro lado.
+ * El único módulo que conoce la API REST (`docs/api.md`). Si una ruta cambia, cambia aquí.
  */
 import type {
   ApiError,
@@ -15,12 +14,13 @@ import type {
   NodeInput,
   NodePatch,
   ProjectGraphInput,
-} from './model.js';
+  ProjectSnapshot,
+} from '@dagyard/model';
 
 const p = encodeURIComponent;
 
 export const ROUTES = {
-  /** PUT: reemplaza el grafo entero (idempotente). */
+  /** GET: snapshot completo · PUT: reemplaza el grafo entero (idempotente). */
   project: (projectId: string) => `/api/projects/${p(projectId)}`,
   /** GET: el siguiente nodo arrancable y su línea `/goal`. */
   next: (projectId: string) => `/api/projects/${p(projectId)}/next`,
@@ -34,11 +34,11 @@ export const ROUTES = {
   blockers: (projectId: string, nodeId: string) =>
     `/api/projects/${p(projectId)}/nodes/${p(nodeId)}/blockers`,
   /**
-   * GET long-poll: 200 con `BlockerWaitResult` cuando el humano resuelve; 204 si vence `timeout`
-   * (segundos) sin resolución. `blocker` elige uno; sin él, el último abierto del nodo.
+   * GET long-poll (`timeout` ≤25 s): 200 `BlockerWaitResult` apenas se resuelve, o al vencer con el
+   * bloqueante todavía `open` (entonces se vuelve a llamar).
    */
-  wait: (projectId: string, nodeId: string) =>
-    `/api/projects/${p(projectId)}/nodes/${p(nodeId)}/wait`,
+  wait: (projectId: string, blockerId: string) =>
+    `/api/projects/${p(projectId)}/blockers/${p(blockerId)}/wait`,
   /** POST: mensaje corto del agente al PM. */
   messages: (projectId: string, nodeId: string) =>
     `/api/projects/${p(projectId)}/nodes/${p(nodeId)}/messages`,
@@ -76,6 +76,10 @@ export class DagyardClient {
     return this.json('PUT', ROUTES.project(projectId), graph);
   }
 
+  snapshot(projectId: string): Promise<ProjectSnapshot> {
+    return this.json('GET', ROUTES.project(projectId));
+  }
+
   next(projectId: string): Promise<NextResult> {
     return this.json('GET', ROUTES.next(projectId));
   }
@@ -96,15 +100,10 @@ export class DagyardClient {
     return this.json('POST', ROUTES.blockers(projectId, nodeId), input);
   }
 
-  /** Una vuelta de long-poll: `null` si venció sin resolución. */
-  async waitOnce(
-    projectId: string,
-    nodeId: string,
-    opts: { blockerId?: string; timeoutSec: number },
-  ): Promise<BlockerWaitResult | null> {
-    const qs = new URLSearchParams({ timeout: String(opts.timeoutSec) });
-    if (opts.blockerId) qs.set('blocker', opts.blockerId);
-    const res = await this.request('GET', `${ROUTES.wait(projectId, nodeId)}?${qs}`);
+  /** Una vuelta de long-poll: `null` si venció con el bloqueante todavía abierto. */
+  async waitOnce(projectId: string, blockerId: string, timeoutSec: number): Promise<BlockerWaitResult | null> {
+    const qs = new URLSearchParams({ timeout: String(timeoutSec) });
+    const res = await this.request('GET', `${ROUTES.wait(projectId, blockerId)}?${qs}`);
     if (res.status === 204) return null;
     const body = (await res.json()) as BlockerWaitResult;
     return body.blocker.status === 'resolved' ? body : null;

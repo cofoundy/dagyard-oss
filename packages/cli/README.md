@@ -34,7 +34,8 @@ la tapan con `***`).
 | `block <nodo> --kind decision\|review\|access --q "…" [--opt …]` | abre un bloqueante e imprime su id |
 | `wait <nodo> [--blocker <id>]` | long-poll hasta que el humano resuelve; imprime la elección o el valor |
 | `msg <nodo> "…" [--report <url>]` | mensaje ≤280 caracteres |
-| `next` | `/goal …` en una sola línea (exit 3 si no hay nada arrancable) |
+| `next` | `/goal …` en una sola línea (exit 3 si no hay nada arrancable); el link de la tarea va por stderr (`en el cielo: …`) y en `--json` como `link` |
+| `open [<tarea>] [--print]` | imprime el link del cielo al proyecto (`<url>/?p=<proyecto>`) o a la tarea (`&n=<tarea>`, abre su ficha) y en macOS lo abre; `--print` solo lo imprime. No usa la key |
 | `sync --github <owner/repo> [--label <l>] [--stage <etapa>] [--all] [--dry-run] [--json]` | crea o actualiza las tareas `gh-<n>` desde los issues (ver abajo) |
 | `import --from <.cofoundy/tasks> [--replace] [--dry-run]` | crea el proyecto desde las tareas del orchestrator; si ya existe, falla (`PUT` con `If-None-Match: *`) salvo `--replace` (`PUT` del grafo entero; con la clave de agente conserva las preguntas y respuestas del dueño y da 409 si quita una tarea que tiene alguna, con el token del dueño las recrea desde el archivo) |
 

@@ -14,6 +14,7 @@ lo mira en la URL y contesta ahí lo que es suyo. Épica: #44.
 | URL de confianza | la key viaja a la `url` de `.dagyard.json` solo si es https y su origen es de confianza: la preview, `https://dagyard.run`, el de `DAGYARD_URL`/`~/.config/dagyard/url` o una línea de `~/.config/dagyard/trusted-urls`. Si no, el CLI la ignora y avisa. La búsqueda sube hasta la raíz del repo (el primer `.git`) o `$HOME`, nunca más arriba: un `.dagyard.json` plantado en `/tmp` no te roba la key |
 | Precedencia | `--project`/`--url` > `DAGYARD_PROJECT`/`DAGYARD_URL` > `.dagyard.json` > `~/.config/dagyard/{project,url}` |
 | `dagyard sync --github cofoundy/dagyard` | lo corre la fábrica: crea o actualiza los nodos `gh-<n>` desde la cola de issues (abajo) |
+| `dagyard open [gh-<n>]` | el link al proyecto (`/?p=dagyard`) o a la ficha de la tarea (`&n=gh-<n>`), para mandárselo a André; en macOS lo abre (`--print` solo lo imprime). `next` también trae el link de la tarea |
 
 ## El protocolo de un sitio
 
@@ -77,6 +78,7 @@ Usa la API granular (nunca reemplaza el grafo), así cada cambio llega en vivo y
 
 ```bash
 node packages/cli/dist/dagyard.mjs next                       # responde para «dagyard» sin --project
+node packages/cli/dist/dagyard.mjs open gh-64 --print         # el link a la ficha de esa tarea
 node packages/cli/dist/dagyard.mjs sync --github cofoundy/dagyard --dry-run
 curl -s -H "Authorization: Bearer $(cat ~/.config/dagyard/agent-key)" \
   https://dagyard.cofoundy-dev.workers.dev/api/projects/dagyard | jq '.nodes | length'

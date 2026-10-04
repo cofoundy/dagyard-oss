@@ -10,7 +10,7 @@
 // Todo cambio se ve en el cielo (la UI) en tiempo real, porque escribe en la misma API.
 import type { Register } from 'claude-code'
 
-import { viewOf } from './view'
+import { skyLink, viewOf } from './view'
 import type { Item, Node, Snapshot, View } from './view'
 
 const URL_DEFAULT = 'https://dagyard.cofoundy-dev.workers.dev'
@@ -168,8 +168,9 @@ async function patchWorking($: any, node: Node, body: unknown, toast: string): P
   await settle($, err)
 }
 
-async function openSky($: any): Promise<void> {
-  await $.process.run(['open', base]).catch(() => undefined)
+/** Abre el cielo en el proyecto de este repo y, si se pasa, directo en esa tarea con su ficha. */
+async function openSky($: any, node?: string): Promise<void> {
+  await $.process.run(['open', skyLink(base, project, node)]).catch(() => undefined)
 }
 
 // Primero abre y después carga: el motor coloca el panel a cualquier ancho solo si el clic de la
@@ -273,7 +274,7 @@ export const register: Register = on => {
           <Box flexWrap="wrap">
             <Button key="dy-done" label="Hecha" hotkey="h" variant="primary" onPress={() => void patchWorking($, w, { status: 'done' }, `«${w.title}» está lista.`)} />
             <Button key="dy-release" label="Soltarla" hotkey="l" onPress={() => void patchWorking($, w, { status: 'pending', team: null, progress: 0 }, '')} />
-            <Button key="dy-open" label="Ver el cielo" hotkey="o" dimColor onPress={() => void openSky($)} />
+            <Button key="dy-open" label="Ver el cielo" hotkey="o" dimColor onPress={() => void openSky($, w.id)} />
           </Box>
         </Box>
       )
@@ -289,7 +290,7 @@ export const register: Register = on => {
         const label = b.kind === 'decision' ? 'Te espera tu decisión' : b.kind === 'review' ? 'Te espera tu revisión' : 'Te espera un acceso'
         const buttons =
           b.kind === 'access'
-            ? [<Button key="dy-sky" label="Darlo en el cielo" hotkey="o" variant="primary" onPress={() => void openSky($)} />]
+            ? [<Button key="dy-sky" label="Darlo en el cielo" hotkey="o" variant="primary" onPress={() => void openSky($, it.node.id)} />]
             : b.options.slice(0, 3).map((opt, k) => (
                 <Button key={`dy-opt-${k}`} label={opt} hotkey={String(k + 1)} variant={k === 0 ? 'primary' : undefined} onPress={() => void resolve($, it, k, '')} />
               ))
@@ -382,7 +383,7 @@ export const register: Register = on => {
       const id = b.id
       let actions: any
       if (b.kind === 'access') {
-        actions = <Button key={`mn-${id}-sky`} label="Darlo en el cielo" variant="primary" onPress={() => void openSky($)} />
+        actions = <Button key={`mn-${id}-sky`} label="Darlo en el cielo" variant="primary" onPress={() => void openSky($, it.node.id)} />
       } else if (commenting === id && Input) {
         const k = b.options.findIndex(o => /cambio/i.test(o))
         actions = (
@@ -432,7 +433,7 @@ export const register: Register = on => {
     rows.push(
       <Box key="mn-foot">
         <Text>{'\n'}</Text>
-        <Button key="mn-sky" label="Ver el cielo" dimColor onPress={() => void openSky($)} />
+        <Button key="mn-sky" label="Ver el cielo" dimColor onPress={() => void openSky($, w?.id)} />
         <Button key="mn-band" label={hidden ? 'Mostrar la banda' : 'Ocultar la banda'} dimColor onPress={() => void toggleBand($)} />
       </Box>,
     )

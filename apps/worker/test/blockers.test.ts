@@ -4,7 +4,7 @@ import { db } from '../src/db.js';
 import { describe, expect, it } from 'vitest';
 import { AGENT, OWNER, api, json, seedDemo } from './helpers.js';
 
-const SECRET = 'sk_live_NO-DEBE-SALIR-123';
+const SECRET = 'sk_live_NO-DEBE-SALIR-123'; // gitleaks:allow (valor falso: el test comprueba que nunca sale)
 const byNode = (s: ProjectSnapshot, nodeId: string) => s.blockers.find((b) => b.nodeId === nodeId)!;
 
 describe('bloqueantes', () => {

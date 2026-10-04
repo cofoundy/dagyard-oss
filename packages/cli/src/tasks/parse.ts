@@ -277,6 +277,16 @@ function humanizePath(token: string): string {
   return segs.length === 2 ? `${segs[0]} y ${segs[1]}` : `${segs.slice(0, -1).join(', ')} y ${segs.at(-1)}`;
 }
 
+/** `.slice(1)`, `var()`, `x.y(a, b)` pegado al nombre: una llamada, no una nota. */
+const CODE_CALL = /(?<=^|\s)\.?([A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\([^()]*\)/g;
+
+/** `verify.sh` → `verify`, `r2.test.ts` → `r2`, `deploy.yml` → `deploy`: el PM no ve nombres de archivo. */
+const CODE_FILE =
+  /(?<![\w.-])([\w-]+?)(?:\.(?:test|spec|config|d|e2e))?\.(?:ts|tsx|js|jsx|mjs|cjs|sh|bash|py|ya?ml|json|sql|toml|mdx?|css|html|go|rs|rb)\b/g;
+
+/** `REPO_ROOT` → `repo root`. */
+const SCREAMING_SNAKE = /(?<![\w])[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+(?![\w])/g;
+
 /** `createTenant + personalTenantIdFor` → `create tenant + personal tenant id for`. Solo si el título es solo identificadores. */
 const ONLY_IDENTIFIERS = /^[a-z][a-z0-9]*[A-Z]\w*(?:\s*[+,]\s*[a-z][a-z0-9]*[A-Z]\w*)*$/;
 
@@ -303,7 +313,9 @@ function cleanTitle(raw: string): string {
     if (file && t.slice(file[0].length).trim()) t = t.slice(file[0].length);
   }
 
-  // paréntesis de notas (`(KEYSTONE, …)`, `(opción B)`); no llamadas como `.slice(1)` o `var()`
+  // llamadas de código: `.slice(1)` → `slice`, `var()` → `var`
+  t = t.replace(CODE_CALL, '$1');
+  // paréntesis de notas (`(KEYSTONE, …)`, `(opción B)`)
   for (let prev = ''; prev !== t; ) {
     prev = t;
     t = t.replace(/(^|\s)\([^()]*\)/g, '$1');
@@ -312,6 +324,8 @@ function cleanTitle(raw: string): string {
     .replace(/\s+(?:de|del|of|en|in)\s+#\d+\b/gi, '')
     .replace(/(^|\s)#\d+\b[:,]?/g, '$1')
     .replace(PATH_TOKEN, humanizePath)
+    .replace(CODE_FILE, '$1')
+    .replace(SCREAMING_SNAKE, (w) => w.toLowerCase().replace(/_+/g, ' '))
     .replace(/(?<![\p{L}\p{N}_])\p{Lu}{2,}(?![\p{L}\p{N}_])/gu, (w) => (ACRONYMS.has(w) ? w : w.toLowerCase()))
     .replace(/\s+([,;])/g, '$1')
     .replace(/\s+/g, ' ')

@@ -16,8 +16,10 @@ export interface ParsedTask {
   id: string;
   /** todos los nombres con que otra tarea puede referirse a esta */
   aliases: string[];
-  /** título humano, sin ids `T-xxx` ni referencias `#123` */
+  /** título humano, sin ids `T-xxx` ni referencias `#123` (lo que dice el archivo; para la UI, `legibleTitle`) */
   title: string;
+  /** primera frase de `**Issue:** #123 — …` en la cabecera: título de reserva si `title` no es título */
+  summary: string | null;
   rawStatus: string | null;
   status: NodeStatus;
   /** el status pide algo a un humano (`blocked  # ESCALATION REQUIRED`): queda «Te espera» */
@@ -82,6 +84,7 @@ export function parseTask(file: string, text: string): ParsedTask {
   }
 
   let h1: string | null = null;
+  let summary: string | null = null;
   let fence: string | null = null;
   for (let i = bodyStart; i < lines.length; i++) {
     const line = lines[i] ?? '';
@@ -97,6 +100,7 @@ export function parseTask(file: string, text: string): ParsedTask {
       h1 = line.replace(/^#\s+/, '').trim();
       continue;
     }
+    if (fence === null && summary === null && ISSUE_LINE.test(line)) summary = issueSummary(lines, i);
     for (const [field, value] of inlineFields(line)) put(field, value);
   }
 
@@ -119,6 +123,7 @@ export function parseTask(file: string, text: string): ParsedTask {
     id,
     aliases,
     title: humanTitle(prefix ? prefix.rest : (titleSource ?? ''), stem),
+    summary,
     rawStatus,
     status: normalizeStatus(statusWord),
     needsHuman: !!fields.status && NEEDS_HUMAN.test(fields.status),
@@ -229,6 +234,108 @@ export function humanTitle(raw: string, stem: string): string {
   if (!t) t = humanize(stem.replace(/^T-\w+-?/i, '') || stem);
   // mayúscula inicial solo si la primera palabra es prosa (no `sweep.sh`, `validateProtocol`)
   if (/^\p{Ll}+(?=[\s,:;]|$)/u.test(t)) t = t.charAt(0).toUpperCase() + t.slice(1);
+  return oneLine(t, LIMITS.title);
+}
+
+const ISSUE_LINE = /^\s*(?:[-*+]\s+)?(?:\*\*|`)?issue(?:\*\*)?\s*:/i;
+const CONTINUATION_STOP = /^\s*(?:$|[-*+]\s|#|>|```|~~~|\*\*[^*]+:\*\*|`?[A-Za-z_][\w ]*:\s)/;
+
+/** `**Issue:** #665 — la resolución … es CONDICIONAL ⇒ queda …` (y sus líneas de continuación) → la primera cláusula. */
+function issueSummary(lines: string[], i: number): string | null {
+  const parts = [(lines[i] ?? '').replace(ISSUE_LINE, '')];
+  for (let j = i + 1; j < lines.length && !CONTINUATION_STOP.test(lines[j] ?? ''); j++) parts.push(lines[j] ?? '');
+  const text = stripMarkdown(parts.join(' '))
+    .replace(/\*/g, '')
+    .replace(/^\s*#\d+\b\s*(?:[—–:·-]\s*)?/, '')
+    .split(/\s*(?:⇒|→|=>|:\s|;\s|\.\s|\.$|\s[—–]\s)/)[0]!
+    .trim();
+  return text || null;
+}
+
+/** Siglas reales: se quedan en mayúsculas. Lo demás en MAYÚSCULAS es énfasis y se baja. */
+const ACRONYMS = new Set(
+  (
+    'MCP API CI CD PR XSS UI UX HTML CSS JSX TSX URL URI HTTP HTTPS OIDC SQL JSON YAML DAG PM SSO JWT CLI SDK ' +
+    'DNS CSRF FTS AUC QA ID IA AI SEO CDN TTL RLS CTA DOM SVG PDF CSV TLS SSH AWS GCP DTO SPA SSR RSC ORM CRUD ' +
+    'REST RPC WS KV DO LLM SLA KPI MVP OK ESM NPM UTC IP IDE OS GPU CPU RAM SMS OTP RAG'
+  ).split(' '),
+);
+
+/** Carpetas de código: `lib/x/y` es una ruta aunque no tenga extensión. */
+const CODE_DIRS = /^(?:\.?[\w-]*factory|lib|app|apps|src|test|tests|scripts|components|packages|docs|migrations|public|\.github|\.cofoundy)$/i;
+
+/** Una ruta (`/workspace`, `lib/x.ts`, `cli/`) o una lista con barras (`mint/rotate`) dentro de un título. */
+const PATH_TOKEN = /(?<![\w.@])(?:\.?\/)?[\w.@~*-]*\/[\w.@~*\/-]*/g;
+
+function humanizePath(token: string): string {
+  if (token.includes('//') || /^\/api\//i.test(token)) return '';
+  const segs = token.split('/').filter(Boolean);
+  if (!segs.length) return '';
+  const isList =
+    !token.startsWith('/') && !token.endsWith('/') && segs.length >= 2 && segs.every((x) => /^\p{L}+$/u.test(x)) && !CODE_DIRS.test(segs[0]!);
+  if (!isList) return segs.at(-1)!;
+  return segs.length === 2 ? `${segs[0]} y ${segs[1]}` : `${segs.slice(0, -1).join(', ')} y ${segs.at(-1)}`;
+}
+
+/** `createTenant + personalTenantIdFor` → `create tenant + personal tenant id for`. Solo si el título es solo identificadores. */
+const ONLY_IDENTIFIERS = /^[a-z][a-z0-9]*[A-Z]\w*(?:\s*[+,]\s*[a-z][a-z0-9]*[A-Z]\w*)*$/;
+
+/** Prefijos de código al inicio: `SEC —`, `NAV-CORE —`, `P0.1`, `Phase-9`, `Migration 0015 —`. */
+const LEADING_CODES: RegExp[] = [
+  /^(?:phase|fase|wave|lane|stage)[-\s]?\d+[a-z]?\b\s*(?:[—–:·]\s*)?/i,
+  /^(?:migration|migraci[oó]n)\s+\d+\b\s*(?:[—–:·]\s*)?/i,
+  /^P\d+(?:\.\d+)*\b\s*(?:[—–:·]\s*)?/,
+];
+const LEADING_CAPS_CODE = /^([A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*)\s*[—–:·]\s+/;
+
+/** Archivo o ruta al inicio seguido de separador: `lib/x.ts — `, `.factory/lib/emit.sh: `, `bus.py cost: `, `sweep.sh + `. */
+const LEADING_FILE = /^[^\s:—–]*(?:\/|\.[A-Za-z]{1,4}\b)[^\s:—–]*(?:\s+[\w-]+){0,2}?(?:\s*[—–:]\s+|\s+\+\s+)/;
+
+function cleanTitle(raw: string): string {
+  let t = stripMarkdown(raw).replace(/<([A-Za-z][\w.-]*)>/g, '$1').replace(/\s+/g, ' ').trim();
+
+  for (let prev = ''; prev !== t; ) {
+    prev = t;
+    for (const re of LEADING_CODES) t = t.replace(re, '');
+    const caps = LEADING_CAPS_CODE.exec(t);
+    if (caps && !ACRONYMS.has(caps[1]!)) t = t.slice(caps[0].length);
+    const file = LEADING_FILE.exec(t);
+    if (file && t.slice(file[0].length).trim()) t = t.slice(file[0].length);
+  }
+
+  // paréntesis de notas (`(KEYSTONE, …)`, `(opción B)`); no llamadas como `.slice(1)` o `var()`
+  for (let prev = ''; prev !== t; ) {
+    prev = t;
+    t = t.replace(/(^|\s)\([^()]*\)/g, '$1');
+  }
+  t = t
+    .replace(/\s+(?:de|del|of|en|in)\s+#\d+\b/gi, '')
+    .replace(/(^|\s)#\d+\b[:,]?/g, '$1')
+    .replace(PATH_TOKEN, humanizePath)
+    .replace(/(?<![\p{L}\p{N}_])\p{Lu}{2,}(?![\p{L}\p{N}_])/gu, (w) => (ACRONYMS.has(w) ? w : w.toLowerCase()))
+    .replace(/\s+([,;])/g, '$1')
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s—–·:,;+-]+|[\s—–·:,;+-]+$/g, '')
+    .trim();
+
+  if (ONLY_IDENTIFIERS.test(t)) t = t.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase();
+  // mayúscula inicial si la primera palabra es prosa (`cross-project`), no código (`r2.test.ts`, `agent_read_denied`)
+  if (/^\p{Ll}+(?:-\p{Ll}+)*(?=[\s,:;]|$)/u.test(t)) t = t.charAt(0).toUpperCase() + t.slice(1);
+  return t;
+}
+
+const NOT_A_TITLE = /^(?:role|rol|owner|lane)\s*:/i;
+
+/**
+ * D10 (#21): el título que ve un PM. Sin prefijos de ruta ni de código, sin rutas sueltas, sin
+ * paréntesis de notas internas, sin MAYÚSCULAS enfáticas (las siglas se quedan). Si el título no
+ * es título (`role: oracle`), se usa la primera frase del issue. Nunca vacío.
+ */
+export function legibleTitle(title: string, summary: string | null = null): string {
+  let t = NOT_A_TITLE.test(title.trim()) ? '' : cleanTitle(title);
+  if (!t && summary) t = cleanTitle(summary);
+  if (!t) t = cleanTitle(title.replace(NOT_A_TITLE, ''));
+  if (!t) t = title.trim() || 'Tarea';
   return oneLine(t, LIMITS.title);
 }
 

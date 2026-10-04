@@ -848,7 +848,7 @@ export function createSky(opts: CreateSkyOptions): Sky {
       o *= k * labelIn * Math.max(0, Math.min(1, v.born * 1.4)) * (v.dying >= 0 ? v.dying : 1);
       // recortado salvo que se pida verlo entero
       const lines = clampLines && !asked ? clampLines : undefined;
-      labels.setClamp(v.id, !!lines);
+      labels.setClamp(v.id, lines);
       placed.push({ v, x, y, o, lines });
       // oculta o recortada: al pedirla con el mouse crece, así que se le abre espacio
       if (v.id === hoverId && (!fits || !!clampLines) && o > 0.05) {

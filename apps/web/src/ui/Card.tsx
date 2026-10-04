@@ -1,10 +1,10 @@
 // La ficha de una tarea: estado, lo que te pide (decisión, revisión o acceso), lo que te escribieron,
-// el informe en Basalt, el detalle técnico y sus vecinos en el plan. A la derecha en escritorio, hoja inferior en móvil.
+// el informe, el detalle técnico y sus vecinos en el plan. A la derecha en escritorio, hoja inferior en móvil.
 
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { Blocker, DagNode, Resolution, Snapshot } from '../data/types';
 import { dependentsOf, depsOf, messagesOf, openBlockerOf, resolvedBlockersOf, stageIndex } from '../data/view';
-import { ago, BLOCK_TEXT, COPY, stageLabel, STATUS_CLASS, STATUS_TEXT, teamName } from './copy';
+import { ago, BLOCK_TEXT, COPY, reportLabel, stageLabel, STATUS_CLASS, STATUS_TEXT, teamName } from './copy';
 
 export interface CardProps {
   snapshot: Snapshot;
@@ -78,7 +78,7 @@ function CardBody({ snapshot, node, onClose, onFocus, onResolve }: CardProps & {
               <p>{m.text}</p>
               {m.reportUrl && (
                 <a className="inline-report" href={m.reportUrl} target="_blank" rel="noopener noreferrer">
-                  {COPY.report} ↗
+                  {reportLabel(m.reportUrl)} ↗
                 </a>
               )}
             </div>
@@ -132,7 +132,7 @@ function CardBody({ snapshot, node, onClose, onFocus, onResolve }: CardProps & {
 
       {node.reportUrl && (
         <a className="report" href={node.reportUrl} target="_blank" rel="noopener noreferrer">
-          <span>{COPY.report}</span>
+          <span>{reportLabel(node.reportUrl)}</span>
           <span>{COPY.open} ↗</span>
         </a>
       )}

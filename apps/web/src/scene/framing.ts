@@ -416,6 +416,8 @@ function metricsFor(graph: SceneGraph, sizer: Sizer, ppu: number, labelWidth: nu
 export const DENSE_STAGE = 8;
 /** Proyecto denso: líneas de título en la vista general (88 títulos largos no caben enteros a 1440×900). */
 export const DENSE_LINES = 2;
+/** Último respaldo del retrato no denso (#58): títulos a una línea cuando ni a dos entran todos (375×667). */
+export const TIGHT_LINES = 1;
 /** Proyecto denso: aire mínimo en px entre dos etiquetas visibles. */
 const DENSE_MARGIN = 3;
 /** Retrato denso: columnas por fila que se prueban (a 390 px de ancho ganan 10–14: menos filas, más títulos). */
@@ -525,13 +527,14 @@ interface PortraitFallback {
 /**
  * Respaldos del retrato no denso, de más a menos parecido a la carta de siempre: la rejilla de siempre; con algo más
  * de aire (dos vecinas que se rozan por décimas de píxel); con una columna más y una menos (lo que el ancho no da);
- * y, si el alto no alcanza para los títulos completos, recortados a dos líneas (completos al pasar el mouse o enfocar).
+ * si el alto no alcanza para los títulos completos, recortados a dos líneas; y, como último recurso (celulares bajos
+ * como el iPhone SE, #58), a una línea con elipsis. Recortados, se ven completos al pasar el mouse o enfocar.
  */
 function portraitFallbacks(perRow: number): PortraitFallback[] {
   const more = PORTRAIT_AIR + 6;
   const list: PortraitFallback[] = [{ perRow, air: PORTRAIT_AIR }, { perRow, air: more }, { perRow: perRow + 1, air: PORTRAIT_AIR }];
   if (perRow > 2) list.push({ perRow: perRow - 1, air: PORTRAIT_AIR });
-  list.push({ perRow, air: PORTRAIT_AIR, lines: DENSE_LINES }, { perRow, air: more, lines: DENSE_LINES });
+  for (const lines of [DENSE_LINES, TIGHT_LINES]) list.push({ perRow, air: PORTRAIT_AIR, lines }, { perRow, air: more, lines });
   return list;
 }
 

@@ -23,6 +23,8 @@ export interface ImportStats {
   stageSource: 'phase' | 'depth';
   stages: Array<{ id: string; name: string; nodes: number }>;
   status: Record<NodeStatus, number>;
+  /** tareas `blocked` en el archivo que piden algo a una persona (quedan Pendiente con un aviso, #35/#38) */
+  asksHuman: number;
   /** cuántos títulos vinieron de `titles`; solo si se pasó */
   titled?: number;
 }
@@ -143,9 +145,11 @@ export function buildImport(files: TaskFile[], opts: ImportOptions = {}): Import
 
   // #35: el import no le pregunta nada al dueño por su cuenta (una pregunta del archivo se reabriría en cada
   // --replace); avisa, y el agente la hace en vivo cuando de verdad la necesita
+  let askers = 0;
   tasks.forEach((t, i) => {
-    if (asksHuman(t, deps[i]!, tasks))
-      warnings.push(`«${nodes[i]!.title}» pide algo a una persona; quedó Pendiente. Pregúntaselo en vivo con dagyard block`);
+    if (!asksHuman(t, deps[i]!, tasks)) return;
+    askers++;
+    warnings.push(`«${nodes[i]!.title}» pide algo a una persona; quedó Pendiente. Pregúntaselo en vivo con dagyard block`);
   });
 
   const projectId = slugify(opts.projectId || opts.dirName || 'proyecto');
@@ -163,6 +167,7 @@ export function buildImport(files: TaskFile[], opts: ImportOptions = {}): Import
       stageSource: source,
       stages: stages.map((s) => ({ id: s.id!, name: s.name, nodes: stageOf.filter((x) => x === s.id).length })),
       status,
+      asksHuman: askers,
       ...(given ? { titled: given.size } : {}),
     },
     warnings,

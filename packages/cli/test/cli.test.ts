@@ -13,6 +13,8 @@ interface Seen {
   method: string;
   path: string;
   auth: string | undefined;
+  /** el header `If-None-Match` (creación exclusiva), si vino */
+  ifNoneMatch: string | undefined;
   body: unknown;
 }
 
@@ -49,13 +51,17 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
 async function handle(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url ?? '/', 'http://x');
   const body = await readBody(req);
-  seen.push({ method: req.method ?? '', path: url.pathname, auth: req.headers.authorization, body });
+  seen.push({ method: req.method ?? '', path: url.pathname, auth: req.headers.authorization, ifNoneMatch: req.headers['if-none-match'], body });
   if (req.headers.authorization !== `Bearer ${KEY}`) {
     return reply(res, 401, { error: { code: 'unauthorized', message: `token inválido: ${req.headers.authorization}` } });
   }
   const parts = url.pathname.split('/').filter(Boolean); // api projects :p ...
   const [, , projectId, kind, nodeId, sub] = parts;
   if (req.method === 'PUT' && parts.length === 3) {
+    // creación exclusiva, como el Worker: con `If-None-Match: *` un proyecto existente → 409 sin tocarlo
+    if (req.headers['if-none-match'] === '*' && projects.has(projectId!)) {
+      return reply(res, 409, { error: { code: 'conflict', message: `Ya existe un proyecto «${projectId}»; no lo piso` } });
+    }
     if (lockedProjects.has(projectId!)) {
       return reply(res, 409, { error: { code: 'conflict', message: 'El proyecto tiene una pregunta abierta para el dueño' } });
     }
@@ -348,37 +354,38 @@ describe('import', () => {
     expect(seen).toHaveLength(0);
   });
 
-  it('sin --dry-run crea el proyecto: mira que no exista y hace PUT del grafo entero', async () => {
+  it('sin --dry-run crea el proyecto con un solo PUT exclusivo (If-None-Match: *), sin GET previo', async () => {
     const r = await cli(['import', '--from', from, '--project', 'basalt-fabrica', '--name', 'Basalt (fábrica)']);
     expect(r.code).toBe(0);
     expect(r.stdout).toContain('importado');
-    expect(seen.map((x) => `${x.method} ${x.path}`)).toEqual(['GET /api/projects/basalt-fabrica', 'PUT /api/projects/basalt-fabrica']);
+    expect(seen.map((x) => `${x.method} ${x.path}`)).toEqual(['PUT /api/projects/basalt-fabrica']);
     const put = last();
-    expect(put).toMatchObject({ method: 'PUT', path: '/api/projects/basalt-fabrica' });
+    expect(put).toMatchObject({ method: 'PUT', path: '/api/projects/basalt-fabrica', ifNoneMatch: '*' });
     const body = put.body as { name: string; nodes: Array<{ id: string; deps: string[] }> };
     expect(body.name).toBe('Basalt (fábrica)');
     expect(body.nodes.find((n) => n.id === 'l3')?.deps).toEqual(['l1', 'l2']);
   });
 
-  it('si el proyecto ya existe no lo pisa: exit 1, mensaje claro y ningún PUT', async () => {
+  it('si el proyecto ya existe no lo pisa: el servidor responde 409 al PUT exclusivo, exit 1 y mensaje claro', async () => {
     projects.add('basalt');
     const r = await cli(['import', '--from', from, '--project', 'basalt']);
     expect(r.code).toBe(EXIT.api);
     expect(r.stderr).toContain('conflict');
     expect(r.stderr).toContain('ya existe');
     expect(r.stderr).toContain('--replace');
-    expect(seen.some((x) => x.method === 'PUT')).toBe(false);
+    expect(seen.map((x) => `${x.method} ${x.path} ${x.ifNoneMatch}`)).toEqual(['PUT /api/projects/basalt *']);
   });
 
-  it('--replace reemplaza un proyecto existente sin preguntar si existe', async () => {
+  it('--replace reemplaza un proyecto existente: PUT sin If-None-Match', async () => {
     projects.add('basalt');
     const r = await cli(['import', '--from', from, '--project', 'basalt', '--replace']);
     expect(r.code).toBe(0);
     expect(r.stdout).toContain('reemplazado');
     expect(seen.map((x) => `${x.method} ${x.path}`)).toEqual(['PUT /api/projects/basalt']);
+    expect(last().ifNoneMatch).toBeUndefined();
   });
 
-  it('--replace sobre un proyecto con preguntas abiertas: el 409 del servidor llega tal cual', async () => {
+  it('--replace que el servidor rechaza (409): el mensaje del servidor llega tal cual', async () => {
     projects.add('basalt');
     lockedProjects.add('basalt');
     const r = await cli(['import', '--from', from, '--project', 'basalt', '--replace']);
@@ -386,11 +393,11 @@ describe('import', () => {
     expect(r.stderr).toContain('conflict: El proyecto tiene una pregunta abierta para el dueño');
   });
 
-  it('un error que no es 404 al mirar si existe se propaga y no hace PUT', async () => {
+  it('un error que no es 409 al crear se propaga tal cual', async () => {
     const r = await cli(['import', '--from', from, '--project', 'basalt'], { DAGYARD_KEY: 'otra' });
     expect(r.code).toBe(EXIT.api);
     expect(r.stderr).toContain('unauthorized');
-    expect(seen.some((x) => x.method === 'PUT')).toBe(false);
+    expect(r.stderr).not.toContain('--replace');
   });
 });
 

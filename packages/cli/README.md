@@ -17,7 +17,7 @@ La key nunca se imprime (los errores la tapan con `***`).
 | `wait <nodo> [--blocker <id>]` | long-poll hasta que el humano resuelve; imprime la elección o el valor |
 | `msg <nodo> "…" [--report <url>]` | mensaje ≤280 caracteres |
 | `next` | `/goal …` en una sola línea (exit 3 si no hay nada arrancable) |
-| `import --from <.cofoundy/tasks> [--replace] [--dry-run]` | crea el proyecto desde las tareas del orchestrator; si ya existe, falla salvo `--replace` (`PUT` del grafo entero, 409 si tiene bloqueantes abiertos) |
+| `import --from <.cofoundy/tasks> [--replace] [--dry-run]` | crea el proyecto desde las tareas del orchestrator; si ya existe, falla (`PUT` con `If-None-Match: *`) salvo `--replace` (`PUT` del grafo entero que conserva las preguntas y respuestas del dueño; 409 si quita una tarea que tiene alguna) |
 
 Exit codes: 0 ok · 1 API o red · 2 `wait` venció · 3 `next` vacío · 64 uso.
 

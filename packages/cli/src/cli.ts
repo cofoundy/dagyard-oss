@@ -272,8 +272,9 @@ Sin --timeout espera para siempre. Exit 2 si vence.`,
     summary: 'crea un proyecto nuevo desde las tareas del orchestrator',
     help: `deps y blockedBy se vuelven dependencias; status se normaliza a ${NODE_STATUSES.join(', ')}.
 Etapas: phase si todas las tareas lo traen; si no, por profundidad («Para empezar», «Después», «Luego», … «Al final»).
-Si el proyecto ya existe no lo pisa: elige otro con --project o pasa --replace para reemplazarlo
-entero. El servidor rechaza el reemplazo (409) si el proyecto tiene preguntas abiertas para el dueño.
+Si el proyecto ya existe no lo pisa (el servidor lo decide al crear): elige otro con --project o pasa
+--replace para reemplazarlo. El reemplazo conserva las preguntas y respuestas del dueño; el servidor lo
+rechaza (409) si el grafo nuevo quita una tarea que tiene alguna.
 --dry-run solo cuenta, no envía nada y no necesita servidor.`,
     flags: ['from', 'name', ...GLOBAL_FLAGS],
     bools: ['dry-run', 'json', 'replace'],
@@ -298,15 +299,17 @@ entero. El servidor rechaza el reemplazo (409) si el proyecto tiene preguntas ab
       const dry = args.bools.has('dry-run');
       const replace = args.bools.has('replace');
       if (!dry) {
-        const api = client(io, args);
-        if (!replace && (await api.projectExists(result.projectId))) {
+        // sin --replace, el «¿ya existe?» lo decide el servidor en la misma escritura: dos imports a la vez no se pisan
+        try {
+          await client(io, args).putProject(result.projectId, result.graph, { exclusive: !replace });
+        } catch (err) {
+          if (replace || !(err instanceof ApiRequestError) || err.status !== 409) throw err;
           throw new ApiRequestError(
             409,
             'conflict',
-            `el proyecto «${result.projectId}» ya existe y no lo piso; usa --project <otro> para crear uno nuevo o --replace para reemplazarlo entero`,
+            `el proyecto «${result.projectId}» ya existe y no lo piso; usa --project <otro> para crear uno nuevo o --replace para reemplazarlo`,
           );
         }
-        await api.putProject(result.projectId, result.graph);
       }
       io.stdout(args.bools.has('json') ? `${JSON.stringify(result, null, 2)}\n` : formatImport(result, dry, replace));
       return EXIT.ok;

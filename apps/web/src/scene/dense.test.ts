@@ -51,7 +51,13 @@ const CASES: { name: string; vp: Viewport; safe: SafeArea }[] = [
   { name: '390×844 (HUD de la app)', vp: { width: 390, height: 844 }, safe: { top: 150, right: 16, bottom: 84, left: 16 } },
 ];
 
-const MATRIX = GRAPHS.flatMap((g) => CASES.map((c) => ({ ...g, ...c, label: `${g.name} a ${c.name}` })));
+// #41: celulares angostos o con HUD alto. A 360×780 con un HUD de 170/96 la etapa III de Basalt activo quedaba muda.
+const NARROW: { name: string; vp: Viewport; safe: SafeArea }[] = [
+  { name: '360×780 (HUD alto)', vp: { width: 360, height: 780 }, safe: { top: 170, right: 16, bottom: 96, left: 16 } },
+  { name: '430×932 (HUD 142/79)', vp: { width: 430, height: 932 }, safe: { top: 142, right: 16, bottom: 79, left: 16 } },
+];
+
+const MATRIX = GRAPHS.flatMap((g) => [...CASES, ...NARROW].map((c) => ({ ...g, ...c, label: `${g.name} a ${c.name}` })));
 
 const overlaps = (a: Box, b: Box) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
 const active = (g: SceneGraph) => new Set(g.nodes.filter((n) => n.status === 'blocked' || n.status === 'working').map((n) => n.id));
@@ -166,11 +172,26 @@ describe.each(CASES)('guardrail: la demo de 20 nodos no cambia a $name', ({ vp, 
   });
 });
 
-// La app mide su HUD (top/bottom) y cae donde cae (#27): se barre el entorno a 390×844.
-const PHONE_SAFES: [number, number][] = [[110, 64], [124, 90], [126, 96], [134, 90], [142, 79], [150, 71], [150, 84], [158, 64], [170, 96]];
+describe.each(NARROW)('celular angosto: la demo de 20 nodos se ve entera a $name', ({ vp, safe }) => {
+  const demo = labGraph();
+  const sol = solveOverview(demo, vp, safe, estimateSizer(demo, true));
 
-describe('robusto al safe area medido a 390×844', () => {
-  const vp: Viewport = { width: 390, height: 844 };
+  it('se ven las 20 etiquetas, sin estrellas tenues (si el alto no da, recortadas a dos líneas)', () => {
+    expect(sol.visible.size).toBe(20);
+    expect(sol.quiet).toBeUndefined();
+  });
+});
+
+// La app mide su HUD (top/bottom) y cae donde cae (#27): se barre el entorno a 390×844, y desde #41 también en los
+// celulares angostos (360×780) y grandes (430×932).
+const PHONE_SAFES: [number, number][] = [[110, 64], [124, 90], [126, 96], [134, 90], [142, 79], [150, 71], [150, 84], [158, 64], [170, 96]];
+const PHONES: Viewport[] = [
+  { width: 390, height: 844 },
+  { width: 360, height: 780 },
+  { width: 430, height: 932 },
+];
+
+describe.each(PHONES)('robusto al safe area medido a $width×$height', (vp) => {
   const g = withActive(BASALT, 3, 5);
   const sizer = estimateSizer(g, true);
   const demo = labGraph();

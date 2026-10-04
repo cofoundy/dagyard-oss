@@ -1,6 +1,7 @@
 // Densidad (#20): un proyecto real con 63 tareas en una etapa tiene que leerse. Con el fixture de Basalt (88 nodos,
-// 63/17/6/2): ninguna etiqueta visible pisa otra ni un rótulo de etapa, todo entra en el rectángulo seguro, y a
-// 1440×900 se ve la mayoría de las etiquetas. Las que no caben se ocultan por prioridad y reaparecen al pedirlas.
+// 63/17/6/2): ninguna etiqueta visible pisa otra ni un rótulo de etapa, todo entra en el rectángulo seguro, cada etapa
+// muestra al menos un título y se ve una buena parte de ellos (#27). Las que no caben se ocultan por prioridad y
+// reaparecen al pedirlas.
 import { describe, expect, it } from 'vitest';
 import type { SafeArea } from './contract';
 import {
@@ -23,10 +24,13 @@ import { orientationFor } from './layout';
 
 const g = basaltGraph();
 
-const CASES: { name: string; vp: Viewport; safe: SafeArea; majority: boolean }[] = [
-  { name: '1440×900', vp: { width: 1440, height: 900 }, safe: { top: 104, right: 20, bottom: 92, left: 20 }, majority: true },
-  { name: '390×844', vp: { width: 390, height: 844 }, safe: { top: 124, right: 16, bottom: 90, left: 16 }, majority: false },
-  { name: '390×844 (HUD de la app)', vp: { width: 390, height: 844 }, safe: { top: 150, right: 16, bottom: 84, left: 16 }, majority: false },
+// Umbral de títulos visibles (fracción de 88). 1440×900: la mayoría (medido 55 con este estimador, 61 con el DOM real).
+// En el celular no caben todos: con títulos de 2 líneas el alto da para ~11 filas de etiquetas a 4 por fila (~36 de
+// techo); medido 31 y 32, igual con el DOM real (antes de #27, 19 y 16), así que se exige el 30 % (27) con holgura.
+const CASES: { name: string; vp: Viewport; safe: SafeArea; minShare: number }[] = [
+  { name: '1440×900', vp: { width: 1440, height: 900 }, safe: { top: 104, right: 20, bottom: 92, left: 20 }, minShare: 0.5 },
+  { name: '390×844', vp: { width: 390, height: 844 }, safe: { top: 124, right: 16, bottom: 90, left: 16 }, minShare: 0.3 },
+  { name: '390×844 (HUD de la app)', vp: { width: 390, height: 844 }, safe: { top: 150, right: 16, bottom: 84, left: 16 }, minShare: 0.3 },
 ];
 
 const overlaps = (a: Box, b: Box) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
@@ -38,7 +42,7 @@ describe('el fixture es el de Basalt', () => {
   });
 });
 
-describe.each(CASES)('proyecto denso (88 nodos) a $name', ({ name, vp, safe, majority }) => {
+describe.each(CASES)('proyecto denso (88 nodos) a $name', ({ name, vp, safe, minShare }) => {
   const full = estimateSizer(g, orientationFor(vp.width, vp.height) === 'portrait');
   const sol = solveOverview(g, vp, safe, full);
   // la vista general pinta los títulos recortados si la solución lo pide
@@ -98,14 +102,15 @@ describe.each(CASES)('proyecto denso (88 nodos) a $name', ({ name, vp, safe, maj
     expect(out.slice(0, 5)).toEqual([]);
   });
 
-  it.runIf(majority)('se ve la mayoría de las etiquetas', () => {
-    console.info(`[densidad] ${name}: ${visible.size} de ${g.nodes.length} etiquetas visibles · ancho ${sol.labelWidth} px`);
-    expect(visible.size).toBeGreaterThan(g.nodes.length / 2);
+  it('cada etapa con tareas muestra al menos un título', () => {
+    const per = g.stages.map((_, i) => [...visible].filter((id) => sol.layout.stageOf.get(id) === i).length);
+    console.info(`[densidad] ${name}: ${visible.size} de ${g.nodes.length} etiquetas visibles (${per.join('/')}) · ancho ${sol.labelWidth} px`);
+    per.forEach((n, i) => expect(n, `etapa ${i} sin títulos`).toBeGreaterThan(0));
   });
 
-  it.runIf(!majority)('reporta cuántas etiquetas se ven', () => {
-    console.info(`[densidad] ${name}: ${visible.size} de ${g.nodes.length} etiquetas visibles · ancho ${sol.labelWidth} px`);
-    expect(visible.size).toBeGreaterThan(0);
+  it(`se ve al menos el ${minShare * 100} % de las etiquetas`, () => {
+    expect(visible.size).toBeGreaterThanOrEqual(Math.ceil(g.nodes.length * minShare));
+    if (minShare >= 0.5) expect(visible.size).toBeGreaterThan(g.nodes.length / 2);
   });
 });
 
@@ -116,5 +121,37 @@ describe.each(CASES)('guardrail: la demo de 20 nodos no cambia a $name', ({ vp, 
   it('se ven las 20 etiquetas, sin recorte', () => {
     expect(sol.visible.size).toBe(20);
     expect(sol.maxLines).toBeUndefined();
+  });
+});
+
+// La app mide su HUD (top/bottom) y cae donde cae: con 142/79 (la app real a 390×844) el retrato denso se aplastaba y
+// mostraba 12 títulos con la etapa III muda, mientras los tres safe areas de arriba daban 30+. Se barre el entorno.
+const PHONE_SAFES: [number, number][] = [[110, 64], [124, 90], [126, 96], [134, 90], [142, 79], [150, 71], [150, 84], [158, 64], [170, 96]];
+
+describe('robusto al safe area medido a 390×844', () => {
+  const vp: Viewport = { width: 390, height: 844 };
+  const sizer = estimateSizer(g, true);
+  const demo = labGraph();
+  const demoSizer = estimateSizer(demo, true);
+
+  it.each(PHONE_SAFES)('Basalt con top %i / bottom %i: ≥ 30 % de títulos y ninguna etapa muda', (top, bottom) => {
+    const sol = solveOverview(g, vp, { top, right: 16, bottom, left: 16 }, sizer);
+    const per = g.stages.map((_, i) => [...sol.visible].filter((id) => sol.layout.stageOf.get(id) === i).length);
+    expect(per.every((n) => n > 0), `por etapa ${per.join('/')}`).toBe(true);
+    expect(sol.visible.size).toBeGreaterThanOrEqual(Math.ceil(g.nodes.length * 0.3));
+  });
+
+  it.each(PHONE_SAFES)('demo con top %i / bottom %i: las 20 etiquetas', (top, bottom) => {
+    expect(solveOverview(demo, vp, { top, right: 16, bottom, left: 16 }, demoSizer).visible.size).toBe(20);
+  });
+});
+
+describe('el estimador mide como el DOM', () => {
+  it('un título que parte en dos líneas ocupa todo el ancho máximo (`width: max-content` + `max-width`)', () => {
+    const s = estimateSizer({ stages: [{ id: 'a', name: 'A' }], nodes: [{ id: 'n', stage: 0, title: 'Revisión de velocidad en celular', status: 'pending', progress: 0 }], edges: [] }, true);
+    const wrapped = s.node('n', 100);
+    expect(wrapped.h).toBeGreaterThan(15);
+    expect(wrapped.w).toBe(100);
+    expect(s.node('n', 400).w).toBeLessThan(400); // en una línea, solo lo que mide el texto
   });
 });

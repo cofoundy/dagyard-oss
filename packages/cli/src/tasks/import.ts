@@ -1,14 +1,15 @@
 /**
  * `.cofoundy/tasks` → `ProjectGraphInput` (lo que recibe `PUT /api/projects/:id`).
  * Dependencias = `deps` ∪ `blockedBy`, solo ids que existen en el directorio. Etapas = `phase:` si
- * todas las tareas lo traen; si no, la profundidad topológica («Etapa 1», «Etapa 2», …), con tope de 12.
+ * todas las tareas lo traen; si no, la profundidad topológica con nombre humano («Para empezar»,
+ * «Después», «Luego», …, «Al final»), con tope de 12. Títulos: `legibleTitle` (D10, #21).
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { NodeInput, NodeStatus, ProjectGraphInput, StageInput } from '@dagyard/model';
 import { LIMITS } from '@dagyard/model';
 import { slugify } from '@dagyard/model';
-import { humanize, oneLine, parseTask, type ParsedTask } from './parse.js';
+import { humanize, legibleTitle, oneLine, parseTask, type ParsedTask } from './parse.js';
 
 export interface TaskFile {
   file: string;
@@ -116,16 +117,19 @@ export function buildImport(files: TaskFile[], opts: ImportOptions = {}): Import
   const { stages, stageOf, source } = inferStages(tasks, depth);
 
   const tasksPath = (opts.tasksPath ?? '.cofoundy/tasks').replace(/\/+$/, '');
-  const nodes: NodeInput[] = tasks.map((t, i) => ({
-    id: nodeIds[i]!,
-    stage: stageOf[i]!,
-    title: t.title,
-    status: statuses[i]!,
-    progress: statuses[i] === 'done' ? 1 : 0,
-    team: t.team,
-    goal: t.goal ?? oneLine(`${t.title} — sigue ${tasksPath}/${t.file} y cumple su aceptación`, LIMITS.goal),
-    deps: deps[i]!.map((d) => nodeIds[d]!),
-  }));
+  const nodes: NodeInput[] = tasks.map((t, i) => {
+    const title = legibleTitle(t.title, t.summary);
+    return {
+      id: nodeIds[i]!,
+      stage: stageOf[i]!,
+      title,
+      status: statuses[i]!,
+      progress: statuses[i] === 'done' ? 1 : 0,
+      team: t.team,
+      goal: t.goal ?? oneLine(`${title} — sigue ${tasksPath}/${t.file} y cumple su aceptación`, LIMITS.goal),
+      deps: deps[i]!.map((d) => nodeIds[d]!),
+    };
+  });
 
   const projectId = slugify(opts.projectId || opts.dirName || 'proyecto');
   const name = oneLine(opts.name ?? humanize(opts.dirName ?? projectId), LIMITS.name);
@@ -215,12 +219,32 @@ function inferStages(
     order.sort((a, b) => a.rank - b.rank || a.minDepth - b.minDepth);
     return { stages: order.map(({ id, name }) => ({ id, name })), stageOf, source: 'phase' };
   }
-  // más de 12 niveles: los más profundos comparten la última etapa
+  // más de 12 niveles: los más profundos comparten «Al final»
   const max = Math.min(depth.length ? Math.max(...depth) : 0, MAX_STAGES - 1);
-  const capped = depth.length > 0 && Math.max(...depth) > max;
-  const stages = Array.from({ length: max + 1 }, (_, d) => ({
-    id: `etapa-${d + 1}`,
-    name: capped && d === max ? `Etapa ${d + 1} en adelante` : `Etapa ${d + 1}`,
-  }));
-  return { stages, stageOf: depth.map((d) => `etapa-${Math.min(d, max) + 1}`), source: 'depth' };
+  const stages = Array.from({ length: max + 1 }, (_, d) => {
+    const name = depthStageName(d, max);
+    return { id: slugify(name), name };
+  });
+  return { stages, stageOf: depth.map((d) => stages[Math.min(d, max)]!.id), source: 'depth' };
+}
+
+/** Etapas intermedias, en orden; alcanzan para las 10 que caben entre la primera y la última. */
+const MIDDLE_STAGES = [
+  'Después',
+  'Luego',
+  'Más adelante',
+  'Más tarde',
+  'Ya avanzado',
+  'Bien avanzado',
+  'Hacia el final',
+  'Cerca del final',
+  'Casi al final',
+  'Justo antes del final',
+];
+
+/** D10: nunca «Etapa N». La 1ª «Para empezar», la última «Al final», las del medio con nombre propio. */
+export function depthStageName(d: number, max: number): string {
+  if (d === 0) return 'Para empezar';
+  if (d === max) return 'Al final';
+  return MIDDLE_STAGES[d - 1] ?? 'Más adelante';
 }

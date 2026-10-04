@@ -170,7 +170,9 @@ app.get('/api/projects/:pid', async (c) => c.json(await snapshot(dbOf(c.env), pi
 app.put('/api/projects/:pid', async (c) => {
   const pid = pidParam(c);
   const graph = ok(parseProjectGraphInput(await body(c)));
-  await write(c.env, { kind: 'replaceGraph', pid, graph, actor: c.get('role') });
+  // `If-None-Match: *` = creación exclusiva: el «¿ya existe?» se decide en la misma transacción que escribe
+  const exclusive = c.req.header('if-none-match')?.trim() === '*';
+  await write(c.env, { kind: 'replaceGraph', pid, graph, actor: c.get('role'), exclusive });
   return c.json(await snapshot(dbOf(c.env), pid));
 });
 

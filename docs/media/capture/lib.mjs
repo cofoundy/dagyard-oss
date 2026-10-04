@@ -57,6 +57,17 @@ export async function sky(page) {
 }
 const width = (page) => page.viewportSize().width;
 
+/** Waits for a moment with no toast on screen (the demo's teams post news every few seconds), so a still
+ *  never has one over the header. Polls up to `ms`; returns false if the sky never went quiet. */
+export async function calm(page, ms = 45000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if ((await page.locator('.toasts .toast').count()) === 0) return true;
+    await page.waitForTimeout(100);
+  }
+  return false;
+}
+
 /** Screen position of a star, from its label (the star sits just above it). */
 export async function star(page, name) {
   const b = await page.getByText(name, { exact: true }).first().boundingBox();

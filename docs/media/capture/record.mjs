@@ -5,7 +5,7 @@
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { MEDIA, OUT, ROOT, URL, open, recorder, sky, star } from './lib.mjs';
+import { MEDIA, OUT, ROOT, URL, calm, open, recorder, sky, star } from './lib.mjs';
 
 const seed = () => execFileSync('node', [join(ROOT, 'apps/worker/scripts/seed.mjs'), URL], { stdio: 'inherit' });
 const ffmpeg = (...args) => execFileSync('ffmpeg', ['-loglevel', 'error', '-y', ...args], { stdio: 'inherit' });
@@ -25,6 +25,7 @@ const takes = {
   async sky() {
     const s = await open({ scale: 2 });
     await sky(s.page);
+    if (!(await calm(s.page))) throw new Error('sky: the toasts never cleared');
     await s.page.screenshot({ path: join(OUT, 'sky.png') });
     const tab = await s.page.evaluate(() => ({ title: document.title, icon: document.querySelector('link[rel~="icon"]')?.href }));
     writeFileSync(join(OUT, 'tab.json'), JSON.stringify(tab));
@@ -42,6 +43,7 @@ const takes = {
     const b = await s.page.locator('aside.card .opts button').first().boundingBox();
     await s.page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
     await s.page.waitForTimeout(600);
+    if (!(await calm(s.page))) throw new Error('decision: the toasts never cleared');
     await s.page.screenshot({ path: join(OUT, 'decision.png') });
     await s.close();
     jpg(join(OUT, 'decision.png'), join(MEDIA, 'decision.jpg'));

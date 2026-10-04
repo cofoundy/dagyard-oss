@@ -172,6 +172,34 @@ describe('nodos y mensajes', () => {
     expect(snap.nodes.filter((n) => n.link !== null)).toHaveLength(1);
   });
 
+  it('link: el PUT de un agente lo conserva si el body no trae la clave; null lo borra; el dueño reemplaza todo', async () => {
+    const s = await seedDemo();
+    const pid = s.project.id;
+    const nid = s.nodes[0]!.id;
+    const issue = 'https://github.com/cofoundy/dagyard/issues/45';
+    await json(await api(`/api/projects/${pid}/nodes/${nid}`, { method: 'PATCH', body: { link: issue } }), 200);
+    const linkOf = (snap: ProjectSnapshot) => snap.nodes.find((n) => n.id === nid)!.link;
+    // la demo declara `link: null`; un archivo importado ni siquiera trae la clave
+    const bare = () => {
+      const g = demoProject();
+      for (const n of g.nodes) delete n.link;
+      return g;
+    };
+
+    // re-importar sin la clave (lo que hace `dagyard import --replace`) no borra lo que puso `sync`
+    let snap = await json<ProjectSnapshot>(await api(`/api/projects/${pid}`, { method: 'PUT', body: bare() }), 200);
+    expect(linkOf(snap)).toBe(issue);
+
+    const explicit = demoProject();
+    explicit.nodes[0]!.link = null;
+    snap = await json<ProjectSnapshot>(await api(`/api/projects/${pid}`, { method: 'PUT', body: explicit }), 200);
+    expect(linkOf(snap)).toBeNull();
+
+    await json(await api(`/api/projects/${pid}/nodes/${nid}`, { method: 'PATCH', body: { link: issue } }), 200);
+    snap = await json<ProjectSnapshot>(await api(`/api/projects/${pid}`, { method: 'PUT', body: bare(), headers: OWNER }), 200);
+    expect(linkOf(snap)).toBeNull();
+  });
+
   it('borrar un nodo se lleva sus aristas, bloqueantes y mensajes', async () => {
     const s = await seedDemo();
     const pid = s.project.id;

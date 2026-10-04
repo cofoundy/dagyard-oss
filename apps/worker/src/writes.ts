@@ -253,12 +253,17 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
     const keep = prev !== null && actor !== 'owner';
     const nodes = g.nodes.map((n, i) => newNode(pid, n, stages, tx.now, `nodes[${i}].`));
     const byId = new Map(nodes.map((n) => [n.id, n]));
-    // una tarea que sigue conserva su antigüedad: `next` desempata por `createdAt`
-    if (keep)
-      for (const r of tx.all('SELECT id, created_at FROM nodes WHERE project_id = ?', pid)) {
+    // una tarea que sigue conserva su antigüedad (`next` desempata por `createdAt`) y su `link` si el body no
+    // trae la clave: un import no la manda y no debe borrar lo que puso `sync`; `null` explícito sí lo borra
+    if (keep) {
+      const sent = new Map(g.nodes.map((n, i) => [nodes[i]!.id, 'link' in n]));
+      for (const r of tx.all('SELECT id, created_at, link FROM nodes WHERE project_id = ?', pid)) {
         const node = byId.get(r.id as string);
-        if (node) node.createdAt = r.created_at as string;
+        if (!node) continue;
+        node.createdAt = r.created_at as string;
+        if (!sent.get(node.id)) node.link = (r.link as string | null) ?? null;
       }
+    }
     // resolver es solo del dueño: el PUT de un agente conserva cada bloqueante (abierto o respondido) con su
     // id, su respuesta y su valor, así un `wait` en curso los sigue encontrando. Quitar su tarea → 409.
     const kept = keep ? tx.all('SELECT * FROM blockers WHERE project_id = ? ORDER BY rowid', pid) : [];

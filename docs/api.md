@@ -102,7 +102,8 @@ entra como bloqueante nuevo y abierto (re-preguntar nunca se descarta en silenci
 se conserva al lado. Si el grafo nuevo quita una tarea que tiene algún bloqueante, `409` y no se toca nada.
 Ese mismo `PUT` conserva tal cual (id, firma y fecha) los mensajes de las tareas que siguen, incluido el
 «Gracias. Sigo desde donde me quedé.» de cada respuesta, y el `createdAt` de cada tarea que ya existía, así
-`next` no cambia de orden al re-importar. Un mensaje del body igual a uno conservado (misma tarea, `from`,
+`next` no cambia de orden al re-importar. También conserva el `link` de cada tarea que ya existía cuando el body
+no trae la clave (un import no la manda); `"link": null` explícito sí lo borra. Un mensaje del body igual a uno conservado (misma tarea, `from`,
 `text` y `reportUrl`; sin `from`, basta tarea, `text` y `reportUrl`, porque la firma sale del equipo
 actual y puede haber cambiado) no se duplica; los mensajes de una tarea quitada se van con ella. El dueño reemplaza
 el grafo entero siempre (sus bloqueantes y mensajes se recrean desde el body con otros ids y fecha nueva).
@@ -134,8 +135,8 @@ a igualdad, el más antiguo (`nextStartable()` del modelo). `goalLine` es `/goal
 
 `link` es el detalle técnico de la tarea: la URL (http o https) del issue o del PR. Es opcional
 (`null` por defecto, `null` en un `PATCH` lo borra) y la UI lo ofrece en la ficha como «Detalle técnico»,
-debajo del informe, sin mostrar la URL. El `PUT` del grafo lo toma del body como los demás campos de la
-tarea: una tarea sin `link` en el body queda sin él.
+debajo del informe, sin mostrar la URL. En el `PUT` del grafo, el de un agente conserva el `link` anterior si
+el body no trae la clave; el del dueño lo reemplaza como todo lo demás.
 
 Reglas del servidor al escribir un nodo:
 

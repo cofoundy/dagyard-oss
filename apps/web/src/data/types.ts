@@ -92,7 +92,12 @@ export interface DagyardApi {
   subscribe(
     projectId: string,
     sinceSeq: number,
-    handlers: { onEvent: (e: DagEvent) => void; onStatus?: (s: 'live' | 'reconnecting') => void },
+    handlers: {
+      onEvent: (e: DagEvent) => void;
+      onStatus?: (s: 'live' | 'reconnecting') => void;
+      /** El servidor pide volver a cargar el snapshot (frame `resync` o proyecto reemplazado por un import). */
+      onResync?: () => void;
+    },
   ): () => void;
 }
 

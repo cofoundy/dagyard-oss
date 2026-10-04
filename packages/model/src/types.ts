@@ -1,0 +1,297 @@
+/**
+ * El modelo de Dagyard. Contrato compartido por el Worker (apps/worker), la UI (apps/web)
+ * y el CLI (packages/cli). La prosa del contrato vive en docs/api.md; si difieren, gana este archivo.
+ */
+
+/** Estado de una tarea. La UI los muestra como: Pendiente, En progreso, Te espera, Lista. */
+export type NodeStatus = 'pending' | 'working' | 'blocked' | 'done';
+export const NODE_STATUSES: readonly NodeStatus[] = ['pending', 'working', 'blocked', 'done'];
+
+/** Qué le pide un agente al humano. La UI: Necesita tu decisión / revisión / un acceso. */
+export type BlockerKind = 'decision' | 'review' | 'access';
+export const BLOCKER_KINDS: readonly BlockerKind[] = ['decision', 'review', 'access'];
+
+export type BlockerStatus = 'open' | 'resolved';
+
+/** Quién hizo una escritura: el dueño desde la UI o un agente con la API key. */
+export type Role = 'owner' | 'agent';
+
+/** Fecha ISO 8601 en UTC, p. ej. `2026-10-04T05:30:00.000Z`. */
+export type IsoDate = string;
+
+export interface Stage {
+  /** slug estable, p. ej. `construccion` */
+  id: string;
+  /** nombre humano, p. ej. `Construcción` */
+  name: string;
+}
+
+export interface Project {
+  /** slug, p. ej. `marketplace-reservas` */
+  id: string;
+  name: string;
+  /** en orden */
+  stages: Stage[];
+  createdAt: IsoDate;
+  updatedAt: IsoDate;
+}
+
+export interface DagNode {
+  /** slug único dentro del proyecto */
+  id: string;
+  projectId: string;
+  /** id de una etapa del proyecto */
+  stage: string;
+  /** título humano: «Pagos con tarjeta», nunca `T-402` */
+  title: string;
+  status: NodeStatus;
+  /** 0..1 */
+  progress: number;
+  /** equipo o agente a cargo, p. ej. `Construcción`; null si nadie la tomó */
+  team: string | null;
+  /** misión de una línea que se le inyecta al agente como `/goal` */
+  goal: string | null;
+  /** informe en Basalt */
+  reportUrl: string | null;
+  createdAt: IsoDate;
+  updatedAt: IsoDate;
+}
+
+/** Dependencia: `to` necesita que `from` esté lista. */
+export interface Edge {
+  projectId: string;
+  from: string;
+  to: string;
+}
+
+export interface BlockerResolution {
+  /** decision/review: el texto de la opción elegida */
+  choice: string | null;
+  /** nota libre del humano (p. ej. qué cambiar en una revisión) */
+  note: string | null;
+  /** access: true si se guardó un valor. El valor NUNCA viaja en snapshots ni eventos. */
+  hasValue: boolean;
+}
+
+export interface Blocker {
+  /** `b_` + aleatorio */
+  id: string;
+  projectId: string;
+  nodeId: string;
+  kind: BlockerKind;
+  /** la pregunta, en corto y en humano */
+  question: string;
+  /** decision/review: opciones (≥1). access: [] */
+  options: string[];
+  /** access: nombre del acceso, p. ej. «Clave de la pasarela de pagos». Otros: null */
+  accessLabel: string | null;
+  status: BlockerStatus;
+  resolution: BlockerResolution | null;
+  resolvedBy: Role | null;
+  resolvedAt: IsoDate | null;
+  createdAt: IsoDate;
+}
+
+/** Lo que devuelve `wait` a un agente: incluye el valor del acceso (solo con API key). */
+export interface BlockerWaitResult {
+  blocker: Blocker;
+  /** solo `access` resuelto y solo para el rol `agent` */
+  value: string | null;
+}
+
+export interface Message {
+  /** `m_` + aleatorio */
+  id: string;
+  projectId: string;
+  nodeId: string;
+  /** quién escribe, p. ej. `Equipo de Diseño` */
+  from: string;
+  /** ≤280 caracteres: concisión por diseño */
+  text: string;
+  reportUrl: string | null;
+  createdAt: IsoDate;
+}
+
+/* ------------------------------------------------------------------ eventos */
+
+export type DagEvent =
+  | EventBase<'project.replaced', { project: Project }>
+  | EventBase<'project.updated', { project: Project }>
+  | EventBase<'node.added', { node: DagNode }>
+  | EventBase<'node.updated', { node: DagNode }>
+  | EventBase<'node.removed', { nodeId: string }>
+  | EventBase<'edge.added', { edge: Edge }>
+  | EventBase<'edge.removed', { edge: Edge }>
+  | EventBase<'blocker.opened', { blocker: Blocker }>
+  | EventBase<'blocker.resolved', { blocker: Blocker }>
+  | EventBase<'message.posted', { message: Message }>;
+
+export type DagEventType = DagEvent['type'];
+
+interface EventBase<T extends string, P> {
+  /** monotónico por proyecto, empieza en 1 */
+  seq: number;
+  projectId: string;
+  type: T;
+  actor: Role;
+  at: IsoDate;
+  payload: P;
+}
+
+/* ------------------------------------------------------------------ lecturas */
+
+/** `GET /api/projects/:id` — todo lo que la UI necesita para pintar el grafo. */
+export interface ProjectSnapshot {
+  project: Project;
+  nodes: DagNode[];
+  edges: Edge[];
+  /** abiertos y resueltos, sin valores de acceso */
+  blockers: Blocker[];
+  /** los últimos 200, del más viejo al más nuevo */
+  messages: Message[];
+  /** seq del último evento aplicado: la UI se suscribe al WebSocket con `?since=<seq>` */
+  seq: number;
+}
+
+export interface ProjectCounts {
+  total: number;
+  pending: number;
+  working: number;
+  blocked: number;
+  done: number;
+}
+
+/** `GET /api/projects` */
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  stages: Stage[];
+  counts: ProjectCounts;
+  /** bloqueantes abiertos: lo que le toca al humano */
+  openBlockers: number;
+  updatedAt: IsoDate;
+}
+
+/** `GET /api/projects/:id/next` */
+export interface NextResult {
+  node: DagNode | null;
+  /** lista para pegar: `/goal <misión>`; null si no hay nodo arrancable */
+  goalLine: string | null;
+}
+
+/* ------------------------------------------------------------------ escrituras */
+
+export interface StageInput {
+  id?: string;
+  name: string;
+}
+
+export interface NodeInput {
+  id?: string;
+  stage: string;
+  title: string;
+  status?: NodeStatus;
+  progress?: number;
+  team?: string | null;
+  goal?: string | null;
+  reportUrl?: string | null;
+  /** ids de los nodos de los que depende (aristas from → este nodo) */
+  deps?: string[];
+}
+
+export type NodePatch = Partial<Omit<NodeInput, 'id' | 'deps'>>;
+
+export interface BlockerInput {
+  kind: BlockerKind;
+  question: string;
+  options?: string[];
+  accessLabel?: string | null;
+}
+
+export interface ResolveInput {
+  /** decision/review: índice (0..n-1) o el texto exacto de la opción */
+  choice?: number | string;
+  /** access: el valor (se guarda cifrado) */
+  value?: string;
+  note?: string | null;
+}
+
+export interface MessageInput {
+  /** si falta, el servidor usa `Equipo de <team del nodo>` o `Agente` */
+  from?: string;
+  text: string;
+  reportUrl?: string | null;
+}
+
+export interface ProjectInput {
+  id?: string;
+  name: string;
+  /** default: DEFAULT_STAGES */
+  stages?: StageInput[];
+}
+
+/**
+ * `PUT /api/projects/:id` — reemplaza el grafo entero de un proyecto (idempotente).
+ * Lo usan la semilla de la demo y `dagyard import`.
+ */
+export interface ProjectGraphInput {
+  name: string;
+  stages?: StageInput[];
+  nodes: NodeInput[];
+  blockers?: Array<BlockerInput & { nodeId: string }>;
+  messages?: Array<MessageInput & { nodeId: string }>;
+}
+
+/* ------------------------------------------------------------------ errores */
+
+export type ErrorCode =
+  | 'unauthorized'
+  | 'forbidden'
+  | 'not_found'
+  | 'invalid'
+  | 'conflict'
+  | 'cycle'
+  | 'internal';
+
+export interface ApiError {
+  error: { code: ErrorCode; message: string };
+}
+
+/* ------------------------------------------------------------------ constantes */
+
+export const DEFAULT_STAGES: readonly Stage[] = [
+  { id: 'descubrimiento', name: 'Descubrimiento' },
+  { id: 'diseno', name: 'Diseño' },
+  { id: 'construccion', name: 'Construcción' },
+  { id: 'pruebas', name: 'Pruebas' },
+  { id: 'lanzamiento', name: 'Lanzamiento' },
+];
+
+export const LIMITS = {
+  slug: 64,
+  title: 120,
+  name: 80,
+  goal: 500,
+  question: 500,
+  option: 120,
+  options: 6,
+  message: 280,
+  url: 2048,
+  accessValue: 4096,
+  note: 1000,
+  nodesPerProject: 500,
+} as const;
+
+/** Etiquetas humanas para la UI (D10: nada de jerga). */
+export const STATUS_LABEL: Record<NodeStatus, string> = {
+  pending: 'Pendiente',
+  working: 'En progreso',
+  blocked: 'Te espera',
+  done: 'Lista',
+};
+
+export const BLOCKER_LABEL: Record<BlockerKind, string> = {
+  decision: 'Necesita tu decisión',
+  review: 'Necesita tu revisión',
+  access: 'Necesita un acceso',
+};

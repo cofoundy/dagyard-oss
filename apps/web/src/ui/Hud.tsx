@@ -112,11 +112,28 @@ interface ActionsProps {
   waiting: number;
   onWaiting: () => void;
   onOverview: () => void;
+  /** Solo si el navegador puede avisar y todavía no le pediste permiso: el clic lo pide. */
+  onNotify?: () => void;
 }
 
-export const Actions = forwardRef<HTMLDivElement, ActionsProps>(function Actions({ waiting, onWaiting, onOverview }, ref) {
+export const Actions = forwardRef<HTMLDivElement, ActionsProps>(function Actions({ waiting, onWaiting, onOverview, onNotify }, ref) {
   return (
     <div className="hud actions" ref={ref}>
+      {onNotify && (
+        <button type="button" className="btn notify" onClick={onNotify} title={COPY.notifyMeHint} aria-label={COPY.notifyMe}>
+          <svg viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M8 2.2a3.6 3.6 0 0 0-3.6 3.6v2.3L3.2 10.6h9.6l-1.2-2.5V5.8A3.6 3.6 0 0 0 8 2.2ZM6.6 12.4a1.5 1.5 0 0 0 2.8 0"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          <span className="lbl">{COPY.notifyMe}</span>
+        </button>
+      )}
       <button type="button" className={`btn waiting${waiting ? '' : ' calm'}`} onClick={onWaiting} disabled={!waiting} aria-disabled={!waiting}>
         <span className="dot" aria-hidden="true" />
         <span>{waitingText(waiting)}</span>

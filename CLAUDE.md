@@ -6,3 +6,4 @@
 - Stack: Cloudflare Worker + D1 + Durable Objects, Vite + React + three.js, pnpm. Receta de deploy: `~/cofoundy/products/basalt`.
 - Gates por exit code: `pnpm typecheck`, `pnpm test`, `pnpm build`. Nunca commitees tokens; el token de dueño vive en `~/.config/dagyard/owner-token`.
 - `main` se toca vía PR (products/* = Tier B).
+- Dogfooding: este repo es el proyecto «dagyard» en Dagyard (`.dagyard.json`); un sitio sigue `docs/dogfooding.md` (start, msg, block, done sobre su nodo `gh-<issue>`).

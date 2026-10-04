@@ -220,6 +220,19 @@ describe('el PUT de un agente conserva mensajes y antigüedad', () => {
     expect(after.messages).toHaveLength(8);
   });
 
+  it('un mensaje sin from no se duplica al re-importar aunque la tarea cambie de equipo', async () => {
+    const pid = uniquePid();
+    const g = (team: string): ProjectGraphInput => ({
+      name: 'Equipo',
+      nodes: [{ id: 't', stage: 'diseno', title: 'T', team }],
+      messages: [{ nodeId: 't', text: 'Avance del día' }],
+    });
+    const s = await json<ProjectSnapshot>(await put(pid, g('Diseño')), 200);
+    expect(s.messages).toHaveLength(1);
+    const after = await json<ProjectSnapshot>(await put(pid, g('Construcción')), 200);
+    expect(after.messages).toEqual(s.messages);
+  });
+
   it('el PUT del dueño sigue recreando todo', async () => {
     const s = await seedDemo();
     const owner = await json<ProjectSnapshot>(await put(s.project.id, demoProject(), OWNER), 200);

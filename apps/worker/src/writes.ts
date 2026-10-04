@@ -232,8 +232,8 @@ function held({ open, resolved }: { open: number; resolved: number }): { what: s
 /** Clave de un bloqueante para no duplicarlo al re-importar: misma tarea, tipo, pregunta, opciones y etiqueta. */
 const blockerKey = (nodeId: unknown, kind: unknown, question: unknown, options: string, accessLabel: unknown) =>
   JSON.stringify([nodeId, kind, question, options, accessLabel ?? null]);
-/** Clave de un mensaje para no duplicarlo al re-importar: misma tarea, firma, texto e informe. */
-const messageKey = (nodeId: unknown, from: unknown, text: unknown, reportUrl: unknown) => JSON.stringify([nodeId, from, text, reportUrl ?? null]);
+/** Clave de un mensaje para no duplicarlo al re-importar: misma tarea, texto e informe (la firma se compara aparte). */
+const messageKey = (nodeId: unknown, text: unknown, reportUrl: unknown) => JSON.stringify([nodeId, text, reportUrl ?? null]);
 
 const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>) => WriteValues[K] } = {
   createProject(tx, { pid, name, stages }) {
@@ -310,23 +310,31 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
     for (const e of edges) tx.insertEdge(e);
     for (const b of kept) tx.restoreBlocker(b);
     for (const b of fresh) tx.insertBlocker(newBlocker(pid, b.nodeId, b, tx.now));
-    // uno del body idéntico a uno conservado no se duplica: re-importar el mismo archivo es idempotente
-    const unclaimed = new Map<string, number>();
+    // uno del body igual a uno conservado no se duplica: re-importar el mismo archivo es idempotente. Sin `from`,
+    // la firma sale del equipo actual, que puede haber cambiado: se compara solo tarea, texto e informe. Los que
+    // traen `from` reclaman primero, así uno sin firma no le quita su par a uno firmado.
+    const unclaimed = new Map<string, Row[]>();
     for (const m of keptMessages) {
-      const k = messageKey(m.node_id, m.from_name, m.text, m.report_url);
-      unclaimed.set(k, (unclaimed.get(k) ?? 0) + 1);
+      const k = messageKey(m.node_id, m.text, m.report_url);
+      unclaimed.set(k, [...(unclaimed.get(k) ?? []), m]);
     }
     for (const m of keptMessages) tx.restoreMessage(m);
-    for (const m of g.messages ?? []) {
+    const body = g.messages ?? [];
+    const claimed = new Set<number>();
+    for (const signed of [true, false])
+      body.forEach((m, i) => {
+        if ((m.from != null) !== signed) return;
+        const rows = unclaimed.get(messageKey(m.nodeId, m.text, m.reportUrl)) ?? [];
+        const j = signed ? rows.findIndex((r) => r.from_name === m.from) : rows.length ? 0 : -1;
+        if (j < 0) return;
+        rows.splice(j, 1);
+        claimed.add(i);
+      });
+    body.forEach((m, i) => {
+      if (claimed.has(i)) return;
       const from = m.from ?? signature(byId.get(m.nodeId)!);
-      const k = messageKey(m.nodeId, from, m.text, m.reportUrl);
-      const left = unclaimed.get(k) ?? 0;
-      if (left > 0) {
-        unclaimed.set(k, left - 1);
-        continue;
-      }
       tx.insertMessage({ id: randomId('m_'), projectId: pid, nodeId: m.nodeId, from, text: m.text, reportUrl: m.reportUrl ?? null, createdAt: tx.now });
-    }
+    });
     tx.emit(pid, actor, { type: 'project.replaced', payload: { project } });
     return null;
   },

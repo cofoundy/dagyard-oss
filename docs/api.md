@@ -103,7 +103,8 @@ se conserva al lado. Si el grafo nuevo quita una tarea que tiene algún bloquean
 Ese mismo `PUT` conserva tal cual (id, firma y fecha) los mensajes de las tareas que siguen, incluido el
 «Gracias. Sigo desde donde me quedé.» de cada respuesta, y el `createdAt` de cada tarea que ya existía, así
 `next` no cambia de orden al re-importar. Un mensaje del body igual a uno conservado (misma tarea, `from`,
-`text` y `reportUrl`) no se duplica; los mensajes de una tarea quitada se van con ella. El dueño reemplaza
+`text` y `reportUrl`; sin `from`, basta tarea, `text` y `reportUrl`, porque la firma sale del equipo
+actual y puede haber cambiado) no se duplica; los mensajes de una tarea quitada se van con ella. El dueño reemplaza
 el grafo entero siempre (sus bloqueantes y mensajes se recrean desde el body con otros ids y fecha nueva).
 
 Con cualquier llamante, una tarea declarada `done` que quedaría `blocked` (por un bloqueante abierto

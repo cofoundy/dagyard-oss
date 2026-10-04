@@ -7,6 +7,8 @@
 //   ws     comando → el frame llega al WebSocket de la página (servidor + red)
 //   nodo   comando → el frame llega a un WebSocket de control abierto desde node (sin navegador)
 //   dom    frame en la página → el DOM lo muestra (solo navegador)
+// Si la página tuvo que reconectar su WebSocket (p. ej. un deploy reinició el Durable Object), la línea
+// lo dice: el evento llega entonces por la recuperación con `?since=`, después del backoff.
 // La carga de la máquina (loadavg) se imprime al empezar y al terminar: con carga alta el número no vale.
 //
 // Uso: node scripts/qa/realtime.mjs [--url <worker>] [--ui <origen de la UI>] [--runs 5] [--keep]
@@ -128,9 +130,11 @@ const OBSERVER = `(() => {
 const WS_TAP = `(() => {
   const Native = window.WebSocket;
   const log = (window.__qaws = []);
+  const opened = (window.__qaopen = []);
   window.WebSocket = class extends Native {
     constructor(...args) {
       super(...args);
+      opened.push(Date.now());
       this.addEventListener('message', (m) => {
         const t = Date.now();
         try {
@@ -149,6 +153,7 @@ const matches = (w, raw) => {
 };
 const pageFrame = (w) => {
   const log = evalJs('JSON.stringify(window.__qaws ?? [])');
+  if (!log) return null;
   const hit = (typeof log === 'string' ? JSON.parse(log) : log).find((f) => matches(w, f.raw));
   return hit?.t ?? null;
 };
@@ -256,34 +261,55 @@ async function main() {
     const node = `tarea-${i}`;
     const text = `Medición ${i} · ${Date.now().toString(36)}`;
 
+    // Si la página perdió su contexto (pasó una vez al final de un deploy), se reinstala el observador y
+    // la línea lo dice: el tap del WebSocket ya no está, así que esa corrida no tiene tramos.
+    if (evalJs('typeof window.__qa') !== 'object') {
+      evalJs(OBSERVER);
+      console.log(`corrida ${i}: la página perdió su contexto; observador reinstalado`);
+    }
     for (const [kind, key, w, cmd, what] of [
       ['msg', `msg-${i}`, { kind: 'text', text }, ['msg', node, text], `mensaje ${i}`],
       ['done', `done-${i}`, { kind: 'done', title: `Tarea de prueba ${i}`, node }, ['done', node], `tarea ${i} lista`],
     ]) {
       watch(key, w);
-      const { t0, cli } = dagyard(...cmd);
+      let t0, cli;
+      try {
+        ({ t0, cli } = dagyard(...cmd));
+      } catch (e) {
+        // Un comando que falla (p. ej. durante un deploy) no corta la sonda: se anota y se mira si la
+        // escritura quedó igual, porque el CLI no reintenta y un reintento a ciegas podría duplicarla.
+        const snap = await call('GET', `/projects/${PROJECT}`, undefined, ownerToken);
+        const committed = w.kind === 'text' ? snap.messages.some((m) => m.text === w.text) : snap.nodes.some((n) => n.id === node && n.status === 'done');
+        const row = { run: i, kind, error: String(e.message).split('\n')[0], committed };
+        rows.push(row);
+        console.log(`corrida ${i} ${kind.padEnd(4)}: FALLÓ el comando (${row.error}) · ¿la escritura quedó? ${committed ? 'sí' : 'no'}`);
+        continue;
+      }
       const dom = await until(() => seen(key), WAIT_MS, what);
       const page = pageFrame(w);
-      await new Promise((r) => setImmediate(r));
-      const ctl = control.at(w);
-      const row = { run: i, kind, total: dom - t0, cli, ws: page && page - t0, nodo: ctl && ctl - t0, dom: page && dom - page };
+      const ctl = await until(() => control.at(w), 2000, 'el frame en el socket de control').catch(() => null);
+      const sockets = evalJs('window.__qaopen?.length ?? null');
+      const row = { run: i, kind, total: dom - t0, cli, ws: page && page - t0, nodo: ctl && ctl - t0, dom: page && dom - page, sockets };
       rows.push(row);
-      console.log(`corrida ${i} ${kind.padEnd(4)}: total ${row.total} ms · cli ${row.cli} · ws ${row.ws} · nodo ${row.nodo} · dom ${row.dom}`);
+      console.log(`corrida ${i} ${kind.padEnd(4)}: total ${row.total} ms · cli ${row.cli} · ws ${row.ws} · nodo ${row.nodo} · dom ${row.dom}${sockets > 1 ? ` · la página abrió ${sockets} sockets` : ''}`);
     }
   }
   control.close();
 
-  const all = rows.map((r) => r.total);
-  for (const [label, xs] of [['msg', rows.filter((r) => r.kind === 'msg').map((r) => r.total)], ['done', rows.filter((r) => r.kind === 'done').map((r) => r.total)], ['todo', all]]) {
+  const measured = rows.filter((r) => !r.error);
+  const failed = rows.length - measured.length;
+  const all = measured.map((r) => r.total);
+  for (const [label, xs] of [['msg', measured.filter((r) => r.kind === 'msg').map((r) => r.total)], ['done', measured.filter((r) => r.kind === 'done').map((r) => r.total)], ['todo', all]]) {
     console.log(`${label.padEnd(4)} p50 ${pct(xs, 50)} ms · máx ${Math.max(...xs)} ms`);
   }
   for (const part of ['cli', 'ws', 'nodo', 'dom']) {
-    const xs = rows.map((r) => r[part]).filter((x) => x !== null);
+    const xs = measured.map((r) => r[part]).filter((x) => x !== null);
     if (xs.length) console.log(`  ${part.padEnd(4)} p50 ${pct(xs, 50)} ms · máx ${Math.max(...xs)} ms`);
   }
   console.log(load());
   if (flag('json')) writeFileSync(flag('json'), JSON.stringify({ api, ui, runs, rows }, null, 2));
-  const ok = all.every((x) => x <= LIMIT_MS);
+  if (failed) console.log(`${failed} comandos fallaron (ver arriba): no cuentan en los percentiles y la sonda falla`);
+  const ok = !failed && all.every((x) => x <= LIMIT_MS);
   console.log(ok ? `OK: las ${all.length} mediciones ≤${LIMIT_MS} ms` : `FALLA: hay mediciones >${LIMIT_MS} ms`);
   return ok;
 }

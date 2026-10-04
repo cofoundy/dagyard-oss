@@ -53,6 +53,11 @@ export interface LayoutOptions {
   maxPerCol?: number;
   /** Apaisado denso: paso entre sub-columnas de una misma etapa. Por defecto, 0,8 × spread. */
   colStep?: number;
+  /**
+   * Retrato denso: ancho de fila en mundo. Una fila con menos nodos que `maxPerRow` los reparte en este ancho en
+   * vez de apretarlos al paso fijo (las etapas chicas no quedan en un puñado al centro). Sin definir, paso fijo.
+   */
+  rowWidth?: number;
 }
 
 export const LAYOUT_DEFAULTS = {
@@ -282,22 +287,24 @@ export function layoutGraph(graph: SceneGraph, opts: LayoutOptions & { metrics?:
       const ringTop = header - M.pad * 1.5;
       let y = ringTop - M.pad * 0.5 - M.halo;
       let bottom = y;
+      let widest = 0; // ancho entre los centros extremos de la fila más ancha
       rows.forEach((row, ri) => {
         let lowest = 0;
+        const pitch = opts.rowWidth !== undefined ? Math.max(step, opts.rowWidth / row.length) : step;
+        widest = Math.max(widest, (row.length - 1) * pitch);
         row.forEach((id, i) => {
-          const x = (i - (row.length - 1) / 2) * step + signed(id, 1) * step * 0.04;
+          const x = (i - (row.length - 1) / 2) * pitch + signed(id, 1) * step * 0.04;
           positions.set(id, { x, y: y + signed(id, 2) * step * 0.015, z: signed(id, 3) * depth * 0.4 });
           lowest = Math.max(lowest, M.below(id));
         });
         bottom = y - lowest;
         if (ri < rows.length - 1) y = bottom - M.pad - M.halo;
       });
-      const widest = Math.max(1, ...rows.map((r) => r.length));
       const ringBottom = bottom - M.pad * 0.5;
       stages.push({
         index: s,
         center: { x: 0, y: (ringTop + ringBottom) / 2, z: 0 },
-        rx: ((widest - 1) / 2) * step + step * 0.5,
+        rx: widest / 2 + step * 0.5,
         ry: (ringTop - ringBottom) / 2,
         header: { x: 0, y: header, z: 0 },
         count: n,

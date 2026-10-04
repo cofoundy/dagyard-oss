@@ -1,6 +1,7 @@
 // Densidad (#20): un proyecto real con 63 tareas en una etapa tiene que leerse. Con el fixture de Basalt (88 nodos,
-// 63/17/6/2): ninguna etiqueta visible pisa otra ni un rótulo de etapa, todo entra en el rectángulo seguro, y a
-// 1440×900 se ve la mayoría de las etiquetas. Las que no caben se ocultan por prioridad y reaparecen al pedirlas.
+// 63/17/6/2): ninguna etiqueta visible pisa otra ni un rótulo de etapa, todo entra en el rectángulo seguro, cada etapa
+// muestra al menos un título y se ve una buena parte de ellos (#27). Las que no caben se ocultan por prioridad y
+// reaparecen al pedirlas.
 import { describe, expect, it } from 'vitest';
 import type { SafeArea } from './contract';
 import {
@@ -23,10 +24,13 @@ import { orientationFor } from './layout';
 
 const g = basaltGraph();
 
-const CASES: { name: string; vp: Viewport; safe: SafeArea; majority: boolean }[] = [
-  { name: '1440×900', vp: { width: 1440, height: 900 }, safe: { top: 104, right: 20, bottom: 92, left: 20 }, majority: true },
-  { name: '390×844', vp: { width: 390, height: 844 }, safe: { top: 124, right: 16, bottom: 90, left: 16 }, majority: false },
-  { name: '390×844 (HUD de la app)', vp: { width: 390, height: 844 }, safe: { top: 150, right: 16, bottom: 84, left: 16 }, majority: false },
+// Umbral de títulos visibles (fracción de 88). 1440×900: la mayoría (medido 66). En el celular no caben todos: con
+// títulos de 2 líneas el alto da para ~11 filas de etiquetas a 4 por fila (~36 de techo); medido 30 y 32 (antes de
+// #27, 19 y 16), así que se exige el 30 % (27) con holgura de 3–5 frente a lo medido.
+const CASES: { name: string; vp: Viewport; safe: SafeArea; minShare: number }[] = [
+  { name: '1440×900', vp: { width: 1440, height: 900 }, safe: { top: 104, right: 20, bottom: 92, left: 20 }, minShare: 0.5 },
+  { name: '390×844', vp: { width: 390, height: 844 }, safe: { top: 124, right: 16, bottom: 90, left: 16 }, minShare: 0.3 },
+  { name: '390×844 (HUD de la app)', vp: { width: 390, height: 844 }, safe: { top: 150, right: 16, bottom: 84, left: 16 }, minShare: 0.3 },
 ];
 
 const overlaps = (a: Box, b: Box) => a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
@@ -38,7 +42,7 @@ describe('el fixture es el de Basalt', () => {
   });
 });
 
-describe.each(CASES)('proyecto denso (88 nodos) a $name', ({ name, vp, safe, majority }) => {
+describe.each(CASES)('proyecto denso (88 nodos) a $name', ({ name, vp, safe, minShare }) => {
   const full = estimateSizer(g, orientationFor(vp.width, vp.height) === 'portrait');
   const sol = solveOverview(g, vp, safe, full);
   // la vista general pinta los títulos recortados si la solución lo pide
@@ -98,14 +102,15 @@ describe.each(CASES)('proyecto denso (88 nodos) a $name', ({ name, vp, safe, maj
     expect(out.slice(0, 5)).toEqual([]);
   });
 
-  it.runIf(majority)('se ve la mayoría de las etiquetas', () => {
-    console.info(`[densidad] ${name}: ${visible.size} de ${g.nodes.length} etiquetas visibles · ancho ${sol.labelWidth} px`);
-    expect(visible.size).toBeGreaterThan(g.nodes.length / 2);
+  it('cada etapa con tareas muestra al menos un título', () => {
+    const per = g.stages.map((_, i) => [...visible].filter((id) => sol.layout.stageOf.get(id) === i).length);
+    console.info(`[densidad] ${name}: ${visible.size} de ${g.nodes.length} etiquetas visibles (${per.join('/')}) · ancho ${sol.labelWidth} px`);
+    per.forEach((n, i) => expect(n, `etapa ${i} sin títulos`).toBeGreaterThan(0));
   });
 
-  it.runIf(!majority)('reporta cuántas etiquetas se ven', () => {
-    console.info(`[densidad] ${name}: ${visible.size} de ${g.nodes.length} etiquetas visibles · ancho ${sol.labelWidth} px`);
-    expect(visible.size).toBeGreaterThan(0);
+  it(`se ve al menos el ${minShare * 100} % de las etiquetas`, () => {
+    expect(visible.size).toBeGreaterThanOrEqual(Math.ceil(g.nodes.length * minShare));
+    if (minShare >= 0.5) expect(visible.size).toBeGreaterThan(g.nodes.length / 2);
   });
 });
 

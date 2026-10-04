@@ -107,6 +107,23 @@ describe('layout retrato (filas)', () => {
   it('sin solapes de nodos', () => {
     expect(minNodeDistance(L.positions)).toBeGreaterThan(2.9);
   });
+
+  it('retrato denso: con `rowWidth`, una fila corta se reparte en todo el ancho y la elipse la envuelve', () => {
+    const step = 6;
+    const W = step * 8;
+    const D = layoutGraph(g, { orientation: 'portrait', step, maxPerRow: 8, rowWidth: W });
+    for (const st of D.stages) {
+      const xs = g.nodes.filter((n) => n.stage === st.index).map((n) => D.positions.get(n.id)!.x);
+      const span = Math.max(...xs) - Math.min(...xs);
+      // n nodos a W/n: los extremos quedan a W·(n−1)/n (± vaivén), nunca apretados al paso fijo
+      if (xs.length > 1) expect(span).toBeGreaterThan((W * (xs.length - 1)) / xs.length - step * 0.2);
+      for (const x of xs) expect(Math.abs(x - st.center.x)).toBeLessThan(st.rx);
+    }
+    // sin la opción, el paso fijo de siempre
+    const F = layoutGraph(g, { orientation: 'portrait', step, maxPerRow: 8 });
+    const three = g.nodes.filter((n) => n.stage === 3).map((n) => F.positions.get(n.id)!.x);
+    expect(Math.max(...three) - Math.min(...three)).toBeLessThan(step * 2.2);
+  });
 });
 
 describe('determinismo y orden', () => {

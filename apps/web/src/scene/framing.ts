@@ -274,6 +274,7 @@ export const LABEL_PRIORITY: Record<NodeStatus, number> = { blocked: 3, working:
  * Elige qué etiquetas de nodo se muestran sin pisarse: por prioridad (Te espera > En progreso > Pendiente > Lista),
  * luego la más baja primero (caben más) y luego el orden del layout. Cada caja es la unión de su proyección en todos
  * los ángulos dados, así que tampoco chocan con la respiración ni el paralaje. Los rótulos de etapa son obstáculos fijos.
+ * Antes del reparto, cada etapa reserva su mejor título que quepa (si todos caben, el resultado es el mismo).
  */
 export function declutter(
   graph: SceneGraph,
@@ -320,13 +321,16 @@ export function declutter(
   );
   const taken: Box[] = heads.filter((b) => Number.isFinite(b.x0));
   const visible = new Set<string>();
-  for (const id of ranked) {
+  const take = (id: string) => {
     const b = boxes.get(id)!;
-    const hit = taken.some((t) => b.x0 - m < t.x1 && t.x0 < b.x1 + m && b.y0 - m < t.y1 && t.y0 < b.y1 + m);
-    if (hit) continue;
+    if (taken.some((t) => b.x0 - m < t.x1 && t.x0 < b.x1 + m && b.y0 - m < t.y1 && t.y0 < b.y1 + m)) return false;
     taken.push(b);
     visible.add(id);
-  }
+    return true;
+  };
+  // primero, el mejor título de cada etapa que quepa: ninguna etapa con tareas queda muda en la vista general
+  for (const st of stages) for (const id of ranked) if (layout.stageOf.get(id) === st.index && take(id)) break;
+  for (const id of ranked) if (!visible.has(id)) take(id);
   return visible;
 }
 
@@ -342,13 +346,14 @@ function solveSpread(
   metrics: LabelMetrics,
   maxPerRow: number,
   stepOverride?: number,
+  rowWidth?: number,
 ) {
   const D = LAYOUT_DEFAULTS[o];
   const step = stepOverride ?? D.step;
   const camera = scratchCamera(vp);
   const angles = overviewAngles();
   const run = (spread: number) => {
-    const layout = layoutGraph(graph, { orientation: o, spread, step, maxPerRow, metrics });
+    const layout = layoutGraph(graph, { orientation: o, spread, step, maxPerRow, metrics, rowWidth });
     const fit = fitItems(overviewItems(layout, sizer, labelWidth), vp, safe, contentCenter(layout), angles, { camera });
     return { layout, fit };
   };
@@ -394,8 +399,23 @@ export const DENSE_STAGE = 8;
 export const DENSE_LINES = 2;
 /** Proyecto denso: aire mínimo en px entre dos etiquetas visibles. */
 const DENSE_MARGIN = 3;
+/** Retrato denso: columnas por fila que se prueban (a 390 px de ancho ganan 8–10: menos filas, más títulos). */
+const DENSE_PORTRAIT_COLS = [3, 4, 5, 6, 8, 10, 12, 14];
+/** Retrato denso: paso mínimo entre columnas en px, para que los nodos vecinos no se toquen. */
+const DENSE_MIN_COL_PX = 32;
 
 type BaseSolution = Omit<OverviewSolution, 'visible'>;
+
+/** Etapas con tareas que muestran al menos un título. */
+function stagesWithTitle(s: OverviewSolution): number {
+  return new Set([...s.visible].map((id) => s.layout.stageOf.get(id))).size;
+}
+
+/** Proyecto denso: gana la rejilla que no deja etapas mudas y, entre esas, la que deja leer más títulos. */
+function betterDense(a: OverviewSolution, b: OverviewSolution): boolean {
+  const da = stagesWithTitle(a) - stagesWithTitle(b);
+  return da !== 0 ? da > 0 : a.visible.size > b.visible.size;
+}
 
 /**
  * Resuelve la vista general completa: orientación, espaciado entre etapas que llena el cuadro, ancho de etiquetas
@@ -417,18 +437,22 @@ export function solveOverview(graph: SceneGraph, vp: Viewport, safe: SafeArea, s
   // en pantallas angostas una fila de 4 deja etiquetas de 80 px: se parte desde 4
   const maxPerRow = vp.width - safe.left - safe.right < 480 ? 3 : LAYOUT_DEFAULTS.maxPerRow;
   if (maxN <= DENSE_STAGE) return withVisible(solvePortrait(graph, vp, safe, sizer, maxPerRow));
-  // retrato denso: más filas, títulos recortados; se prueba cuántas columnas por fila dejan leer más etiquetas
+  // retrato denso: títulos recortados y filas que usan todo el ancho; cuantas más columnas, menos filas (el alto es
+  // lo que falta), aunque las etiquetas vecinas se alternen. Gana la rejilla sin etapas mudas que deja leer más
+  // etiquetas. Las 3 columnas se prueban siempre (pantallas angostísimas).
   const short = clampSizer(sizer, DENSE_LINES);
+  const usable = vp.width - safe.left - safe.right - FRAME_PAD * 2;
   let best: OverviewSolution | null = null;
-  for (const per of [2, 3, 4].filter((k) => k <= maxPerRow + 1)) {
-    const b = solvePortrait(graph, vp, safe, short, per);
+  for (const per of DENSE_PORTRAIT_COLS.filter((k) => k === 3 || usable / k >= DENSE_MIN_COL_PX)) {
+    const b = solvePortrait(graph, vp, safe, short, per, true);
     const visible = declutter(graph, b.layout, b.fit.cam, vp, short, b.labelWidth, { margin: DENSE_MARGIN });
-    if (!best || visible.size > best.visible.size) best = { ...b, visible, maxLines: DENSE_LINES };
+    const c = { ...b, visible, maxLines: DENSE_LINES };
+    if (!best || betterDense(c, best)) best = c;
   }
   return best!;
 }
 
-function solvePortrait(graph: SceneGraph, vp: Viewport, safe: SafeArea, sizer: Sizer, maxPerRow: number): BaseSolution {
+function solvePortrait(graph: SceneGraph, vp: Viewport, safe: SafeArea, sizer: Sizer, maxPerRow: number, dense = false): BaseSolution {
   // Retrato: cada fila reparte su ancho en `maxPerRow` columnas fijas en píxeles, así el ancho de las
   // etiquetas no depende de la escala vertical (si dependiera, menos alto → etiquetas más angostas y altas
   // → todavía menos alto). El paso en mundo se deriva de la escala supuesta `p`.
@@ -437,7 +461,8 @@ function solvePortrait(graph: SceneGraph, vp: Viewport, safe: SafeArea, sizer: S
   const colPx = (vp.width - safe.left - safe.right - FRAME_PAD * 2) / maxPerRow;
   const lw = Math.round(MathUtils.clamp(colPx - 12, W.min, W.max));
   const attempt = (p: number) => {
-    const s = solveSpread(graph, vp, safe, sizer, o, lw, metricsFor(graph, sizer, p, lw), maxPerRow, colPx / p);
+    // denso: las filas cortas (etapas chicas, última fila) se reparten en todo el ancho
+    const s = solveSpread(graph, vp, safe, sizer, o, lw, metricsFor(graph, sizer, p, lw), maxPerRow, colPx / p, dense ? (colPx * maxPerRow) / p : undefined);
     return { s, lw, ppu: pxPerUnit(s.fit.cam, vp) };
   };
   // consistente = la escala resultante alcanza la supuesta (entonces nada se pisa); si ninguna lo es (demasiados
@@ -491,7 +516,8 @@ function solveLandscape(graph: SceneGraph, vp: Viewport, safe: SafeArea, sizer: 
 
 /**
  * Apaisado denso: la etapa más grande se reparte en una rejilla de sub-columnas. Se prueban varias rejillas (filas)
- * y proporciones de celda, y gana la que deja ver más etiquetas sin pisarse; a igualdad, la de mayor escala.
+ * y proporciones de celda, y gana la que deja ver más etiquetas sin pisarse (sin etapas mudas); a igualdad, la de
+ * mayor escala.
  * Los títulos se miden recortados a `DENSE_LINES` líneas, que es como se pintan en la vista general.
  */
 function solveDenseLandscape(graph: SceneGraph, vp: Viewport, safe: SafeArea, full: Sizer, maxN: number): OverviewSolution {
@@ -528,7 +554,7 @@ function solveDenseLandscape(graph: SceneGraph, vp: Viewport, safe: SafeArea, fu
   for (const rows of rowsSet)
     for (const aspect of [1.6, 2.1, 2.7, 3.4]) {
       const c = evaluate(rows, aspect);
-      if (!best || c.sol.visible.size > best.sol.visible.size || (c.sol.visible.size === best.sol.visible.size && c.ppu > best.ppu)) best = c;
+      if (!best || betterDense(c.sol, best.sol) || (!betterDense(best.sol, c.sol) && c.ppu > best.ppu)) best = c;
     }
   return best!.sol;
 }

@@ -2,6 +2,13 @@
 // Prueba de tiempo real (docs/spec/v0.md §Gates): abre la UI en un navegador real, corre `dagyard msg` y
 // `dagyard done` con el CLI y mide cuánto tarda cada comando en aparecer en el DOM. Meta: ≤3000 ms.
 //
+// Cada medición se parte en tramos (#48), todos con el reloj de esta máquina:
+//   cli    comando → el CLI termina (arranque de node + HTTP + escritura + reparto, que va antes de responder)
+//   ws     comando → el frame llega al WebSocket de la página (servidor + red)
+//   nodo   comando → el frame llega a un WebSocket de control abierto desde node (sin navegador)
+//   dom    frame en la página → el DOM lo muestra (solo navegador)
+// La carga de la máquina (loadavg) se imprime al empezar y al terminar: con carga alta el número no vale.
+//
 // Uso: node scripts/qa/realtime.mjs [--url <worker>] [--ui <origen de la UI>] [--runs 5] [--keep]
 //   --url   API y UI desplegadas (default: ~/.config/dagyard/url o la preview de .claude/rules/entornos.md)
 //   --ui    otro origen para la UI (p. ej. `vite` local con DAGYARD_API apuntando al worker)
@@ -11,9 +18,9 @@
 // llegan por env y al navegador por stdin de `agent-browser batch`.
 // Mide en un proyecto propio (`qa-tiempo-real`), así la demo de André no se toca.
 // Requiere `agent-browser` en el PATH y el CLI compilado (`pnpm --filter @dagyard/cli build`).
-import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpus, homedir, loadavg, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -117,6 +124,79 @@ const OBSERVER = `(() => {
   return 'ok';
 })()`;
 
+// Tap del WebSocket de la app: se instala antes de que cargue la página y anota cuándo llega cada evento.
+const WS_TAP = `(() => {
+  const Native = window.WebSocket;
+  const log = (window.__qaws = []);
+  window.WebSocket = class extends Native {
+    constructor(...args) {
+      super(...args);
+      this.addEventListener('message', (m) => {
+        const t = Date.now();
+        try {
+          const f = JSON.parse(m.data);
+          if (f.type === 'event') log.push({ t, raw: JSON.stringify(f.event) });
+        } catch {}
+      });
+    }
+  };
+})();`;
+
+// El frame que corresponde a una medición: el mensaje por su texto, la tarea por su id y su estado.
+const matches = (w, raw) => {
+  const e = JSON.parse(raw);
+  return w.kind === 'text' ? raw.includes(w.text) : e.type === 'node.updated' && e.payload?.node?.id === w.node && e.payload.node.status === 'done';
+};
+const pageFrame = (w) => {
+  const log = evalJs('JSON.stringify(window.__qaws ?? [])');
+  const hit = (typeof log === 'string' ? JSON.parse(log) : log).find((f) => matches(w, f.raw));
+  return hit?.t ?? null;
+};
+
+// Socket de control en otro proceso de node: mismo reparto, sin navegador. Va aparte porque este proceso
+// se bloquea mientras corre el CLI o agent-browser, y un timestamp tomado aquí llegaría tarde.
+const CONTROL = `
+const ws = new WebSocket(process.env.QA_WS, ['dagyard', 'token.' + process.env.QA_TOKEN]);
+ws.addEventListener('message', (m) => {
+  const t = Date.now();
+  const f = JSON.parse(m.data);
+  if (f.type === 'hello') console.log(JSON.stringify({ hello: true }));
+  if (f.type === 'event') console.log(JSON.stringify({ t, raw: JSON.stringify(f.event) }));
+});
+ws.addEventListener('error', () => process.exit(3));
+process.stdin.on('end', () => process.exit(0));
+process.stdin.resume();
+`;
+
+function controlSocket() {
+  const child = spawn(process.execPath, ['--input-type=module', '-e', CONTROL], {
+    env: { ...process.env, QA_WS: `${api.replace(/^http/, 'ws')}/api/projects/${PROJECT}/live`, QA_TOKEN: ownerToken },
+    stdio: ['pipe', 'pipe', 'inherit'],
+  });
+  const log = [];
+  let buf = '';
+  let hello;
+  const ready = new Promise((ok, ko) => {
+    hello = ok;
+    child.on('exit', (code) => ko(new Error(`el WebSocket de control se cerró (${code})`)));
+  });
+  child.stdout.on('data', (d) => {
+    buf += d;
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = JSON.parse(buf.slice(0, nl));
+      buf = buf.slice(nl + 1);
+      if (line.hello) hello();
+      else log.push(line);
+    }
+  });
+  const close = () => {
+    child.removeAllListeners('exit');
+    child.stdin.end();
+  };
+  return { close, ready, at: (w) => log.find((f) => matches(w, f.raw))?.t ?? null };
+}
+
 const watch = (key, w) => evalJs(`(window.__qa.watch[${JSON.stringify(key)}] = ${JSON.stringify(w)}, window.__qa.check(), 'ok')`);
 const seen = (key) => evalJs(`window.__qa.seen[${JSON.stringify(key)}] ?? null`);
 
@@ -134,12 +214,14 @@ async function until(fn, ms, what) {
 
 function dagyard(...args) {
   const t0 = Date.now();
+  let exit;
   const r = spawnSync(process.execPath, [CLI, ...args, '--project', PROJECT], {
     env: { ...process.env, DAGYARD_URL: api, DAGYARD_KEY: agentKey },
     encoding: 'utf8',
   });
+  exit = Date.now();
   if (r.status !== 0) throw new Error(`dagyard ${args[0]} → ${r.status}: ${r.stderr}`);
-  return t0;
+  return { t0, cli: exit - t0 };
 }
 
 /* ------------------------------------------------------------------ corrida */
@@ -149,11 +231,18 @@ const pct = (xs, p) => {
   return s[Math.min(s.length - 1, Math.ceil((p / 100) * s.length) - 1)];
 };
 
-async function main() {
-  console.log(`API ${api} · UI ${ui} · ${runs} corridas · meta ≤${LIMIT_MS} ms`);
-  await call('PUT', `/projects/${PROJECT}`, qaGraph(runs));
+const load = () => `loadavg ${loadavg().map((x) => x.toFixed(1)).join(' ')} en ${cpus().length} núcleos`;
+const tmp = mkdtempSync(join(tmpdir(), 'dagyard-qa-'));
 
-  browser('open', ui);
+async function main() {
+  console.log(`API ${api} · UI ${ui} · ${runs} corridas · meta ≤${LIMIT_MS} ms · ${load()}`);
+  await call('PUT', `/projects/${PROJECT}`, qaGraph(runs));
+  const control = controlSocket();
+  await control.ready;
+
+  const tap = join(tmp, 'ws-tap.js');
+  writeFileSync(tap, WS_TAP);
+  browser('--init-script', tap, 'open', ui);
   browserBatch([
     ['eval', `fetch('/api/session', {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({token: ${JSON.stringify(ownerToken)}})}).then((r) => r.status)`],
     ['eval', `localStorage.setItem('dagyard:project', '${PROJECT}')`],
@@ -167,22 +256,33 @@ async function main() {
     const node = `tarea-${i}`;
     const text = `Medición ${i} · ${Date.now().toString(36)}`;
 
-    watch(`msg-${i}`, { kind: 'text', text });
-    const tMsg = dagyard('msg', node, text);
-    const msg = (await until(() => seen(`msg-${i}`), WAIT_MS, `mensaje ${i}`)) - tMsg;
-
-    watch(`done-${i}`, { kind: 'done', title: `Tarea de prueba ${i}` });
-    const tDone = dagyard('done', node);
-    const done = (await until(() => seen(`done-${i}`), WAIT_MS, `tarea ${i} lista`)) - tDone;
-
-    rows.push({ msg, done });
-    console.log(`corrida ${i}: msg ${msg} ms · done ${done} ms`);
+    for (const [kind, key, w, cmd, what] of [
+      ['msg', `msg-${i}`, { kind: 'text', text }, ['msg', node, text], `mensaje ${i}`],
+      ['done', `done-${i}`, { kind: 'done', title: `Tarea de prueba ${i}`, node }, ['done', node], `tarea ${i} lista`],
+    ]) {
+      watch(key, w);
+      const { t0, cli } = dagyard(...cmd);
+      const dom = await until(() => seen(key), WAIT_MS, what);
+      const page = pageFrame(w);
+      await new Promise((r) => setImmediate(r));
+      const ctl = control.at(w);
+      const row = { run: i, kind, total: dom - t0, cli, ws: page && page - t0, nodo: ctl && ctl - t0, dom: page && dom - page };
+      rows.push(row);
+      console.log(`corrida ${i} ${kind.padEnd(4)}: total ${row.total} ms · cli ${row.cli} · ws ${row.ws} · nodo ${row.nodo} · dom ${row.dom}`);
+    }
   }
+  control.close();
 
-  const all = rows.flatMap((r) => [r.msg, r.done]);
-  for (const [label, xs] of [['msg', rows.map((r) => r.msg)], ['done', rows.map((r) => r.done)], ['todo', all]]) {
+  const all = rows.map((r) => r.total);
+  for (const [label, xs] of [['msg', rows.filter((r) => r.kind === 'msg').map((r) => r.total)], ['done', rows.filter((r) => r.kind === 'done').map((r) => r.total)], ['todo', all]]) {
     console.log(`${label.padEnd(4)} p50 ${pct(xs, 50)} ms · máx ${Math.max(...xs)} ms`);
   }
+  for (const part of ['cli', 'ws', 'nodo', 'dom']) {
+    const xs = rows.map((r) => r[part]).filter((x) => x !== null);
+    if (xs.length) console.log(`  ${part.padEnd(4)} p50 ${pct(xs, 50)} ms · máx ${Math.max(...xs)} ms`);
+  }
+  console.log(load());
+  if (flag('json')) writeFileSync(flag('json'), JSON.stringify({ api, ui, runs, rows }, null, 2));
   const ok = all.every((x) => x <= LIMIT_MS);
   console.log(ok ? `OK: las ${all.length} mediciones ≤${LIMIT_MS} ms` : `FALLA: hay mediciones >${LIMIT_MS} ms`);
   return ok;
@@ -199,6 +299,7 @@ try {
   } catch {
     /* ya cerrado */
   }
+  rmSync(tmp, { recursive: true, force: true });
   if (!keep) await call('DELETE', `/projects/${PROJECT}`, undefined, ownerToken).catch((e) => console.error(String(e.message)));
 }
 process.exit(ok ? 0 : 1);

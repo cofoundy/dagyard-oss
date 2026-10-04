@@ -21,7 +21,7 @@
 | 401 | `unauthorized` | sin credencial o credencial inválida |
 | 403 | `forbidden` | credencial válida, rol equivocado (p. ej. un agente que intenta resolver) |
 | 404 | `not_found` | proyecto, nodo o bloqueante inexistente |
-| 409 | `conflict` | id repetido, o resolver un bloqueante ya resuelto |
+| 409 | `conflict` | id repetido; resolver un bloqueante ya resuelto; cambiar el `status` de un nodo con un bloqueante abierto; o un agente que haría desaparecer un bloqueante abierto (`PUT` del proyecto o `DELETE` del nodo) |
 | 500 | `internal` | lo demás |
 
 ## Auth
@@ -75,7 +75,7 @@ Sin auth: solo `GET /api/health` → `200 {"ok": true, "version": "<sha corto>"}
 | `GET /api/projects` | — | `{"projects": ProjectSummary[]}` (con conteos por estado y bloqueantes abiertos) |
 | `POST /api/projects` | `ProjectInput` (`name`, `id?`, `stages?`) | `201 Project`. Sin `stages` usa las 5 por defecto |
 | `GET /api/projects/:pid` | — | `ProjectSnapshot` (ver abajo) |
-| `PUT /api/projects/:pid` | `ProjectGraphInput` | `200 ProjectSnapshot`. **Reemplaza** el grafo entero (idempotente). Lo usan la semilla y `dagyard import`. Emite `project.replaced` |
+| `PUT /api/projects/:pid` | `ProjectGraphInput` | `200 ProjectSnapshot`. Crea el proyecto o **reemplaza** el grafo entero (idempotente). Lo usan la semilla (con el token del dueño) y `dagyard import --replace`. `409` si quien llama es `agent`, el proyecto ya existe y tiene ≥1 bloqueante abierto. Emite `project.replaced` |
 | `PATCH /api/projects/:pid` | `{"name"?, "stages"?}` | `200 Project`. Emite `project.updated` |
 | `DELETE /api/projects/:pid` | — | `204`. Solo `owner` |
 | `GET /api/projects/:pid/next` | — | `NextResult`: `{"node": DagNode \| null, "goalLine": "/goal …" \| null}` |
@@ -84,6 +84,12 @@ Sin auth: solo `GET /api/health` → `200 {"ok": true, "version": "<sha corto>"}
 `ProjectSnapshot` = `{ project, nodes, edges, blockers, messages, seq }`: nodos, aristas y bloqueantes
 completos (abiertos y resueltos, sin valores de acceso), los últimos 200 mensajes en orden cronológico y
 el `seq` del último evento. Con ese `seq` la UI abre el WebSocket.
+
+Resolver es solo del dueño, así que un agente tampoco puede hacer desaparecer un bloqueante abierto: el
+`PUT` borra los bloqueantes y los recrea con otros ids, y por eso con la API key responde `409` sobre un
+proyecto existente que tenga alguno abierto (crear uno nuevo con bloqueantes sí se puede). El dueño
+puede reemplazarlo siempre. `dagyard import` crea proyectos nuevos; si el proyecto ya existe falla, salvo
+`--replace`.
 
 `next` elige, entre los nodos `pending` con todas sus dependencias `done`, el de la etapa más temprana y,
 a igualdad, el más antiguo (`nextStartable()` del modelo). `goalLine` es `/goal <goal o título>`.
@@ -94,7 +100,7 @@ a igualdad, el más antiguo (`nextStartable()` del modelo). `goalLine` es `/goal
 |---|---|---|
 | `POST /api/projects/:pid/nodes` | `NodeInput` (`stage`, `title`, `id?`, `status?`, `progress?`, `team?`, `goal?`, `reportUrl?`, `deps?`) | `201 DagNode`. Emite `node.added` + un `edge.added` por cada dep |
 | `PATCH /api/projects/:pid/nodes/:nid` | `NodePatch` | `200 DagNode`. Emite `node.updated` |
-| `DELETE /api/projects/:pid/nodes/:nid` | — | `204`. Borra sus aristas, bloqueantes y mensajes. Emite `node.removed` |
+| `DELETE /api/projects/:pid/nodes/:nid` | — | `204`. Borra sus aristas, bloqueantes y mensajes. `409` si quien llama es `agent` y el nodo tiene ≥1 bloqueante abierto. Emite `node.removed` |
 | `POST /api/projects/:pid/edges` | `{"from", "to"}` | `201 Edge`; `400 cycle` si cierra un ciclo; `409` si ya existe. Emite `edge.added` |
 | `DELETE /api/projects/:pid/edges?from=<id>&to=<id>` | — | `204`. Emite `edge.removed` |
 

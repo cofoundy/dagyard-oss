@@ -20,7 +20,10 @@ import type {
 const p = encodeURIComponent;
 
 export const ROUTES = {
-  /** GET: snapshot completo · PUT: reemplaza el grafo entero (idempotente). */
+  /**
+   * GET: snapshot completo · PUT: reemplaza el grafo entero (idempotente). Con la API key, el PUT
+   * sobre un proyecto que tiene bloqueantes abiertos responde 409.
+   */
   project: (projectId: string) => `/api/projects/${p(projectId)}`,
   /** GET: el siguiente nodo arrancable y su línea `/goal`. */
   next: (projectId: string) => `/api/projects/${p(projectId)}/next`,
@@ -78,6 +81,18 @@ export class DagyardClient {
 
   snapshot(projectId: string): Promise<ProjectSnapshot> {
     return this.json('GET', ROUTES.project(projectId));
+  }
+
+  /** `false` solo si la API responde 404 por ese proyecto; cualquier otro error se propaga. */
+  async projectExists(projectId: string): Promise<boolean> {
+    try {
+      const res = await this.request('GET', ROUTES.project(projectId));
+      await res.body?.cancel();
+      return true;
+    } catch (err) {
+      if (err instanceof ApiRequestError && err.status === 404) return false;
+      throw err;
+    }
   }
 
   next(projectId: string): Promise<NextResult> {

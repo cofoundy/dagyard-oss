@@ -25,6 +25,9 @@ let accessValues = new Map<string, string>();
 let stages: Stage[] = [];
 let nodes: DagNode[] = [];
 let edges: Edge[] = [];
+/** Proyectos que el mock da por existentes; `lockedProjects` responden 409 al PUT (bloqueantes abiertos). */
+let projects = new Set<string>();
+let lockedProjects = new Set<string>();
 
 /** Un nodo del mock con defaults; `next` lo elige con `nextStartable` del modelo, como el Worker. */
 function mockNode(id: string, stage: string, status: DagNode['status'], goal: string | null = null): DagNode {
@@ -52,8 +55,15 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
   }
   const parts = url.pathname.split('/').filter(Boolean); // api projects :p ...
   const [, , projectId, kind, nodeId, sub] = parts;
-  if (req.method === 'PUT' && parts.length === 3) return reply(res, 200, { ok: true });
+  if (req.method === 'PUT' && parts.length === 3) {
+    if (lockedProjects.has(projectId!)) {
+      return reply(res, 409, { error: { code: 'conflict', message: 'El proyecto tiene una pregunta abierta para el dueño' } });
+    }
+    projects.add(projectId!);
+    return reply(res, 200, { ok: true });
+  }
   if (req.method === 'GET' && parts.length === 3) {
+    if (!projects.has(projectId!)) return reply(res, 404, { error: { code: 'not_found', message: `El proyecto «${projectId}» no existe` } });
     return reply(res, 200, { project: { id: projectId }, nodes: [], edges: [], blockers: [...blockers.values()], messages: [], seq: 0 });
   }
   if (req.method === 'GET' && kind === 'next') {
@@ -128,6 +138,8 @@ beforeEach(() => {
   stages = [{ id: 'diseno', name: 'Diseño' }, { id: 'construccion', name: 'Construcción' }];
   nodes = [];
   edges = [];
+  projects = new Set(['demo']);
+  lockedProjects = new Set();
 });
 
 async function cli(argv: string[], env: Record<string, string> = {}) {
@@ -336,14 +348,49 @@ describe('import', () => {
     expect(seen).toHaveLength(0);
   });
 
-  it('sin --dry-run hace PUT del grafo entero', async () => {
+  it('sin --dry-run crea el proyecto: mira que no exista y hace PUT del grafo entero', async () => {
     const r = await cli(['import', '--from', from, '--project', 'basalt-fabrica', '--name', 'Basalt (fábrica)']);
     expect(r.code).toBe(0);
+    expect(r.stdout).toContain('importado');
+    expect(seen.map((x) => `${x.method} ${x.path}`)).toEqual(['GET /api/projects/basalt-fabrica', 'PUT /api/projects/basalt-fabrica']);
     const put = last();
     expect(put).toMatchObject({ method: 'PUT', path: '/api/projects/basalt-fabrica' });
     const body = put.body as { name: string; nodes: Array<{ id: string; deps: string[] }> };
     expect(body.name).toBe('Basalt (fábrica)');
     expect(body.nodes.find((n) => n.id === 'l3')?.deps).toEqual(['l1', 'l2']);
+  });
+
+  it('si el proyecto ya existe no lo pisa: exit 1, mensaje claro y ningún PUT', async () => {
+    projects.add('basalt');
+    const r = await cli(['import', '--from', from, '--project', 'basalt']);
+    expect(r.code).toBe(EXIT.api);
+    expect(r.stderr).toContain('conflict');
+    expect(r.stderr).toContain('ya existe');
+    expect(r.stderr).toContain('--replace');
+    expect(seen.some((x) => x.method === 'PUT')).toBe(false);
+  });
+
+  it('--replace reemplaza un proyecto existente sin preguntar si existe', async () => {
+    projects.add('basalt');
+    const r = await cli(['import', '--from', from, '--project', 'basalt', '--replace']);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('reemplazado');
+    expect(seen.map((x) => `${x.method} ${x.path}`)).toEqual(['PUT /api/projects/basalt']);
+  });
+
+  it('--replace sobre un proyecto con preguntas abiertas: el 409 del servidor llega tal cual', async () => {
+    projects.add('basalt');
+    lockedProjects.add('basalt');
+    const r = await cli(['import', '--from', from, '--project', 'basalt', '--replace']);
+    expect(r.code).toBe(EXIT.api);
+    expect(r.stderr).toContain('conflict: El proyecto tiene una pregunta abierta para el dueño');
+  });
+
+  it('un error que no es 404 al mirar si existe se propaga y no hace PUT', async () => {
+    const r = await cli(['import', '--from', from, '--project', 'basalt'], { DAGYARD_KEY: 'otra' });
+    expect(r.code).toBe(EXIT.api);
+    expect(r.stderr).toContain('unauthorized');
+    expect(seen.some((x) => x.method === 'PUT')).toBe(false);
   });
 });
 

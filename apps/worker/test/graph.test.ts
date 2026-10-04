@@ -24,7 +24,7 @@ describe('PUT de la demo', () => {
     expect(a.messages).toHaveLength(8);
     expect(a.seq).toBe(1);
 
-    const b = await json<ProjectSnapshot>(await api(`/api/projects/${a.project.id}`, { method: 'PUT', body: demoProject() }), 200);
+    const b = await json<ProjectSnapshot>(await api(`/api/projects/${a.project.id}`, { method: 'PUT', body: demoProject(), headers: OWNER }), 200);
     expect(shape(b)).toEqual(shape(a));
     expect(b.project.createdAt).toBe(a.project.createdAt);
     expect(b.seq).toBe(2);
@@ -148,12 +148,12 @@ describe('nodos y mensajes', () => {
   it('borrar un nodo se lleva sus aristas, bloqueantes y mensajes', async () => {
     const s = await seedDemo();
     const pid = s.project.id;
-    expect((await api(`/api/projects/${pid}/nodes/comision`, { method: 'DELETE' })).status).toBe(204);
+    expect((await api(`/api/projects/${pid}/nodes/comision`, { method: 'DELETE', headers: OWNER })).status).toBe(204);
     const snap = await json<ProjectSnapshot>(await api(`/api/projects/${pid}`), 200);
     expect(snap.nodes).toHaveLength(19);
     expect(snap.edges.some((e) => e.from === 'comision' || e.to === 'comision')).toBe(false);
     expect(snap.blockers.some((b: Blocker) => b.nodeId === 'comision')).toBe(false);
-    await json(await api(`/api/projects/${pid}/nodes/comision`, { method: 'DELETE' }), 404);
+    await json(await api(`/api/projects/${pid}/nodes/comision`, { method: 'DELETE', headers: OWNER }), 404);
   });
 
   it('borrar un proyecto es solo del owner', async () => {

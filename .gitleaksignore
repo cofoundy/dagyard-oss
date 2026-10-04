@@ -1,2 +1,0 @@
-# Falso positivo: constante de test en un commit viejo (el árbol actual lo marca con gitleaks:allow).
-4b5555565fa9b44b4bca143911499221f230cacd:apps/worker/test/blockers.test.ts:generic-api-key:6

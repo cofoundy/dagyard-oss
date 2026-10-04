@@ -19,7 +19,15 @@ const SNAP = {
   ],
 }
 
-type World = { ok?: boolean; files?: Record<string, string>; env?: Record<string, string>; snap?: () => unknown }
+type Res = { status: number; ok: boolean; headers: Record<string, string>; text: string }
+type World = {
+  ok?: boolean
+  files?: Record<string, string>
+  env?: Record<string, string>
+  snap?: () => unknown
+  /** responde un pedido antes que el mundo; `undefined` lo deja pasar, `'cut'` corta la red */
+  respond?: (method: string, url: string) => Res | 'cut' | undefined
+}
 
 const LINKED = { '/w/.dagyard.json': JSON.stringify({ project: 'marketplace-reservas' }) }
 
@@ -40,9 +48,15 @@ function world(on: any, ok: boolean | World = true) {
     return path in files ? { value: files[path] } : { deny: 'missing' }
   })
   const bodies: string[] = []
+  const keys: (string | undefined)[] = []
   on('http.fetch', ($: any, e: any) => {
-    calls.push(`${e.init?.method ?? 'GET'} ${e.url}`)
+    const method = e.init?.method ?? 'GET'
+    calls.push(`${method} ${e.url}`)
     if (e.init?.body) bodies.push(e.init.body)
+    if (method !== 'GET') keys.push(e.init?.headers?.['idempotency-key'])
+    const r = o.respond?.(method, e.url)
+    if (r === 'cut') return { deny: 'sin red' }
+    if (r) return { value: r }
     if (o.ok === false) return { value: { status: 403, ok: false, headers: {}, text: '' } }
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(o.snap ? o.snap() : SNAP) } }
   })
@@ -57,7 +71,7 @@ function world(on: any, ok: boolean | World = true) {
   })
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }))
-  return { calls, sent, bodies, toasts, clock }
+  return { calls, sent, bodies, keys, toasts, clock }
 }
 
 const MENU = { component: 'Pane', requestId: 'dagyard-menu', props: {} } as const
@@ -181,5 +195,78 @@ describe('el aviso', () => {
     expect(toasts[0]).toMatch(/¿Lanzamos el lunes\?/)
     await clock.advance(10_000)
     expect(toasts.length).toBe(1)
+  })
+})
+
+describe('durante un deploy', () => {
+  const NODE = 'https://dagyard.cofoundy-dev.workers.dev/api/projects/marketplace-reservas/nodes/landing'
+  const fail = (status: number, code: string): Res => ({ status, ok: false, headers: {}, text: JSON.stringify({ error: { code, message: code } }) })
+  const OK: Res = { status: 200, ok: true, headers: {}, text: JSON.stringify({ id: 'landing' }) }
+
+  /** responde cada PATCH al nodo con lo que toca en la lista, en orden; después, 200 */
+  function patches(...answers: (Res | 'cut')[]) {
+    return (method: string, url: string) => (method === 'PATCH' && url === NODE ? answers.shift() ?? OK : undefined)
+  }
+
+  async function takeLanding($: any) {
+    await start($)
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND } as any)
+    for (let i = 0; i < 3; i++) await ui.press({ key: 'dy-next' })
+    await ui.press({ key: 'dy-take' })
+    return ui
+  }
+
+  test('un PATCH que recibe 503 y luego 200 termina bien, con la misma clave en ambos intentos', async ($, on) => {
+    const { calls, keys, sent, toasts, clock } = world(on, { respond: patches(fail(503, 'unavailable')) })
+    const ui = await takeLanding($)
+    await clock.advance(2_000)
+    expect(calls.filter(c => c === `PATCH ${NODE}`).length).toBe(2)
+    expect(keys.length).toBe(2)
+    expect(keys[0]).toMatch(/^[0-9a-f-]{36}$/)
+    expect(keys[1]).toBe(keys[0])
+    expect(sent).toContain('/goal Arma la página de lanzamiento')
+    expect(toasts.some(t => /no respondió/.test(t))).toBe(false)
+    await ui.unmount()
+  })
+
+  test('un corte de red también se reintenta con la misma clave', async ($, on) => {
+    const { keys, sent, clock } = world(on, { respond: patches('cut') })
+    const ui = await takeLanding($)
+    await clock.advance(2_000)
+    expect(keys.length).toBe(2)
+    expect(keys[1]).toBe(keys[0])
+    expect(sent).toContain('/goal Arma la página de lanzamiento')
+    await ui.unmount()
+  })
+
+  test('cada invocación lleva su propia clave', async ($, on) => {
+    const { keys, clock } = world(on)
+    const ui = await takeLanding($)
+    await clock.settle()
+    await ui.press({ key: 'dy-take' }) // el snapshot la sigue dando pendiente: se toma otra vez
+    await clock.settle()
+    expect(keys.length).toBe(2)
+    expect(keys[1]).not.toBe(keys[0])
+    await ui.unmount()
+  })
+
+  test('overloaded no se repite: reintentar empeora', async ($, on) => {
+    const { calls, sent, toasts, clock } = world(on, { respond: patches(fail(503, 'overloaded')) })
+    const ui = await takeLanding($)
+    await clock.advance(2_000)
+    expect(calls.filter(c => c === `PATCH ${NODE}`).length).toBe(1)
+    expect(sent).toEqual([])
+    expect(toasts.some(t => /no respondió \(503\)/.test(t))).toBe(true)
+    await ui.unmount()
+  })
+
+  test('se rinde tras tres intentos', async ($, on) => {
+    const u = fail(503, 'unavailable')
+    const { calls, sent, clock } = world(on, { respond: patches(u, u, u, u) })
+    const ui = await takeLanding($)
+    await clock.advance(5_000)
+    expect(calls.filter(c => c === `PATCH ${NODE}`).length).toBe(3)
+    expect(sent).toEqual([])
+    await ui.unmount()
   })
 })

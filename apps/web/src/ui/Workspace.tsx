@@ -21,6 +21,7 @@ import { Card } from './Card';
 import { COPY } from './copy';
 import { feedbackFor, resolvedToast, type ToastSpec } from './feedback';
 import { Actions, Brand, Rail, Toasts, type ToastItem } from './Hud';
+import { readLink, writeLink } from './link';
 import { useSafeArea } from './useSafeArea';
 
 const PROJECT_KEY = 'dagyard:project';
@@ -28,12 +29,13 @@ const TOAST_MS = 4200;
 const MAX_TOASTS = 3;
 
 /**
- * Proyecto que se abre al entrar: el que el usuario eligió la última vez; si no eligió (o ya no existe), la demo, que es
- * lo primero que un PM tiene que ver (la lista llega por última actualización, así que su primero sería el último
- * importado). Sin demo, el primero de la lista.
+ * Proyecto que se abre al entrar: el del enlace (`?p=`), si existe; si no, el que el usuario eligió la última vez; si no
+ * eligió (o ya no existe), la demo, que es lo primero que un PM tiene que ver (la lista llega por última actualización,
+ * así que su primero sería el último importado). Sin demo, el primero de la lista.
  */
-export function initialProject(list: readonly ProjectSummary[], stored: string | null): string | null {
+export function initialProject(list: readonly ProjectSummary[], stored: string | null, linked: string | null = null): string | null {
   const has = (id: string | null) => !!id && list.some((p) => p.id === id);
+  if (has(linked)) return linked;
   if (has(stored)) return stored;
   if (has(DEMO_PROJECT_ID)) return DEMO_PROJECT_ID;
   return list[0]?.id ?? null;
@@ -96,18 +98,28 @@ export function Workspace({ api, sky, handlers, demo, onUnauthorized, onLogout }
 
   /* ---------------------------------------------------------------- proyectos */
 
+  // El enlace se lee una vez al entrar; su tarea (`?n=`) se abre cuando llega el primer plan de su proyecto.
+  const linkRead = useRef(false);
+  const pendingFocus = useRef<{ project: string; node: string } | null>(null);
+
   const loadProjects = useCallback(async () => {
     setListError(false);
     try {
       const list = await api.listProjects();
       setProjects(list);
+      const link = linkRead.current ? null : readLink();
+      linkRead.current = true;
+      const linked = link?.project && list.some((p) => p.id === link.project) ? link.project : null;
       let stored: string | null = null;
       try {
+        // Abrir un enlace cuenta como elegir ese proyecto: se recuerda, como desde el selector.
+        if (linked) localStorage.setItem(PROJECT_KEY, linked);
         stored = localStorage.getItem(PROJECT_KEY);
       } catch {
         /* almacenamiento bloqueado */
       }
-      setProjectId((cur) => cur ?? initialProject(list, stored));
+      if (linked && link?.node) pendingFocus.current = { project: linked, node: link.node };
+      setProjectId((cur) => cur ?? initialProject(list, stored, linked));
     } catch (e) {
       if (e instanceof UnauthorizedError) onUnauthorizedRef.current();
       else setListError(true);
@@ -124,6 +136,7 @@ export function Workspace({ api, sky, handlers, demo, onUnauthorized, onLogout }
     } catch {
       /* almacenamiento bloqueado */
     }
+    pendingFocus.current = null;
     setFocusId(null);
     setStageSel(null);
     setProjectId(id);
@@ -201,6 +214,13 @@ export function Workspace({ api, sky, handlers, demo, onUnauthorized, onLogout }
     if (switched) s.overview();
     const pulses = pendingPulses.current.splice(0);
     for (const p of pulses) if (graph.nodes.some((n) => n.id === p.nodeId)) s.pulse(p.nodeId, p.kind);
+    const linked = pendingFocus.current;
+    if (linked?.project === snapshot.project.id) {
+      pendingFocus.current = null;
+      // Una tarea que ya no está en el plan se ignora: queda la vista general y el enlace pierde la `n`.
+      if (nodeById(snapshot, linked.node)) focusRef.current(linked.node);
+      else writeLink({ project: linked.project, node: null });
+    }
   }, [graph, snapshot, sky]);
 
   const focus = useCallback(
@@ -216,6 +236,14 @@ export function Workspace({ api, sky, handlers, demo, onUnauthorized, onLogout }
   );
 
   focusRef.current = focus;
+
+  // La URL sigue a lo que miras, así cualquier vista se puede copiar y mandar. Mientras la tarea del enlace espera su
+  // plan, la `n` se conserva.
+  useEffect(() => {
+    if (!projectId) return;
+    const linked = pendingFocus.current;
+    writeLink({ project: projectId, node: focusId ?? (linked?.project === projectId ? linked.node : null) });
+  }, [projectId, focusId]);
 
   const overview = useCallback(() => {
     setFocusId(null);

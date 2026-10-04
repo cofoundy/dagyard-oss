@@ -273,8 +273,9 @@ Sin --timeout espera para siempre. Exit 2 si vence.`,
     help: `deps y blockedBy se vuelven dependencias; status se normaliza a ${NODE_STATUSES.join(', ')}.
 Etapas: phase si todas las tareas lo traen; si no, por profundidad («Para empezar», «Después», «Luego», … «Al final»).
 Si el proyecto ya existe no lo pisa (el servidor lo decide al crear): elige otro con --project o pasa
---replace para reemplazarlo. El reemplazo conserva las preguntas y respuestas del dueño; el servidor lo
-rechaza (409) si el grafo nuevo quita una tarea que tiene alguna.
+--replace para reemplazarlo. Con la clave de agente, el reemplazo conserva las preguntas y respuestas
+del dueño y el servidor lo rechaza (409) si el grafo nuevo quita una tarea que tiene alguna; con el token
+del dueño, --replace las borra y las recrea desde el archivo.
 --dry-run solo cuenta, no envía nada y no necesita servidor.`,
     flags: ['from', 'name', ...GLOBAL_FLAGS],
     bools: ['dry-run', 'json', 'replace'],

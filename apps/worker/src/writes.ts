@@ -224,8 +224,9 @@ function held({ open, resolved }: { open: number; resolved: number }): { what: s
   const parts = [open ? `${pending(open)} para el dueño` : '', resolved ? `${answers} del dueño` : ''].filter(Boolean);
   return { what: parts.join(' y '), them: open + resolved === 1 ? 'la' : 'las' };
 }
-/** Clave de un bloqueante para no duplicarlo al re-importar: misma tarea, mismo tipo, misma pregunta. */
-const blockerKey = (nodeId: unknown, kind: unknown, question: unknown) => JSON.stringify([nodeId, kind, question]);
+/** Clave de un bloqueante para no duplicarlo al re-importar: misma tarea, tipo, pregunta, opciones y etiqueta. */
+const blockerKey = (nodeId: unknown, kind: unknown, question: unknown, options: string, accessLabel: unknown) =>
+  JSON.stringify([nodeId, kind, question, options, accessLabel ?? null]);
 
 const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>) => WriteValues[K] } = {
   createProject(tx, { pid, name, stages }) {
@@ -251,18 +252,19 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
       const h = held(tx.heldBlockers(pid, nid));
       fail('conflict', `La tarea «${tx.node(pid, nid).title}» tiene ${h.what}; quitarla del proyecto ${h.them} haría desaparecer. Déjala en el grafo o pídele al dueño que reemplace el proyecto él`);
     }
-    const keptKeys = new Set(kept.map((b) => blockerKey(b.node_id, b.kind, b.question)));
-    // re-importar el mismo archivo no duplica un bloqueante que ya está (ni reabre uno ya respondido)
-    const fresh = (g.blockers ?? []).filter((b) => !keptKeys.has(blockerKey(b.nodeId, b.kind, b.question)));
-    const keptOpen = kept.filter((b) => b.status === 'open').map((b) => b.node_id as string);
-    const declared = new Set([...(g.blockers ?? []).map((b) => b.nodeId), ...keptOpen]);
-    const blockedBy = new Set([...fresh.map((b) => b.nodeId), ...keptOpen]);
+    // re-importar el mismo archivo no duplica una pregunta que sigue abierta; una igual a otra ya respondida
+    // entra como nueva: re-preguntar nunca se descarta en silencio
+    const keptOpen = kept.filter((b) => b.status === 'open');
+    const openKeys = new Set(keptOpen.map((b) => blockerKey(b.node_id, b.kind, b.question, b.options as string, b.access_label)));
+    const fresh = (g.blockers ?? []).filter(
+      (b) => !openKeys.has(blockerKey(b.nodeId, b.kind, b.question, JSON.stringify(b.options ?? []), b.accessLabel)),
+    );
+    const blockedBy = new Set([...(g.blockers ?? []).map((b) => b.nodeId), ...keptOpen.map((b) => b.node_id as string)]);
     nodes.forEach((node, i) => {
-      if (node.status === 'blocked' && !declared.has(node.id))
+      if (node.status === 'blocked' && !blockedBy.has(node.id))
         fail('invalid', `nodes[${i}].status: «blocked» lo pone un bloqueante; agrégalo en blockers`);
-      // una tarea con un bloqueante abierto está bloqueada, la declare así o no; si el suyo ya se respondió, sigue
+      // una tarea con un bloqueante abierto está bloqueada, la declare así o no
       if (blockedBy.has(node.id)) node.status = 'blocked';
-      else if (node.status === 'blocked') node.status = 'working';
     });
     const edges: Edge[] = g.nodes.flatMap((n, i) => [...new Set(n.deps ?? [])].map((d) => ({ projectId: pid, from: d, to: nodes[i]!.id })));
     const project: Project = { id: pid, name: g.name, stages, createdAt: prev?.createdAt ?? tx.now, updatedAt: tx.now };

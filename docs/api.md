@@ -95,10 +95,11 @@ el `seq` del último evento. Con ese `seq` la UI abre el WebSocket.
 Resolver es solo del dueño, así que un agente no puede hacer desaparecer ni una pregunta abierta ni una
 respuesta ya dada. Con la API key, el `PUT` sobre un proyecto existente **conserva** cada bloqueante
 (abierto o resuelto) con su id, su respuesta y el valor de su acceso, así un `wait` en curso lo sigue
-encontrando. Las tareas que tienen un bloqueante abierto quedan `blocked` las declare así o no; un
-bloqueante del body con la misma tarea, `kind` y `question` que uno conservado no se duplica (re-importar
-el mismo archivo no reabre lo ya respondido). Si el grafo nuevo quita una tarea que tiene algún bloqueante,
-`409` y no se toca nada. El dueño reemplaza el grafo entero siempre (sus bloqueantes se recrean desde el
+encontrando. Las tareas que tienen un bloqueante abierto quedan `blocked` las declare así o no. Un
+bloqueante del body igual a uno conservado **abierto** (misma tarea, `kind`, `question`, `options` y
+`accessLabel`) no se duplica: re-importar el mismo archivo es idempotente. Uno igual a uno ya **resuelto**
+entra como bloqueante nuevo y abierto (re-preguntar nunca se descarta en silencio), y la respuesta anterior
+se conserva al lado. Si el grafo nuevo quita una tarea que tiene algún bloqueante, `409` y no se toca nada. El dueño reemplaza el grafo entero siempre (sus bloqueantes se recrean desde el
 body con otros ids).
 
 `dagyard import` crea proyectos nuevos con un solo `PUT` exclusivo (`If-None-Match: *`): si el proyecto

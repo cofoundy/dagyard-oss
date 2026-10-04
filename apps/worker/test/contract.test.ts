@@ -50,14 +50,39 @@ describe('un agente no borra bloqueantes', () => {
     await resolve(pid, bid, { value: 'sk_live_123', note: 'la de pruebas' });
 
     const again = await json<ProjectSnapshot>(await put(pid, small()), 200);
-    // re-importar el mismo archivo es idempotente: ni se duplica ni se reabre
-    expect(again.blockers).toHaveLength(1);
-    expect(again.blockers[0]).toMatchObject({ id: bid, status: 'resolved', resolvedBy: 'owner', resolution: { note: 'la de pruebas', hasValue: true } });
-    expect(again.nodes.find((n) => n.id === 'b')?.status).not.toBe('blocked');
+    // la respuesta del dueño sigue con su id; la misma pregunta en el archivo se vuelve a hacer, nueva y abierta
+    expect(again.blockers.find((b) => b.id === bid)).toMatchObject({ status: 'resolved', resolvedBy: 'owner', resolution: { note: 'la de pruebas', hasValue: true } });
+    expect(open(again)).toHaveLength(1);
+    expect(again.nodes.find((n) => n.id === 'b')?.status).toBe('blocked');
 
     const w = await json<BlockerWaitResult>(await api(`/api/projects/${pid}/blockers/${bid}/wait?timeout=0`), 200);
     expect(w.blocker.status).toBe('resolved');
     expect(w.value).toBe('sk_live_123');
+  });
+
+  it('re-preguntar nunca se descarta: la misma revisión que ya se respondió entra como una nueva abierta', async () => {
+    const s = await seedDemo();
+    const pid = s.project.id;
+    const review = s.blockers.find((b) => b.nodeId === 'checkout-d')!;
+    await resolve(pid, review.id, { choice: 0 });
+
+    const again = await json<ProjectSnapshot>(await put(pid, demoProject()), 200);
+    const mine = again.blockers.filter((b) => b.nodeId === 'checkout-d');
+    expect(mine.map((b) => b.status)).toEqual(['resolved', 'open']);
+    expect(mine[0]!.id).toBe(review.id);
+    expect(again.nodes.find((n) => n.id === 'checkout-d')?.status).toBe('blocked');
+    // las abiertas idénticas no se duplican
+    expect(open(again)).toHaveLength(3);
+  });
+
+  it('una pregunta abierta con otras opciones no es la misma: entra como nueva', async () => {
+    const s = await seedDemo();
+    const pid = s.project.id;
+    const g = demoProject();
+    g.blockers = g.blockers!.map((b) => (b.nodeId === 'comision' ? { ...b, options: [...b.options!, 'A los dos'] } : b));
+    const again = await json<ProjectSnapshot>(await put(pid, g), 200);
+    expect(open(again).filter((b) => b.nodeId === 'comision')).toHaveLength(2);
+    expect(open(again)).toHaveLength(4);
   });
 
   it('PUT del agente que quita un nodo con bloqueante (resuelto o abierto) → 409 sin tocar nada', async () => {

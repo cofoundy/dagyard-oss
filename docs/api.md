@@ -38,7 +38,9 @@ Formas de presentarla (el servidor prueba en este orden):
 1. Header `Authorization: Bearer <token>` — el CLI usa esta.
 2. Cookie `dagyard_session` (httpOnly, Secure, SameSite=Lax), que crea `POST /api/session`. La UI usa
    esta: el humano pega el token una vez y el navegador lo recuerda; el WebSocket la manda solo.
-3. Query `?token=<token>` — **solo** en el upgrade del WebSocket, para clientes sin cookie.
+3. Solo en el upgrade del WebSocket, para clientes sin cookie: subprotocolo
+   `new WebSocket(url, ['dagyard', 'token.' + token])` (el servidor responde `Sec-WebSocket-Protocol: dagyard`
+   y el token no queda en ninguna URL), o, como último recurso, la query `?token=<token>`.
 
 Qué puede cada rol: los dos leen y escriben el grafo y los mensajes. **Resolver un bloqueante es solo
 del `owner`** (es el humano quien desbloquea). **Recibir el valor de un acceso es solo del `agent`**
@@ -134,8 +136,8 @@ mensaje trae `reportUrl` y el nodo no tiene uno, el nodo lo adopta (emite tambi�
 Un Durable Object por proyecto guarda los WebSockets (API de hibernación) y reparte cada evento que
 emite una escritura. Todas las escrituras de la API, vengan de la UI o del CLI, pasan por ahí.
 
-**Conexión:** `GET /api/projects/:pid/live?since=<seq>` con `Upgrade: websocket`. Auth por cookie o
-`?token=`. Sin auth → `401` antes del upgrade.
+**Conexión:** `GET /api/projects/:pid/live?since=<seq>` con `Upgrade: websocket`. Auth por cookie, subprotocolo
+`token.<token>` o `?token=`. Sin auth → `401` antes del upgrade.
 
 **Frames servidor → cliente** (JSON, tipo `ServerFrame`):
 

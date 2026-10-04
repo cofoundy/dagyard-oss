@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { EXIT, goalLine, progressArg, run } from '../src/cli.js';
+import { EXIT, goalLine, progressArg, run, skyLink, type Io } from '../src/cli.js';
 import { nextStartable, type Blocker, type DagNode, type Edge, type Stage } from '@dagyard/model';
 
 const KEY = 'clave-secreta-123';
@@ -153,7 +153,7 @@ async function cli(
   argv: string[],
   env: Record<string, string> = {},
   cwd = mkdtempSync(join(tmpdir(), 'dagyard-cwd-')),
-  extra: { fetch?: typeof fetch } = {},
+  extra: Partial<Pick<Io, 'fetch' | 'open' | 'platform'>> = {},
 ) {
   let stdout = '';
   let stderr = '';
@@ -188,6 +188,7 @@ describe('ayuda', () => {
     ['wait'],
     ['msg'],
     ['next'],
+    ['open'],
     ['import'],
     ['sync'],
   ])('%s %s --help', async (...cmd) => {
@@ -200,7 +201,7 @@ describe('ayuda', () => {
   it('sin argumentos lista todos los comandos', async () => {
     const r = await cli([]);
     expect(r.code).toBe(0);
-    for (const c of ['node add', 'edge add', 'block', 'wait', 'msg', 'next', 'import', 'sync']) expect(r.stdout).toContain(c);
+    for (const c of ['node add', 'edge add', 'block', 'wait', 'msg', 'next', 'open', 'import', 'sync']) expect(r.stdout).toContain(c);
   });
 
   it('comando u opción desconocidos → exit 64', async () => {
@@ -284,6 +285,88 @@ describe('next', () => {
     const r = await cli(['next']);
     expect(r.code).toBe(EXIT.nothing);
     expect(r.stdout).toBe('');
+  });
+
+  it('el link de la tarea va por stderr (stdout sigue siendo solo el /goal) y en --json', async () => {
+    nodes = [mockNode('pagos', 'construccion', 'pending')];
+    const r = await cli(['next']);
+    expect(r.code).toBe(0);
+    expect(r.stdout.startsWith('/goal ')).toBe(true);
+    expect(r.stdout.trimEnd().split('\n')).toHaveLength(1);
+    expect(r.stderr).toBe(`en el cielo: ${baseUrl}/?p=demo&n=pagos\n`);
+
+    const j = await cli(['next', '--json']);
+    expect(JSON.parse(j.stdout)).toMatchObject({ node: { id: 'pagos' }, link: `${baseUrl}/?p=demo&n=pagos` });
+    expect(j.stderr).toBe('');
+  });
+
+  it('--json sin nada arrancable: link null', async () => {
+    const r = await cli(['next', '--json']);
+    expect(r.code).toBe(EXIT.nothing);
+    expect(JSON.parse(r.stdout)).toMatchObject({ node: null, link: null });
+  });
+});
+
+describe('open', () => {
+  const opener = () => {
+    const opened: string[] = [];
+    return { opened, open: async (link: string) => void opened.push(link) };
+  };
+
+  it('sin tarea: el link del proyecto, y en macOS lo abre', async () => {
+    const o = opener();
+    const r = await cli(['open'], {}, undefined, { platform: 'darwin', open: o.open });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toBe(`${baseUrl}/?p=demo\n`);
+    expect(o.opened).toEqual([`${baseUrl}/?p=demo`]);
+    expect(seen).toHaveLength(0); // no llama al servidor
+  });
+
+  it('con tarea: vuela a ella (id normalizado y codificado)', async () => {
+    const o = opener();
+    const r = await cli(['open', 'GH-47', '--project', 'Mi Proyecto', '--url', 'https://cielo.example/'], {}, undefined, {
+      platform: 'darwin',
+      open: o.open,
+    });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toBe('https://cielo.example/?p=mi-proyecto&n=gh-47\n');
+    expect(o.opened).toEqual(['https://cielo.example/?p=mi-proyecto&n=gh-47']);
+  });
+
+  it('--print y fuera de macOS solo imprime', async () => {
+    const o = opener();
+    expect((await cli(['open', 'x', '--print'], {}, undefined, { platform: 'darwin', open: o.open })).stdout).toBe(`${baseUrl}/?p=demo&n=x\n`);
+    expect((await cli(['open', 'x'], {}, undefined, { platform: 'linux', open: o.open })).code).toBe(0);
+    expect(o.opened).toEqual([]);
+  });
+
+  it('no necesita la key y nunca la pone en el link', async () => {
+    const r = await cli(['open', 'x', '--print'], { DAGYARD_KEY: '' });
+    expect(r.code).toBe(0);
+    expect(r.stdout).not.toContain(KEY);
+  });
+
+  it('si el navegador no abre, avisa pero el link ya salió (exit 0)', async () => {
+    const r = await cli(['open'], {}, undefined, {
+      platform: 'darwin',
+      open: async () => {
+        throw new Error('sin navegador');
+      },
+    });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toBe(`${baseUrl}/?p=demo\n`);
+    expect(r.stderr).toContain('no pude abrir el navegador (sin navegador)');
+  });
+
+  it('una sola tarea; sin servidor → exit 64', async () => {
+    expect((await cli(['open', 'a', 'b', '--print'])).code).toBe(EXIT.usage);
+    expect((await cli(['open', '--print'], { DAGYARD_URL: '' })).code).toBe(EXIT.usage);
+  });
+
+  it('skyLink: misma forma que la web', () => {
+    expect(skyLink('https://x//', 'dagyard')).toBe('https://x/?p=dagyard');
+    expect(skyLink('https://x', 'dagyard', 'gh-47')).toBe('https://x/?p=dagyard&n=gh-47');
+    expect(skyLink('https://x', 'a b', 'c&d')).toBe('https://x/?p=a%20b&n=c%26d');
   });
 });
 

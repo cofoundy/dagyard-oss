@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { viewOf } from './view'
+import { skyLink, viewOf } from './view'
 import type { Snapshot } from './view'
 
 const node = (id: string, status: 'pending' | 'working' | 'blocked' | 'done', team: string | null = null) => ({
@@ -47,4 +47,21 @@ test('cabecera: listas y etapas vivas', () => {
   expect(v.done).toBe(1)
   expect(v.total).toBe(6)
   expect(v.now).toBe('Diseño · Construcción')
+})
+
+test('link del cielo: el proyecto, o la tarea con su ficha', () => {
+  const base = 'https://dagyard.cofoundy-dev.workers.dev/'
+  expect(skyLink(base, 'dagyard')).toBe('https://dagyard.cofoundy-dev.workers.dev/?p=dagyard')
+  expect(skyLink(base, 'dagyard', 'gh-47')).toBe('https://dagyard.cofoundy-dev.workers.dev/?p=dagyard&n=gh-47')
+  expect(skyLink('http://x', 'mi proyecto', 'a&b')).toBe('http://x/?p=mi%20proyecto&n=a%26b')
+  expect(skyLink('http://x', null, 'gh-1')).toBe('http://x/')
+})
+
+test('«Darlo en el cielo» abre la tarea del acceso que te espera', () => {
+  const acceso = {
+    ...snap,
+    blockers: [{ id: 'b9', nodeId: 'c4', kind: 'access' as const, question: 'Falta la clave', options: [], accessLabel: 'Pasarela', status: 'open' as const }],
+  }
+  const it = viewOf(acceso).waiting[0]!
+  expect(skyLink('http://x', 'p', it.node.id)).toBe('http://x/?p=p&n=c4')
 })

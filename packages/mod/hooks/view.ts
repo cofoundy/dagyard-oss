@@ -60,3 +60,10 @@ export function viewOf(s: Snapshot): View {
     startable,
   }
 }
+
+/** El link del cielo a un proyecto (`/?p=`) o a una tarea suya (`&n=`), el mismo que arma la web. Sin proyecto, la portada. */
+export function skyLink(base: string, project: string | null, node?: string | null): string {
+  const root = `${base.replace(/\/+$/, '')}/`
+  if (!project) return root
+  return `${root}?p=${encodeURIComponent(project)}${node ? `&n=${encodeURIComponent(node)}` : ''}`
+}

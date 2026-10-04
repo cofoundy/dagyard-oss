@@ -5,7 +5,8 @@ y un aviso cuando algo nuevo te espera. Todo lo que haces aquí se ve al instant
 porque escribe en la misma API.
 
 - **Te espera**: una decisión o una revisión se responden desde la banda o el menú. Un acceso se da
-  en el cielo: su valor nunca pasa por la terminal.
+  en el cielo: su valor nunca pasa por la terminal. «Darlo en el cielo» abre esa tarea con su ficha.
+- **Ver el cielo**: abre el proyecto del repo (o la tarea en la que estás trabajando).
 - **Para tomar**: lo pendiente, sin equipo y con todo lo que necesita ya listo. «Trabajar en esto» la
   arranca y fija su `/goal` en la sesión.
 - **Menú** (`/dagyard` o «Ver todo»): todo lo anterior a la vez.

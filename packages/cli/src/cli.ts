@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { ApiRequestError, DagyardClient } from './api.js';
 import { assertKnownFlags, flag, parseArgs, UsageError, type ParsedArgs } from './args.js';
 import { loadConfig, loadKey } from './config.js';
@@ -20,6 +21,10 @@ export interface Io {
   cwd?: string;
   /** la cola de GitHub de `sync` (default: `gh api`) */
   github?: GithubSource;
+  /** abre un link en el navegador (default: `open <link>`); `dagyard open` lo llama solo en macOS */
+  open?: (link: string) => Promise<void>;
+  /** el sistema (default `process.platform`) */
+  platform?: NodeJS.Platform;
 }
 
 /** Exit codes: 0 ok · 1 error de la API o de red · 2 `wait` venció · 3 `next` sin nada arrancable · 64 uso. */
@@ -262,15 +267,18 @@ Sin --timeout espera para siempre. Exit 2 si vence.`,
   next: {
     usage: 'dagyard next [--project <p>] [--json]',
     summary: 'la siguiente tarea arrancable, con su línea /goal lista para pegar',
-    help: 'Imprime una sola línea: /goal <misión>. Exit 3 si no hay nada arrancable.',
+    help: `Imprime una sola línea: /goal <misión>; el link de la tarea en el cielo va aparte, por stderr
+(«en el cielo: …»), así la salida se pega tal cual. --json lo trae en «link». Exit 3 si no hay nada arrancable.`,
     flags: [...GLOBAL_FLAGS],
     bools: ['json'],
     async run({ io, args }) {
       need(args, []);
       const proj = project(io, args);
-      const res = await client(io, args).next(proj);
+      const srv = server(io, args);
+      const res = await client(io, args, srv).next(proj);
+      const link = res.node ? skyLink(srv.url, proj, res.node.id) : null;
       if (args.bools.has('json')) {
-        io.stdout(`${JSON.stringify(res)}\n`);
+        io.stdout(`${JSON.stringify({ ...res, link })}\n`);
         return res.goalLine ? EXIT.ok : EXIT.nothing;
       }
       if (!res.goalLine) {
@@ -278,6 +286,30 @@ Sin --timeout espera para siempre. Exit 2 si vence.`,
         return EXIT.nothing;
       }
       io.stdout(`${goalLine(res.goalLine)}\n`);
+      if (link) io.stderr(`en el cielo: ${link}\n`);
+      return EXIT.ok;
+    },
+  },
+  open: {
+    usage: 'dagyard open [<tarea>] [--print]',
+    summary: 'el link del cielo al proyecto o a una tarea; en macOS lo abre',
+    help: `Sin <tarea>, el proyecto; con <tarea>, el cielo vuela a ella y abre su ficha.
+Imprime el link (se puede mandar a quien sea: la clave nunca va en él) y en macOS lo abre en el navegador.
+--print solo lo imprime. No usa la API key ni llama al servidor.`,
+    flags: [...GLOBAL_FLAGS],
+    bools: ['print'],
+    async run({ io, args }) {
+      if (args.positionals.length > 1) throw new UsageError(`sobra «${args.positionals[1]}»`);
+      const [task] = args.positionals;
+      const link = skyLink(server(io, args).url, project(io, args), task === undefined ? undefined : nodeId(task));
+      io.stdout(`${link}\n`);
+      if (!args.bools.has('print') && (io.platform ?? process.platform) === 'darwin') {
+        try {
+          await (io.open ?? openInBrowser)(link);
+        } catch (err) {
+          io.stderr(`dagyard: no pude abrir el navegador (${err instanceof Error ? err.message : String(err)}); copia el link\n`);
+        }
+      }
       return EXIT.ok;
     },
   },
@@ -460,13 +492,27 @@ function config(io: Io, skipRepoUrl: boolean) {
   return loadConfig(io.env, io.cwd ?? process.cwd(), { warn: io.stderr, skipRepoUrl });
 }
 
-function client(io: Io, args: ParsedArgs): DagyardClient {
+/** El servidor y la key; la key puede faltar (`open` no la usa), el servidor no. */
+function server(io: Io, args: ParsedArgs): { url: string; key: string | null } {
   const urlFlag = flag(args, 'url');
   const cfg = config(io, urlFlag !== undefined);
   const url = urlFlag ?? cfg.url;
   if (!url) throw new UsageError('falta el servidor: --url, DAGYARD_URL, .dagyard.json o ~/.config/dagyard/url');
-  if (!cfg.key) throw new UsageError('falta la API key: DAGYARD_KEY o ~/.config/dagyard/agent-key');
-  return new DagyardClient({ baseUrl: url, key: cfg.key, ...(io.fetch ? { fetch: io.fetch } : {}), ...(io.sleep ? { sleep: io.sleep } : {}) });
+  return { url, key: cfg.key };
+}
+
+function client(io: Io, args: ParsedArgs, srv = server(io, args)): DagyardClient {
+  if (!srv.key) throw new UsageError('falta la API key: DAGYARD_KEY o ~/.config/dagyard/agent-key');
+  return new DagyardClient({ baseUrl: srv.url, key: srv.key, ...(io.fetch ? { fetch: io.fetch } : {}), ...(io.sleep ? { sleep: io.sleep } : {}) });
+}
+
+/** `open <link>` de macOS; falla si el comando no existe o sale con error. */
+function openInBrowser(link: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('open', [link], { stdio: 'ignore' });
+    child.on('error', reject);
+    child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`open salió con ${code}`))));
+  });
 }
 
 function project(io: Io, args: ParsedArgs): string {
@@ -537,6 +583,15 @@ export function progressArg(raw: string): number {
   if (pct || n > 1) n /= 100;
   if (n < 0 || n > 1) throw new UsageError(`el avance va de 0 a 1 (o de 0% a 100%): «${raw}»`);
   return Math.round(n * 1000) / 1000;
+}
+
+/**
+ * El link del cielo: `<url>/?p=<proyecto>` y, con tarea, `&n=<tarea>` (la web abre el proyecto, vuela a la
+ * tarea y abre su ficha). Nunca lleva la clave.
+ */
+export function skyLink(base: string, projectId: string, node?: string): string {
+  const p = `?p=${encodeURIComponent(projectId)}`;
+  return `${base.replace(/\/+$/, '')}/${p}${node ? `&n=${encodeURIComponent(node)}` : ''}`;
 }
 
 /** Una sola línea física que empieza con `/goal `. */

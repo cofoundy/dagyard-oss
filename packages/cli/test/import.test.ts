@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { parseProjectGraphInput } from '@dagyard/model';
+import { withLang } from '../src/i18n.js';
 import { buildImport, MAX_STAGES, projectNameFromDir, readTasksDir, readTitles } from '../src/tasks/import.js';
 
 const dir = (repo: string) => join(__dirname, 'fixtures', repo);
@@ -14,7 +15,7 @@ const node = (r: ReturnType<typeof buildImport>, id: string) => {
 
 describe('buildImport', () => {
   it('basalt: ids slug, aristas solo entre tareas del directorio, etapas por profundidad', () => {
-    const r = buildImport(readTasksDir(dir('basalt')), { dirName: 'basalt' });
+    const r = buildImport(readTasksDir(dir('basalt')), { dirName: 'basalt', projectLang: 'es' });
     expect(r.projectId).toBe('basalt');
     expect(r.graph.name).toBe('Basalt');
     expect(r.stats.nodes).toBe(23);
@@ -60,7 +61,7 @@ describe('buildImport', () => {
   });
 
   it('pets: blockedBy, ids desconocidos avisados y no inventados', () => {
-    const r = buildImport(readTasksDir(dir('pets')), { dirName: 'pets' });
+    const r = buildImport(readTasksDir(dir('pets')), { dirName: 'pets', projectLang: 'es' });
     expect(node(r, 't-sv-01').deps).toEqual(['t-a01', 't-a02']);
     expect(node(r, 't-sv-02').deps).toEqual(['t-sv-01']);
     expect(r.warnings.join('\n')).toContain('T-ZZ-99');
@@ -72,7 +73,7 @@ describe('buildImport', () => {
       { file: 'a.md', text: '---\nid: A\nphase: verification\ndeps: [B]\n---\n# A — Probar' },
       { file: 'b.md', text: '---\nid: B\nphase: build\n---\n# B — Construir' },
     ];
-    const r = buildImport(files, { dirName: 'x' });
+    const r = buildImport(files, { dirName: 'x', projectLang: 'es' });
     expect(r.stats.stageSource).toBe('phase');
     expect(r.graph.stages).toEqual([
       { id: 'construccion', name: 'Construcción' },
@@ -87,7 +88,7 @@ describe('buildImport', () => {
       { file: 'b.md', text: '---\nid: T-2\ndeps: [T-1]\n---\n# y' },
       { file: 'c.md', text: '---\nid: T-1\n---\n# z' },
     ];
-    const r = buildImport(files, { dirName: 'x' });
+    const r = buildImport(files, { dirName: 'x', lang: 'es' });
     expect(r.stats.edges).toBe(1);
     expect(r.warnings.some((w) => w.startsWith('ciclo'))).toBe(true);
     expect(r.graph.nodes.map((n) => n.id)).toEqual(['t-1', 't-2', 't-1-2']);
@@ -98,7 +99,7 @@ describe('buildImport', () => {
       { file: 'a.md', text: '---\nid: T-1\nstatus: ready\n---\n# Base' },
       { file: 'b.md', text: '---\nid: T-2\nstatus: blocked  # ESCALATION REQUIRED\ndeps: [T-1]\n---\n# Escalada' },
     ];
-    const r = buildImport(files, {});
+    const r = buildImport(files, { lang: 'es' });
     expect(node(r, 't-2').status).toBe('pending');
     expect(r.warnings.some((w) => w.startsWith('«Escalada» pide algo a una persona; quedó Pendiente'))).toBe(true);
   });
@@ -115,7 +116,7 @@ describe('el import no le pide nada al dueño por su cuenta', () => {
   ];
 
   it('las tareas que piden algo a una persona quedan Pendiente, sin bloqueantes y con un aviso de PM', () => {
-    const r = buildImport(files, {});
+    const r = buildImport(files, { lang: 'es' });
     expect(r.graph.nodes.map((n) => n.status)).toEqual(['pending', 'pending', 'pending', 'pending']);
     expect(r.graph.blockers).toBeUndefined();
     expect(r.stats.status.blocked).toBe(0);
@@ -147,7 +148,7 @@ describe('contra el validador del modelo', () => {
       file: `t${i}.md`,
       text: `---\nid: T-${i}\ndeps: [${i ? `T-${i - 1}` : ''}]\n---\n# Paso ${i}`,
     }));
-    const r = buildImport(files, { dirName: 'cadena' });
+    const r = buildImport(files, { dirName: 'cadena', projectLang: 'es' });
     expect(r.graph.stages).toHaveLength(MAX_STAGES);
     expect(r.graph.stages!.at(-1)!.name).toBe('Al final');
     expect(node(r, 't-19').stage).toBe('al-final');
@@ -163,13 +164,23 @@ describe('etapas por profundidad con nombre humano (#21)', () => {
       file: `t${i}.md`,
       text: `---\nid: T-${i}\ndeps: [${i ? `T-${i - 1}` : ''}]\n---\n# Paso ${i}`,
     }));
-  const names = (n: number) => buildImport(chain(n), {}).graph.stages!.map((s) => s.name);
+  const names = (n: number, projectLang: 'en' | 'es' = 'es') => buildImport(chain(n), { projectLang }).graph.stages!.map((s) => s.name);
 
   it('la primera es «Para empezar», la última «Al final», las del medio en orden', () => {
     expect(names(1)).toEqual(['Para empezar']);
     expect(names(2)).toEqual(['Para empezar', 'Al final']);
     expect(names(4)).toEqual(['Para empezar', 'Después', 'Luego', 'Al final']);
     expect(names(5)).toEqual(['Para empezar', 'Después', 'Luego', 'Más adelante', 'Al final']);
+  });
+
+  it('en inglés: «Getting started», «Finally» y las del medio con nombre propio, sin repetir', () => {
+    expect(names(1, 'en')).toEqual(['Getting started']);
+    expect(names(4, 'en')).toEqual(['Getting started', 'Next', 'Then', 'Finally']);
+    const all = names(20, 'en');
+    expect(all).toHaveLength(MAX_STAGES);
+    expect(all.at(-1)).toBe('Finally');
+    expect(new Set(all).size).toBe(MAX_STAGES);
+    expect(all.join(' ')).not.toMatch(/Stage|\d/);
   });
 });
 
@@ -271,8 +282,9 @@ describe('buildImport con titles (#30)', () => {
   });
 
   it('ids desconocidos, títulos vacíos, no-texto o largos solo avisan y no abortan', () => {
-    const plain = buildImport(files(), { dirName: 'basalt' });
+    const plain = buildImport(files(), { dirName: 'basalt', lang: 'es' });
     const r = buildImport(files(), {
+      lang: 'es',
       dirName: 'basalt',
       titles: { 'no-existe': 'Algo', l1: 'x'.repeat(121), l2: '   ', l3: 42, 't-599': 'Avisos más claros' },
     });
@@ -290,7 +302,7 @@ describe('buildImport con titles (#30)', () => {
 
   it('120 caracteres exactos (con tildes) entra; dos claves a la misma tarea avisan y gana la última', () => {
     const exact = 'á'.repeat(120);
-    const r = buildImport(files(), { dirName: 'basalt', titles: { l1: exact, 'T-599': 'Uno', 't-599': 'Dos' } });
+    const r = buildImport(files(), { dirName: 'basalt', lang: 'es', titles: { l1: exact, 'T-599': 'Uno', 't-599': 'Dos' } });
     expect(node(r, 'l1').title).toBe(exact);
     expect(node(r, 't-599').title).toBe('Dos');
     expect(r.warnings.some((w) => w.includes('misma tarea'))).toBe(true);
@@ -298,7 +310,7 @@ describe('buildImport con titles (#30)', () => {
 });
 
 describe('readTitles', () => {
-  it('acepta JSON en línea o un archivo, y rechaza lo que no es un objeto', () => {
+  it('acepta JSON en línea o un archivo, y rechaza lo que no es un objeto', () => withLang('es', () => {
     expect(readTitles('{"l1":"Hola"}')).toEqual({ l1: 'Hola' });
     const f = join(mkdtempSync(join(tmpdir(), 'dagyard-titles-')), 't.json');
     writeFileSync(f, '{"l2":"Chau"}');
@@ -307,5 +319,68 @@ describe('readTitles', () => {
     expect(() => readTitles(join(tmpdir(), 'no-existe-dagyard.json'))).toThrow(/ni un archivo/);
     writeFileSync(f, '["a"]');
     expect(() => readTitles(f)).toThrow(/objeto/);
+  }));
+
+  it('sin idioma fijado, los errores salen en inglés', () => {
+    expect(() => readTitles(join(tmpdir(), 'no-existe-dagyard.json'))).toThrow(/neither a JSON object nor a file/);
+  });
+});
+
+describe('buildImport: idioma de los avisos (#73)', () => {
+  const cycle = () => [
+    { file: 'a.md', text: '---\nid: T-1\ndeps: [T-2]\n---\n# x' },
+    { file: 'b.md', text: '---\nid: T-2\ndeps: [T-1]\n---\n# y' },
+  ];
+
+  it('inglés por defecto, español con lang: es; el grafo es el mismo', () => {
+    const en = buildImport(cycle(), { dirName: 'x' });
+    const es = buildImport(cycle(), { dirName: 'x', lang: 'es' });
+    expect(en.warnings.some((w) => w.startsWith('loop: removed the dependency'))).toBe(true);
+    expect(es.warnings.some((w) => w.startsWith('ciclo: se quitó la dependencia'))).toBe(true);
+    expect(en.graph).toEqual(es.graph);
+  });
+
+  it('dentro de withLang toma el idioma vigente', () => {
+    const r = withLang('es', () => buildImport(cycle(), { dirName: 'x' }));
+    expect(r.warnings.some((w) => w.startsWith('ciclo'))).toBe(true);
+  });
+});
+
+describe('buildImport: idioma de los datos = el del proyecto (#77)', () => {
+  const phased = [
+    { file: 'a.md', text: '---\nid: A\nphase: verification\ndeps: [B]\n---\n# A — Probar' },
+    { file: 'b.md', text: '---\nid: B\nphase: build\n---\n# B — Construir' },
+  ];
+
+  it('un proyecto nuevo sin más: etapas, misión y lang en inglés', () => {
+    const r = buildImport(readTasksDir(dir('basalt')), { dirName: 'basalt' });
+    expect(r.graph.lang).toBe('en');
+    expect(r.graph.stages?.map((s) => s.name)).toEqual(['Getting started', 'Finally']);
+    expect(node(r, 'l1').stage).toBe('getting-started');
+    expect(node(r, 'l1').goal).toMatch(/ — follow \.cofoundy\/tasks\/L1-shared-cart-backend\.md and meet its acceptance criteria$/);
+    const p = buildImport(phased, { dirName: 'x' });
+    // mismos ids que en español: solo cambia el nombre
+    expect(p.graph.stages).toEqual([
+      { id: 'construccion', name: 'Build' },
+      { id: 'pruebas', name: 'Testing' },
+    ]);
+    expect(parseProjectGraphInput(r.graph).ok).toBe(true);
+  });
+
+  it('un proyecto en español recibe etapas y misión en español aunque los avisos vayan en inglés', () => {
+    const r = withLang('en', () => buildImport(readTasksDir(dir('basalt')), { dirName: 'basalt', projectLang: 'es' }));
+    expect(r.graph.lang).toBe('es');
+    expect(r.graph.stages?.map((s) => s.name)).toEqual(['Para empezar', 'Al final']);
+    expect(node(r, 'l1').goal).toMatch(/ — sigue \.cofoundy\/tasks\/L1-shared-cart-backend\.md y cumple su aceptación$/);
+    expect(buildImport(phased, { dirName: 'x', projectLang: 'es' }).graph.stages![0]).toEqual({ id: 'construccion', name: 'Construcción' });
+    const warned = withLang('en', () => buildImport(phased.concat(phased), { projectLang: 'es' }));
+    expect(warned.warnings[0]).toMatch(/is repeated/);
+  });
+
+  it('el idioma de los avisos (LANG) no cambia los datos', () => {
+    const en = withLang('en', () => buildImport(readTasksDir(dir('pets')), { dirName: 'pets' }));
+    const es = withLang('es', () => buildImport(readTasksDir(dir('pets')), { dirName: 'pets' }));
+    expect(es.graph).toEqual(en.graph);
+    expect(es.graph.lang).toBe('en');
   });
 });

@@ -2,6 +2,7 @@ import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { UsageError } from './args.js';
+import { t } from './i18n.js';
 
 export interface Config {
   url: string | null;
@@ -40,9 +41,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, cwd: string = p
     if (isTrustedUrl(repo.url, env)) repoUrl = repo.url;
     else {
       const warn = opts.warn ?? ((m: string) => process.stderr.write(m));
+      const trustFile = join(configDir(env), 'trusted-urls');
       warn(
-        `dagyard: ignoro la url de ${repo.path} («${repo.url}»): no es https o su origen no es de confianza. ` +
-          `Si es tuya, agrégala a ${join(configDir(env), 'trusted-urls')}.\n`,
+        t(
+          `dagyard: ignoring the url in ${repo.path} («${repo.url}»): it is not https or its origin is not trusted. ` +
+            `If it is yours, add it to ${trustFile}.\n`,
+          `dagyard: ignoro la url de ${repo.path} («${repo.url}»): no es https o su origen no es de confianza. ` +
+            `Si es tuya, agrégala a ${trustFile}.\n`,
+        ),
       );
     }
   }
@@ -131,16 +137,22 @@ function readRepoConfig(cwd: string, home: string): { path: string; project: str
   try {
     data = JSON.parse(readFileSync(path, 'utf8'));
   } catch (err) {
-    throw new UsageError(`${path} no es JSON válido (${err instanceof Error ? err.message : String(err)}); debe ser {"project": "…", "url": "…"}`);
+    const why = err instanceof Error ? err.message : String(err);
+    throw new UsageError(
+      t(
+        `${path} is not valid JSON (${why}); it must be {"project": "…", "url": "…"}`,
+        `${path} no es JSON válido (${why}); debe ser {"project": "…", "url": "…"}`,
+      ),
+    );
   }
   if (!data || typeof data !== 'object' || Array.isArray(data)) {
-    throw new UsageError(`${path} debe ser un objeto {"project": "…", "url": "…"}`);
+    throw new UsageError(t(`${path} must be an object {"project": "…", "url": "…"}`, `${path} debe ser un objeto {"project": "…", "url": "…"}`));
   }
   const o = data as Record<string, unknown>;
   const field = (k: 'project' | 'url'): string | null => {
     const v = o[k];
     if (v === undefined || v === null) return null;
-    if (typeof v !== 'string') throw new UsageError(`${path}: "${k}" debe ser texto`);
+    if (typeof v !== 'string') throw new UsageError(t(`${path}: "${k}" must be text`, `${path}: "${k}" debe ser texto`));
     return v.trim() || null;
   };
   return { path, project: field('project'), url: field('url') };

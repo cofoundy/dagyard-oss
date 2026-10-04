@@ -14,7 +14,9 @@ import type {
   ServerFrame as WireServerFrame,
   Stage as WireStage,
 } from '@dagyard/model';
+import { REVIEW_OPTIONS } from '@dagyard/model';
 import type { Blocker, DagEvent, DagNode, Edge, Message, ProjectSummary, Resolution, Snapshot, Stage } from './types';
+import { t } from '../i18n';
 
 export type {
   WireBlocker,
@@ -55,17 +57,40 @@ export function toEdge(e: WireEdge): Edge {
   return { from: e.from, to: e.to };
 }
 
-/** Resumen legible de una resolución. Nunca incluye el valor de un acceso. */
+/**
+ * Las opciones que el servidor pone a una revisión que no trae las suyas, en el idioma del proyecto (`REVIEW_OPTIONS`
+ * de `@dagyard/model`, #77). Son datos del cable, no texto de la interfaz: la UI las reconoce en cualquiera de los
+ * dos idiomas y las pinta en el suyo (`reviewLabels`). Esta es la de un proyecto guardado sin idioma.
+ */
+export const DEFAULT_REVIEW_OPTIONS: readonly [string, string] = ['Aprobar', 'Pedir cambios'];
+
+/** ¿Son las opciones por defecto de una revisión, en cualquier idioma? */
+export function isDefaultReviewOptions(options: readonly string[]): boolean {
+  return Object.values(REVIEW_OPTIONS).some((d) => options.length === d.length && options.every((o, i) => o === d[i]));
+}
+
+/** Quién resolvió un pedido: centinelas sin texto; la UI los traduce al pintar. Otro valor es un nombre, tal cual. */
+export const RESOLVED_BY_YOU = 'you';
+export const RESOLVED_BY_AGENT = 'agent';
+/** El centinela de antes de #73; el fixture ya usa `RESOLVED_BY_YOU` (#83). Queda por datos viejos. */
+const LEGACY_YOU = 'Tú';
+
+export function isResolvedByYou(by: string | undefined): boolean {
+  return by === RESOLVED_BY_YOU || by === LEGACY_YOU;
+}
+
+/** Resumen legible de una resolución, en el idioma actual. Nunca incluye el valor de un acceso. */
 export function resolutionSummary(b: Pick<WireBlocker, 'kind' | 'options' | 'resolution'>): string {
   const r = b.resolution;
   if (!r) return '';
-  if (b.kind === 'access') return 'Acceso entregado';
+  if (b.kind === 'access') return t('resolution.access');
   if (b.kind === 'review') {
-    const approved = r.choice !== null && r.choice === (b.options[0] ?? 'Aprobar');
-    if (approved) return r.note ? `Aprobado · ${r.note}` : 'Aprobado';
-    return r.note ? `Pediste cambios: ${r.note}` : 'Pediste cambios';
+    const approved = r.choice !== null && r.choice === (b.options[0] ?? DEFAULT_REVIEW_OPTIONS[0]);
+    if (approved) return r.note ? t('resolution.approvedNote', { note: r.note }) : t('resolution.approved');
+    return r.note ? t('resolution.changesNote', { note: r.note }) : t('resolution.changes');
   }
-  return r.choice ? `«${r.choice}»${r.note ? ` · ${r.note}` : ''}` : 'Decidido';
+  if (!r.choice) return t('resolution.decided');
+  return r.note ? t('resolution.choiceNote', { choice: r.choice, note: r.note }) : t('resolution.choice', { choice: r.choice });
 }
 
 export function toBlocker(b: WireBlocker): Blocker {
@@ -75,10 +100,10 @@ export function toBlocker(b: WireBlocker): Blocker {
     nodeId: b.nodeId,
     kind: b.kind,
     question: b.question,
-    options: b.kind === 'access' ? [] : b.options.length ? b.options : b.kind === 'review' ? ['Aprobar', 'Pedir cambios'] : [],
+    options: b.kind === 'access' ? [] : b.options.length ? b.options : b.kind === 'review' ? [...DEFAULT_REVIEW_OPTIONS] : [],
     label: b.kind === 'access' ? opt(b.accessLabel) : undefined,
     resolution: resolved ? resolutionSummary(b) : undefined,
-    resolvedBy: resolved ? (b.resolvedBy === 'agent' ? 'Un agente' : 'Tú') : undefined,
+    resolvedBy: resolved ? (b.resolvedBy === 'agent' ? RESOLVED_BY_AGENT : RESOLVED_BY_YOU) : undefined,
     resolvedAt: resolved ? opt(b.resolvedAt) ?? new Date(0).toISOString() : undefined,
   };
 }

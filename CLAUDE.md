@@ -1,7 +1,7 @@
 # Dagyard — reglas del repo
 
 - Lee primero `docs/spec/v0.md` y la intención en `~/cofoundy/plugins/cofoundy-orchestrator/docs/intent/2026-10-03-panel-dag-de-la-fabrica.md` (§1 verbatim manda).
-- Público: PMs. La UI no muestra jerga técnica; español peruano con tildes (tuteo, nunca voseo).
+- Público: PMs. La UI no muestra jerga técnica. Idioma: inglés por defecto y español si el sistema está en español (web: `navigator.languages`; CLI y mod: `LC_ALL`/`LC_MESSAGES`/`LANG`). Todo texto visible pasa por el catálogo en/es (web: `apps/web/src/i18n/`); el español va con tildes y tuteo, nunca voseo. Lo que escribe un usuario no se traduce (intención §1 Mensaje 8, #73).
 - La referencia visual es `design/preview-constelacion.html`: igual de pulido o mejor. Anti-referencias: `design/2026-10-03-anti-ref-*.png`.
 - Stack: Cloudflare Worker + D1 + Durable Objects, Vite + React + three.js, pnpm. Receta de deploy: `~/cofoundy/products/basalt`.
 - Gates por exit code: `pnpm typecheck`, `pnpm test`, `pnpm build`. Nunca commitees tokens; el token de dueño vive en `~/.config/dagyard/owner-token`.

@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 300" width="1100" height="300" role="img" aria-label="Tus agentes → Dagyard ← Tú">
+<defs>
+<marker id="mffb347" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#ffb347"/></marker><marker id="m7cc4ff" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#7cc4ff"/></marker>
+<radialGradient id="bg" cx="50%" cy="50%" r="65%"><stop offset="0" stop-color="#132036"/><stop offset="1" stop-color="#04060b"/></radialGradient>
+<radialGradient id="glow" cx="50%" cy="50%" r="50%"><stop offset="0" stop-color="#9fd3ff" stop-opacity=".55"/><stop offset="1" stop-color="#9fd3ff" stop-opacity="0"/></radialGradient>
+</defs>
+<rect width="1100" height="300" rx="18" fill="url(#bg)"/>
+<circle cx="42" cy="34" r="1.1" fill="#d6deea" opacity=".45"/><circle cx="160" cy="270" r="1" fill="#d6deea" opacity=".45"/><circle cx="330" cy="46" r="0.9" fill="#d6deea" opacity=".45"/><circle cx="420" cy="262" r="1.2" fill="#d6deea" opacity=".45"/><circle cx="690" cy="40" r="1" fill="#d6deea" opacity=".45"/><circle cx="760" cy="262" r="0.9" fill="#d6deea" opacity=".45"/><circle cx="905" cy="30" r="1.2" fill="#d6deea" opacity=".45"/><circle cx="1060" cy="268" r="1" fill="#d6deea" opacity=".45"/><circle cx="612" cy="280" r="0.8" fill="#d6deea" opacity=".45"/><circle cx="250" cy="140" r="0.7" fill="#d6deea" opacity=".45"/><circle cx="860" cy="150" r="0.7" fill="#d6deea" opacity=".45"/>
+<rect x="30" y="70" width="270" height="160" rx="14" fill="#0d1420" stroke="#2b3546"/>
+<text x="165" y="122" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="18" font-weight="650" fill="#e8edf5">Tus agentes</text>
+<text x="165" y="148" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="13" font-weight="400" fill="#8b98ad">Claude Code, scripts, CI</text>
+<rect x="58" y="172" width="214" height="30" rx="15" fill="#121c2c" stroke="#2b3a52"/>
+<text x="165" y="192" text-anchor="middle" font-family="'SF Mono',SFMono-Regular,Menlo,Consolas,monospace" font-size="11.5" font-weight="400" fill="#7cc4ff">CLI dagyard · canal MCP</text>
+<circle cx="550" cy="142" r="70" fill="url(#glow)"/>
+<circle cx="550" cy="142" r="62" fill="#0a1220" stroke="#3a5a86"/>
+<circle cx="550" cy="128" r="4.5" fill="#fff"/>
+<text x="550" y="156" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="19" font-weight="700" fill="#f4f7fb">Dagyard</text>
+<text x="550" y="236" text-anchor="middle" font-family="'SF Mono',SFMono-Regular,Menlo,Consolas,monospace" font-size="12" font-weight="400" fill="#8b98ad">un solo Worker de Cloudflare</text>
+<text x="550" y="254" text-anchor="middle" font-family="'SF Mono',SFMono-Regular,Menlo,Consolas,monospace" font-size="12" font-weight="400" fill="#8b98ad">el plan como grafo vivo</text>
+<rect x="800" y="70" width="270" height="160" rx="14" fill="#171208" stroke="#6b5326"/>
+<text x="935" y="112" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="18" font-weight="650" fill="#e8edf5">Tú</text>
+<text x="935" y="136" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif" font-size="13" font-weight="400" fill="#8b98ad">casi siempre el PM</text>
+<text x="935" y="172" text-anchor="middle" font-family="'SF Mono',SFMono-Regular,Menlo,Consolas,monospace" font-size="12" font-weight="400" fill="#7cc4ff">◆ el cielo en tu navegador</text>
+<text x="935" y="196" text-anchor="middle" font-family="'SF Mono',SFMono-Regular,Menlo,Consolas,monospace" font-size="12" font-weight="400" fill="#7cc4ff">▍ una banda en Claude Code</text>
+<line x1="304" y1="124" x2="484" y2="124" stroke="#ffb347" stroke-width="1.6" marker-end="url(#mffb347)"/><text x="394.0" y="112" text-anchor="middle" font-family="'SF Mono',SFMono-Regular,Menlo,Consolas,monospace" font-size="11.5" font-weight="400" fill="#ffb347">tareas, avance, preguntas</text>
+<line x1="484" y1="168" x2="304" y2="168" stroke="#7cc4ff" stroke-width="1.6" marker-end="url(#m7cc4ff)"/><text x="394.0" y="190" text-anchor="middle" font-family="'SF Mono',SFMono-Regular,Menlo,Consolas,monospace" font-size="11.5" font-weight="400" fill="#7cc4ff">tus respuestas, en vivo</text>
+<line x1="616" y1="124" x2="796" y2="124" stroke="#7cc4ff" stroke-width="1.6" marker-end="url(#m7cc4ff)"/><text x="706.0" y="112" text-anchor="middle" font-family="'SF Mono',SFMono-Regular,Menlo,Consolas,monospace" font-size="11.5" font-weight="400" fill="#7cc4ff">lo que te espera, en vivo</text>
+<line x1="796" y1="168" x2="616" y2="168" stroke="#ffb347" stroke-width="1.6" marker-end="url(#mffb347)"/><text x="706.0" y="190" text-anchor="middle" font-family="'SF Mono',SFMono-Regular,Menlo,Consolas,monospace" font-size="11.5" font-weight="400" fill="#ffb347">lo que decides o apruebas</text>
+</svg>

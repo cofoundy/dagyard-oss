@@ -30,6 +30,8 @@ interface Call {
 let calls: Call[];
 let projectExists: boolean;
 let stages: Stage[];
+/** idioma del proyecto del mock; undefined = guardado antes del campo (#77) */
+let projectLang: 'en' | 'es' | undefined;
 let nodes: Map<string, DagNode>;
 let edges: Edge[];
 let blockers: Blocker[];
@@ -83,7 +85,7 @@ const fakeFetch: typeof fetch = async (input, init) => {
   if (!projectExists) return err(404, 'not_found', `El proyecto «${pid}» no existe`);
   if (method === 'GET' && !kind) {
     return json(200, {
-      project: { id: pid, name: 'Dagyard', stages, createdAt: AT, updatedAt: AT },
+      project: { id: pid, name: 'Dagyard', stages, ...(projectLang ? { lang: projectLang } : {}), createdAt: AT, updatedAt: AT },
       nodes: [...nodes.values()],
       edges,
       blockers,
@@ -168,6 +170,7 @@ function issue(n: number, title: string, extra: Partial<GhIssue> = {}): GhIssue 
 beforeEach(() => {
   calls = [];
   projectExists = true;
+  projectLang = undefined;
   stages = [
     { id: 'diseno', name: 'Diseño' },
     { id: 'construccion', name: 'Construcción' },
@@ -187,6 +190,7 @@ async function sync(extra: string[] = [], env: Record<string, string> = {}) {
     stdout: (s) => (stdout += s),
     stderr: (s) => (stderr += s),
     env: {
+      LANG: 'es_PE.UTF-8',
       DAGYARD_URL: URL_BASE,
       DAGYARD_KEY: KEY,
       DAGYARD_PROJECT: 'dagyard',
@@ -285,6 +289,91 @@ describe('sync: nodos nuevos', () => {
   });
 });
 
+describe('sync: idioma del proyecto (#77)', () => {
+  const projectWrites = () => calls.filter((c) => c.method !== 'GET' && !c.path.includes('/nodes') && !c.path.includes('/edges'));
+
+  it('un proyecto en es con LANG=en_US: la tarea nueva va a «Construcción» y no aparece ninguna etapa nueva', async () => {
+    projectLang = 'es';
+    const before = structuredClone(stages);
+    ghIssues = [issue(1, 'Pagos')];
+    const r = await sync([], { LANG: 'en_US.UTF-8' });
+    expect(r.code).toBe(EXIT.ok);
+    expect(nodes.get('gh-1')?.stage).toBe('construccion');
+    expect(stages).toEqual(before);
+    expect(projectWrites()).toEqual([]);
+    expect(r.stdout).toContain('Synced 1 issues');
+  });
+
+  it('un proyecto en en con LANG=es: va a «Build»', async () => {
+    projectLang = 'en';
+    stages = [{ id: 'design', name: 'Design' }, { id: 'build', name: 'Build' }];
+    ghIssues = [issue(1, 'Pagos')];
+    await sync();
+    expect(nodes.get('gh-1')?.stage).toBe('build');
+  });
+
+  it('reconoce la etapa por id o por nombre en cualquier idioma: nunca duplica', async () => {
+    projectLang = 'es';
+    for (const wanted of ['build', 'Build', 'construccion', 'Construcción']) {
+      nodes = new Map();
+      calls = [];
+      ghIssues = [issue(1, 'Pagos')];
+      const r = await sync(['--stage', wanted], { LANG: 'en_US.UTF-8' });
+      expect(r.code, wanted).toBe(EXIT.ok);
+      expect(nodes.get('gh-1')?.stage, wanted).toBe('construccion');
+      expect(projectWrites(), wanted).toEqual([]);
+    }
+    projectLang = 'en';
+    stages = [{ id: 'design', name: 'Design' }, { id: 'build', name: 'Build' }];
+    for (const [wanted, id] of [['Construcción', 'build'], ['diseno', 'design'], ['Diseño', 'design']] as const) {
+      nodes = new Map();
+      ghIssues = [issue(1, 'Pagos')];
+      await sync(['--stage', wanted]);
+      expect(nodes.get('gh-1')?.stage, wanted).toBe(id);
+    }
+    expect(stages.map((s) => s.id)).toEqual(['design', 'build']);
+  });
+
+  it('la demo en inglés (ids en español, nombres en inglés) también: va a «Build»', async () => {
+    projectLang = 'en';
+    stages = [{ id: 'diseno', name: 'Design' }, { id: 'construccion', name: 'Build' }];
+    ghIssues = [issue(1, 'Pagos'), issue(2, 'Pantalla')];
+    await sync(['--stage', 'build']);
+    expect(nodes.get('gh-1')?.stage).toBe('construccion');
+  });
+
+  it('si la etapa existe con el nombre exacto, gana a la del otro idioma', async () => {
+    projectLang = 'en';
+    stages = [{ id: 'construccion', name: 'Construcción' }, { id: 'build', name: 'Build' }];
+    ghIssues = [issue(1, 'Pagos')];
+    await sync(['--stage', 'construccion']);
+    expect(nodes.get('gh-1')?.stage).toBe('construccion');
+    nodes = new Map();
+    await sync();
+    expect(nodes.get('gh-1')?.stage).toBe('build');
+  });
+
+  it('founder-input sin opciones en el cuerpo: Yes / No en un proyecto en en, Sí / No en uno en es', async () => {
+    projectLang = 'en';
+    ghIssues = [issue(5, '¿Cobramos en dólares?', { labels: ['founder-input'] })];
+    await sync();
+    expect(calls.find((c) => c.path.endsWith('/blockers'))?.body).toMatchObject({ options: ['Yes', 'No'] });
+
+    projectLang = 'es';
+    nodes = new Map();
+    blockers = [];
+    calls = [];
+    await sync([], { LANG: 'en_US.UTF-8' });
+    expect(calls.find((c) => c.path.endsWith('/blockers'))?.body).toMatchObject({ options: ['Sí', 'No'] });
+  });
+
+  it('un proyecto guardado sin idioma se trata como español', async () => {
+    ghIssues = [issue(5, '¿Cobramos en dólares?', { labels: ['founder-input'] })];
+    await sync([], { LANG: 'en_US.UTF-8' });
+    expect(calls.find((c) => c.path.endsWith('/blockers'))?.body).toMatchObject({ options: ['Sí', 'No'] });
+  });
+});
+
 describe('sync: épicas', () => {
   it('un issue con la etiqueta epic no crea nodo ni aristas hacia él, y no cuenta', async () => {
     ghIssues = [issue(44, 'epic: dogfood', { labels: ['epic'] }), issue(45, 'Parte uno', { body: 'Parte de #44.' })];
@@ -380,7 +469,7 @@ describe('sync: nodos que ya existen (los cura la fábrica)', () => {
     const code = await run(['sync', '--github', 'cofoundy/dagyard'], {
       stdout: (s) => (stdout += s),
       stderr: () => {},
-      env: { DAGYARD_URL: URL_BASE, DAGYARD_KEY: KEY, DAGYARD_PROJECT: 'dagyard', DAGYARD_CONFIG_DIR: mkdtempSync(join(tmpdir(), 'c-')) },
+      env: { LANG: 'es_PE.UTF-8', DAGYARD_URL: URL_BASE, DAGYARD_KEY: KEY, DAGYARD_PROJECT: 'dagyard', DAGYARD_CONFIG_DIR: mkdtempSync(join(tmpdir(), 'c-')) },
       cwd: mkdtempSync(join(tmpdir(), 'w-')),
       fetch: racing,
       github: fakeSource,
@@ -598,7 +687,7 @@ describe('sync: errores de uso', () => {
     const code = await run(['sync'], {
       stdout: () => {},
       stderr: (s) => (out += s),
-      env: { DAGYARD_URL: URL_BASE, DAGYARD_KEY: KEY, DAGYARD_PROJECT: 'dagyard' },
+      env: { LANG: 'es_PE.UTF-8', DAGYARD_URL: URL_BASE, DAGYARD_KEY: KEY, DAGYARD_PROJECT: 'dagyard' },
       cwd: mkdtempSync(join(tmpdir(), 'w-')),
       fetch: fakeFetch,
       github: fakeSource,

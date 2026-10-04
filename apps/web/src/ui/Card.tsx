@@ -4,7 +4,21 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { Blocker, DagNode, Resolution, Snapshot } from '../data/types';
 import { dependentsOf, depsOf, messagesOf, openBlockerOf, resolvedBlockersOf, stageIndex } from '../data/view';
-import { ago, BLOCK_TEXT, COPY, reportLabel, stageLabel, STATUS_CLASS, STATUS_TEXT, teamName } from './copy';
+import { isResolvedByYou, RESOLVED_BY_AGENT } from '../data/adapter';
+import { useLang } from '../i18n';
+import {
+  ago,
+  answeredBy,
+  ANSWER_VERB,
+  BLOCK_TEXT,
+  COPY,
+  reportLabel,
+  reviewLabels,
+  stageLabel,
+  STATUS_CLASS,
+  STATUS_TEXT,
+  teamName,
+} from './copy';
 
 export interface CardProps {
   snapshot: Snapshot;
@@ -15,6 +29,7 @@ export interface CardProps {
 }
 
 export function Card({ snapshot, node, onClose, onFocus, onResolve }: CardProps) {
+  useLang();
   // La ficha conserva la última tarea mientras se desvanece al cerrarse.
   const [shown, setShown] = useState<DagNode | undefined>(node);
   useEffect(() => {
@@ -146,18 +161,14 @@ function CardBody({ snapshot, node, onClose, onFocus, onResolve }: CardProps & {
   );
 }
 
-const ANSWER_VERB: Record<Blocker['kind'], string> = {
-  decision: 'Decidiste',
-  review: 'Revisaste',
-  access: 'Entregaste un acceso',
-};
-
 function Answer({ blocker }: { blocker: Blocker }) {
-  const who = blocker.resolvedBy && blocker.resolvedBy !== 'Tú' ? blocker.resolvedBy : null;
+  const by = blocker.resolvedBy;
+  // `resolvedBy` es un centinela (tú, un agente) o un nombre que se muestra tal cual.
+  const who = !by || isResolvedByYou(by) ? null : by === RESOLVED_BY_AGENT ? COPY.agent : by;
   return (
     <div className="answer">
       <span className="lab">
-        {who ? `${who} respondió` : ANSWER_VERB[blocker.kind]}
+        {who ? answeredBy(who) : ANSWER_VERB[blocker.kind]}
         {blocker.resolvedAt ? ` · ${ago(blocker.resolvedAt)}` : ''}
       </span>
       <p className="q">{blocker.kind === 'access' && blocker.label ? blocker.label : blocker.question}</p>
@@ -209,6 +220,7 @@ function BlockerPanel({ blocker, onResolve }: { blocker: Blocker; onResolve: Car
     void send({ kind: 'review', verdict: 'changes', comment: comment.trim() || undefined }, 'changes');
   }
 
+  const [approveLabel, changesLabel] = reviewLabels(blocker.options);
   const fieldId = `acc-${blocker.id}`;
   const areaId = `chg-${blocker.id}`;
 
@@ -237,10 +249,10 @@ function BlockerPanel({ blocker, onResolve }: { blocker: Blocker; onResolve: Car
         (!changes ? (
           <div className="opts">
             <button type="button" className="go" disabled={sending} onClick={() => void send({ kind: 'review', verdict: 'approve' }, 'approve')}>
-              {sending && phase.what === 'approve' ? COPY.sending : (blocker.options[0] ?? COPY.approve)}
+              {sending && phase.what === 'approve' ? COPY.sending : approveLabel}
             </button>
             <button type="button" className="go ghost" disabled={sending} onClick={() => setChanges(true)}>
-              {blocker.options[1] ?? COPY.requestChanges}
+              {changesLabel}
             </button>
           </div>
         ) : (
@@ -266,7 +278,7 @@ function BlockerPanel({ blocker, onResolve }: { blocker: Blocker; onResolve: Car
 
       {blocker.kind === 'access' && (
         <form className="opts" onSubmit={submitAccess}>
-          <label htmlFor={fieldId}>{blocker.label ?? 'Acceso'}</label>
+          <label htmlFor={fieldId}>{blocker.label ?? COPY.access}</label>
           <input
             id={fieldId}
             ref={inputRef}

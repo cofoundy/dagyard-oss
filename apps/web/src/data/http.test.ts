@@ -3,6 +3,10 @@ import { toBlocker, toResolveInput, toSnapshot, type WireBlocker, type WireEvent
 import { HttpApi } from './http';
 import { ApiError } from './session';
 import { UnauthorizedError, type DagEvent } from './types';
+import { setLang } from '../i18n';
+
+// estos tests leen la interfaz en español; jsdom diría en-US (#73)
+beforeEach(() => setLang('es'));
 
 /* ------------------------------------------------------------------ dobles */
 
@@ -17,7 +21,7 @@ const wblocker = (extra: Partial<WireBlocker> = {}): WireBlocker => ({
   resolvedAt: null, createdAt: T, ...extra,
 });
 const wsnap = (): WireSnapshot => ({
-  project: { id: 'p', name: 'Marketplace de reservas', stages: [{ id: 'diseno', name: 'Diseño' }], createdAt: T, updatedAt: T },
+  project: { id: 'p', name: 'Marketplace de reservas', lang: 'es', stages: [{ id: 'diseno', name: 'Diseño' }], createdAt: T, updatedAt: T },
   nodes: [wnode('modelo-de-comisiones')],
   edges: [],
   blockers: [wblocker()],
@@ -90,7 +94,7 @@ describe('adapter', () => {
     expect(toBlocker(wblocker({ ...resolved, kind: 'review', options: ['Aprobar', 'Pedir cambios'], resolution: { choice: 'Aprobar', note: null, hasValue: false } })).resolution).toBe('Aprobado');
     expect(toBlocker(wblocker({ ...resolved, kind: 'review', options: ['Aprobar', 'Pedir cambios'], resolution: { choice: 'Pedir cambios', note: 'Más grande', hasValue: false } })).resolution).toBe('Pediste cambios: Más grande');
     const acc = toBlocker(wblocker({ ...resolved, kind: 'access', options: [], accessLabel: 'Clave de la pasarela', resolution: { choice: null, note: null, hasValue: true } }));
-    expect(acc).toMatchObject({ resolution: 'Acceso entregado', label: 'Clave de la pasarela', resolvedBy: 'Tú', options: [] });
+    expect(acc).toMatchObject({ resolution: 'Acceso entregado', label: 'Clave de la pasarela', resolvedBy: 'you', options: [] });
     expect(toBlocker(wblocker()).resolvedAt).toBeUndefined();
   });
 
@@ -200,6 +204,20 @@ describe('HttpApi', () => {
     ws.frame({ type: 'event', event: ev(901, 'project.replaced', { project: { id: 'p', name: 'X', stages: [] } }) });
     expect(onResync).toHaveBeenCalledTimes(2);
     expect(events).toHaveLength(0);
+  });
+
+  it('cambiar de idioma pide recargar el plan (los resúmenes salen en el idioma nuevo), solo mientras está suscrito', async () => {
+    const { api } = make({});
+    const onResync = vi.fn();
+    const stop = api.subscribe('p', 0, { onEvent: () => {}, onResync });
+    await vi.advanceTimersByTimeAsync(0);
+    setLang('en');
+    expect(onResync).toHaveBeenCalledTimes(1);
+    setLang('en');
+    expect(onResync).toHaveBeenCalledTimes(1);
+    stop();
+    setLang('es');
+    expect(onResync).toHaveBeenCalledTimes(1);
   });
 
   it('tras cerrarse un socket vivo, el primer reintento sale sin espera y los siguientes esperan', async () => {

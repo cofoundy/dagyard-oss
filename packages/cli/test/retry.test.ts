@@ -124,7 +124,7 @@ describe('reintentos del cliente (#54)', () => {
       cwd: mkdtempSync(join(tmpdir(), 'dagyard-cwd-')),
       stdout: () => {},
       stderr: (x) => (stderr += x),
-      env: { DAGYARD_URL: 'https://d.dev', DAGYARD_KEY: 'k', DAGYARD_PROJECT: 'demo', DAGYARD_CONFIG_DIR: mkdtempSync(join(tmpdir(), 'dagyard-cfg-')) },
+      env: { LANG: 'es_PE.UTF-8', DAGYARD_URL: 'https://d.dev', DAGYARD_KEY: 'k', DAGYARD_PROJECT: 'demo', DAGYARD_CONFIG_DIR: mkdtempSync(join(tmpdir(), 'dagyard-cfg-')) },
       fetch: s.fetch as unknown as typeof globalThis.fetch,
       sleep: async () => {},
     });

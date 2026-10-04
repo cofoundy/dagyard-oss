@@ -1,0 +1,9 @@
+{
+  "name": "dagyard-readme-capture",
+  "private": true,
+  "type": "module",
+  "description": "Re-records the README media (see README.md). Not part of the pnpm workspace.",
+  "dependencies": {
+    "playwright-core": "^1.63.0"
+  }
+}

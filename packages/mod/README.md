@@ -46,6 +46,12 @@ nada lo dice, es `https://dagyard.cofoundy-dev.workers.dev`.
 Las claves salen de `~/.config/dagyard/agent-key` (leer y tomar tareas) y `owner-token` (responder lo
 que te espera). Nunca se imprimen.
 
+## Idioma
+
+Habla inglés; español si el entorno de Claude Code lo pide (`LC_ALL` > `LC_MESSAGES` > `LANG`, con el
+mismo criterio que el CLI). Lo que escribe una persona (títulos, preguntas, opciones) no se traduce, y
+los atajos de teclado son los mismos en los dos idiomas.
+
 ## Desarrollo
 
 ```bash

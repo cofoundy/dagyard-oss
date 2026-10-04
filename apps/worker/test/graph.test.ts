@@ -93,7 +93,7 @@ describe('next y aristas', () => {
 describe('nodos y mensajes', () => {
   it('reglas de estado al escribir un nodo', async () => {
     const pid = uniquePid();
-    await json(await api('/api/projects', { method: 'POST', body: { id: pid, name: 'Prueba' } }), 201);
+    await json(await api('/api/projects', { method: 'POST', body: { id: pid, name: 'Prueba', lang: 'es' } }), 201);
     await json(await api('/api/projects', { method: 'POST', body: { id: pid, name: 'Prueba' } }), 409);
 
     const a = await json<DagNode>(await api(`/api/projects/${pid}/nodes`, { method: 'POST', body: { stage: 'diseno', title: 'Diseño del pago' } }), 201);

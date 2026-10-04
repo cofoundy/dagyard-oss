@@ -3,6 +3,10 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { DagNode, Snapshot } from '../data/types';
 import { Card } from './Card';
+import { setLang } from '../i18n';
+
+// estos tests leen la interfaz en español; jsdom diría en-US (#73)
+beforeEach(() => setLang('es'));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 

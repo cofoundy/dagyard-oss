@@ -9,6 +9,10 @@ import { FixtureApi } from '../data/fixture';
 import { App } from './App';
 import { readLink, writeLink } from './link';
 import { initialProject } from './Workspace';
+import { setLang } from '../i18n';
+
+// estos tests leen la interfaz en español; jsdom diría en-US (#73)
+beforeEach(() => setLang('es'));
 
 const scene = vi.hoisted(() => ({ opts: null as CreateSkyOptions | null, calls: [] as Array<[string, unknown[]]> }));
 vi.mock('../scene', () => ({
@@ -117,6 +121,37 @@ describe('el enlace', () => {
     expect(initialProject(list, null, 'ya-no-existe')).toBe(DEMO);
     expect(initialProject(list, 'dagyard', null)).toBe('dagyard');
   });
+
+  // #74: sin enlace ni elección, la demo en el idioma del PM; el enlace y lo recordado siguen ganando
+  it('sin enlace ni elección abre la demo del idioma: en → booking-marketplace, es → marketplace-reservas', () => {
+    const list = [
+      { id: 'dagyard', name: 'Dagyard' },
+      { id: DEMO, name: 'Marketplace de reservas' },
+      { id: 'booking-marketplace', name: 'Booking marketplace' },
+    ];
+    expect(initialProject(list, null, null, 'en')).toBe('booking-marketplace');
+    expect(initialProject(list, null, null, 'es')).toBe(DEMO);
+    expect(initialProject(list, 'ya-no-existe', null, 'en')).toBe('booking-marketplace');
+    for (const l of ['en', 'es'] as const) {
+      expect(initialProject(list, 'dagyard', null, l)).toBe('dagyard');
+      expect(initialProject(list, DEMO, 'dagyard', l)).toBe('dagyard');
+    }
+    expect(initialProject(list, DEMO, null, 'en')).toBe(DEMO);
+    // si falta la demo de su idioma, la otra antes que un proyecto cualquiera
+    expect(initialProject(list.slice(0, 2), null, null, 'en')).toBe(DEMO);
+    expect(initialProject([list[0]!, list[2]!], null, null, 'es')).toBe('booking-marketplace');
+  });
+
+  it('sin idioma explícito usa el de la UI', () => {
+    const list = [
+      { id: DEMO, name: 'Marketplace de reservas' },
+      { id: 'booking-marketplace', name: 'Booking marketplace' },
+    ];
+    setLang('es');
+    expect(initialProject(list, null)).toBe(DEMO);
+    setLang('en');
+    expect(initialProject(list, null)).toBe('booking-marketplace');
+  });
 });
 
 describe('abrir un enlace', () => {
@@ -196,15 +231,15 @@ describe('la URL sigue a lo que miras', () => {
     await until(() => text().includes('Descubrimiento') && !!scene.opts, 'carga la demo');
     expect(params()).toEqual({ debug: '1', p: DEMO });
 
-    act(() => scene.opts!.handlers.onPick('pagos-con-tarjeta'));
+    act(() => scene.opts!.handlers.onPick('pagos'));
     await until(() => card() === 'Pagos con tarjeta', 'abre la ficha');
-    expect(params()).toEqual({ debug: '1', p: DEMO, n: 'pagos-con-tarjeta' });
+    expect(params()).toEqual({ debug: '1', p: DEMO, n: 'pagos' });
 
     act(() => scene.opts!.handlers.onPick(null));
     await until(() => card() === null, 'cierra la ficha');
     expect(params()).toEqual({ debug: '1', p: DEMO });
 
-    act(() => scene.opts!.handlers.onPick('pagos-con-tarjeta'));
+    act(() => scene.opts!.handlers.onPick('pagos'));
     click(host.querySelector('.proj')!);
     click([...host.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Renovación del sitio web')!);
     await until(() => project() === 'Renovación del sitio web', 'cambia de proyecto');

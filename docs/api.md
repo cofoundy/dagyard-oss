@@ -104,13 +104,21 @@ Sin auth: solo `GET /api/health` → `200 {"ok": true, "version": "<sha corto>"}
 | Método y ruta | Body | Respuesta |
 |---|---|---|
 | `GET /api/projects` | — | `{"projects": ProjectSummary[]}` (con conteos por estado y bloqueantes abiertos) |
-| `POST /api/projects` | `ProjectInput` (`name`, `id?`, `stages?`) | `201 Project`. Sin `stages` usa las 5 por defecto |
+| `POST /api/projects` | `ProjectInput` (`name`, `id?`, `lang?`, `stages?`) | `201 Project`. Sin `lang`, `en`; sin `stages` usa las 5 por defecto con su nombre en ese idioma (los ids son los mismos en los dos: `descubrimiento`, `diseno`, `construccion`, `pruebas`, `lanzamiento`) |
 | `GET /api/projects/:pid` | — | `ProjectSnapshot` (ver abajo) |
 | `PUT /api/projects/:pid` | `ProjectGraphInput` | `200 ProjectSnapshot`. Crea el proyecto o **reemplaza** el grafo entero (idempotente). Lo usan la semilla (con el token del dueño) y `dagyard import`. Con `If-None-Match: *` solo crea: `409` si el proyecto ya existe, sin tocarlo. Si quien llama es `agent` conserva los bloqueantes, los mensajes y la antigüedad de las tareas (ver abajo) y responde `409` si el grafo nuevo quita una tarea que tiene alguno. Emite `project.replaced` |
-| `PATCH /api/projects/:pid` | `{"name"?, "stages"?}` | `200 Project`. Emite `project.updated` |
+| `PATCH /api/projects/:pid` | `{"name"?, "lang"?, "stages"?}` | `200 Project`. Emite `project.updated` |
 | `DELETE /api/projects/:pid` | — | `204`. Solo `owner` |
 | `GET /api/projects/:pid/next` | — | `NextResult`: `{"node": DagNode \| null, "goalLine": "/goal …" \| null}` |
-| `GET /api/projects/:pid/events?since=<seq>` | — | `{"events": DagEvent[]}` con `seq > since`, máx. 500 (recuperación sin WebSocket) |
+| `GET /api/projects/:pid/events?since=<seq>` | — | `{"events": DagEvent[]}` con `seq > since`, máx. 500 (recuperación sin WebSocket). Si `since` está bajo el piso de eventos (la demo los poda), `{"events": [], "resync": true}`: vuelve a pedir el snapshot |
+
+**Idioma del proyecto (#77).** `Project.lang` (`en` | `es`) es el idioma de lo que se escribe solo: las
+etapas por defecto, las misiones y etapas de `dagyard import`, las opciones por defecto de una revisión y
+de `dagyard sync`, y los mensajes que firma el servidor. Lo fija el proyecto, nunca el `LANG` de quien lo
+toca. Un proyecto nuevo nace en `en` (POST o PUT sin `lang`); un `PUT` sin `lang` sobre uno existente
+conserva el suyo. Un proyecto guardado antes del campo (`dagyard`, las demos sembradas antes) se lee `es`
+(la demo inglesa, `en`) y nadie lo reescribe: cambia solo si un POST, PUT o PATCH manda `lang`. El idioma
+cambia los nombres de las etapas por defecto, nunca sus ids.
 
 `ProjectSnapshot` = `{ project, nodes, edges, blockers, messages, seq }`: nodos, aristas y bloqueantes
 completos (abiertos y resueltos, sin valores de acceso), los últimos 200 mensajes en orden cronológico y
@@ -125,7 +133,7 @@ bloqueante del body igual a uno conservado **abierto** (misma tarea, `kind`, `qu
 entra como bloqueante nuevo y abierto (re-preguntar nunca se descarta en silencio), y la respuesta anterior
 se conserva al lado. Si el grafo nuevo quita una tarea que tiene algún bloqueante, `409` y no se toca nada.
 Ese mismo `PUT` conserva tal cual (id, firma y fecha) los mensajes de las tareas que siguen, incluido el
-«Gracias. Sigo desde donde me quedé.» de cada respuesta, y el `createdAt` de cada tarea que ya existía, así
+mensaje del sistema de cada respuesta, y el `createdAt` de cada tarea que ya existía, así
 `next` no cambia de orden al re-importar. También conserva el `link` de cada tarea que ya existía cuando el body
 no trae la clave (un import no la manda); `"link": null` explícito sí lo borra. Un mensaje del body igual a uno conservado (misma tarea, `from`,
 `text` y `reportUrl`; sin `from`, basta tarea, `text` y `reportUrl`, porque la firma sale del equipo
@@ -185,12 +193,13 @@ Tipos de bloqueante (`BlockerInput`):
 | `kind` | UI | Body al abrir | Body al resolver |
 |---|---|---|---|
 | `decision` | Necesita tu decisión | `question`, `options` (1 a 6) | `{"choice": <índice o texto exacto>, "note"?}` |
-| `review` | Necesita tu revisión | `question`, `options?` (default `["Aprobar", "Pedir cambios"]`) | igual que `decision` |
+| `review` | Necesita tu revisión | `question`, `options?` (default en el idioma del proyecto: `["Approve", "Request changes"]` o `["Aprobar", "Pedir cambios"]`) | igual que `decision` |
 | `access` | Necesita un acceso | `question`, `accessLabel` (p. ej. «Clave de la pasarela de pagos»), sin `options` | `{"value": "<el secreto>", "note"?}` |
 
 Al resolver: el bloqueante queda `status: "resolved"` con `resolution = {choice, note, hasValue}`,
 `resolvedBy: "owner"` y `resolvedAt`; el nodo vuelve a `working` y el servidor agrega un mensaje del
-sistema («Gracias. Sigo desde donde me quedé.») solo si el nodo no tiene otro bloqueante abierto.
+sistema en el idioma del proyecto («Thanks. Picking up where I left off.» / «Gracias. Sigo desde donde me
+quedé.») solo si el nodo no tiene otro bloqueante abierto.
 
 `wait` responde apenas el bloqueante se resuelve, o al vencer el `timeout` con el bloqueante todavía
 `open` (el CLI vuelve a llamar). `BlockerWaitResult = {blocker, value}`; `value` es el secreto
@@ -202,7 +211,8 @@ descifrado **solo** si `kind = access`, está resuelto y el rol es `agent`. Para
 |---|---|---|
 | `POST /api/projects/:pid/nodes/:nid/messages` | `MessageInput` (`text` ≤280, `from?`, `reportUrl?`) | `201 Message`. Emite `message.posted` |
 
-Sin `from`, el servidor firma `Equipo de <team del nodo>` (o `Agente` si el nodo no tiene equipo). Si el
+Sin `from`, el servidor firma en el idioma del proyecto: `<team> team` o `Agent` (`en`), `Equipo de <team>` o
+`Agente` (`es`), según el nodo tenga equipo o no. Si el
 mensaje trae `reportUrl` y el nodo no tiene uno, el nodo lo adopta (emite también `node.updated`).
 
 ## Tiempo real
@@ -238,8 +248,10 @@ evento después de esa ventana. (`4004` = el proyecto se borró.)
 ```
 
 Si mandas `since` y hay eventos más nuevos, el servidor los reenvía en orden justo después del `hello`.
-Si faltan más de 500, o si `since` es mayor que el `seq` actual (p. ej. el proyecto se borró y se volvió a
-crear), manda `resync`: vuelve a pedir el snapshot. Cliente → servidor: `{"type": "ping"}`
+Si faltan más de 500, si `since` es mayor que el `seq` actual (p. ej. el proyecto se borró y se volvió a
+crear) o si `since` está bajo el piso de eventos, manda `resync`: vuelve a pedir el snapshot. El piso solo sube en
+las dos demos (#74): al volver a empezar, se borran sus eventos hasta `seq − 500`; un proyecto que no es demo nunca
+pierde eventos. Cliente → servidor: `{"type": "ping"}`
 (o el texto `ping`) cuando quieras; el servidor contesta `pong`.
 
 **Eventos** (`DagEvent`, cada uno con `seq` monotónico por proyecto, `actor` y `at`):

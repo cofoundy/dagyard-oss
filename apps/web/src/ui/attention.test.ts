@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { marketplaceSnapshot } from '../data/fixture';
 import { reduce } from '../data/reduce';
 import type { Blocker, DagEvent } from '../data/types';
@@ -20,6 +20,10 @@ import {
   showNotice,
   tabTitle,
 } from './attention';
+import { setLang } from '../i18n';
+
+// estos tests leen la interfaz en español; jsdom diría en-US (#73)
+beforeEach(() => setLang('es'));
 
 /** Un `Notification` de mentira que registra lo que se le pide. */
 function fakeNotification(permission: NotificationPermission, ask: NotificationPermission = 'granted') {
@@ -87,8 +91,8 @@ describe('favicon', () => {
 });
 
 describe('pedido nuevo', () => {
-  const snap = marketplaceSnapshot(0);
-  const fresh: Blocker = { id: 'b_nuevo', nodeId: 'avisos-por-whatsapp', kind: 'review', question: '¿Va?', options: ['Aprobar', 'Pedir cambios'] };
+  const snap = marketplaceSnapshot(0, 'es');
+  const fresh: Blocker = { id: 'b_nuevo', nodeId: 'whatsapp', kind: 'review', question: '¿Va?', options: ['Aprobar', 'Pedir cambios'] };
   const ev = (blocker: Blocker): DagEvent => ({ seq: snap.seq + 1, type: 'blocker.opened', blocker });
 
   it('solo cuenta un blocker.opened de un bloqueante que no estaba', () => {
@@ -105,7 +109,7 @@ describe('pedido nuevo', () => {
   });
 
   it('otros eventos, tareas que no existen o pedidos ya resueltos no avisan', () => {
-    const msg: DagEvent = { seq: snap.seq + 1, type: 'message.posted', message: { id: 'm_x', nodeId: 'pagos-con-tarjeta', from: 'Agente', text: 'Hola', at: '' } };
+    const msg: DagEvent = { seq: snap.seq + 1, type: 'message.posted', message: { id: 'm_x', nodeId: 'pagos', from: 'Agente', text: 'Hola', at: '' } };
     expect(newlyOpened(snap, reduce(snap, msg), msg)).toBeNull();
     const ghost = ev({ ...fresh, nodeId: 'no-existe' });
     expect(newlyOpened(snap, reduce(snap, ghost), ghost)).toBeNull();
@@ -125,7 +129,7 @@ describe('¿la estás mirando?', () => {
 });
 
 describe('aviso del navegador', () => {
-  const notice = { blockerId: 'b_1', nodeId: 'modelo-de-comisiones', taskTitle: 'Modelo de comisiones', kind: 'decision' as const, projectName: 'Marketplace de reservas' };
+  const notice = { blockerId: 'b_1', nodeId: 'comision', taskTitle: 'Modelo de comisiones', kind: 'decision' as const, projectName: 'Marketplace de reservas' };
 
   it('sin la API del navegador no hace nada', () => {
     vi.stubGlobal('Notification', undefined);
@@ -158,7 +162,7 @@ describe('aviso del navegador', () => {
     expect(shown[0]!.options?.body).toBe('Necesita tu decisión · Marketplace de reservas');
     shown[0]!.onclick!(new Event('click'));
     expect(focus).toHaveBeenCalled();
-    expect(opened).toEqual(['modelo-de-comisiones']);
+    expect(opened).toEqual(['comision']);
     expect(shown[0]!.closed).toBe(true);
   });
 

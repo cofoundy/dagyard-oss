@@ -6,8 +6,14 @@
  * Un `ApiFailure` lanzado aquí revierte la transacción entera (no queda ni la escritura ni sus eventos).
  */
 import {
-  DEFAULT_STAGES,
+  DEFAULT_LANG,
+  REVIEW_OPTIONS,
+  defaultStages,
   LIMITS,
+  demoLang,
+  demoProject,
+  demoPulse,
+  demoSignature,
   slugify,
   wouldCreateCycle,
   type Blocker,
@@ -16,12 +22,15 @@ import {
   type DagEventType,
   type DagNode,
   type Edge,
+  type Lang,
   type Message,
   type MessageInput,
   type NodeInput,
   type NodePatch,
   type Project,
   type ProjectGraphInput,
+  type PulseState,
+  type PulseStep,
   type Role,
   type Stage,
   type StageInput,
@@ -35,10 +44,10 @@ export type EventSpec = { [K in DagEventType]: { type: K; payload: Extract<DagEv
 
 /** Lo que el Worker le pide al Store. Todo viene ya validado en forma por `@dagyard/model`. */
 export type WriteOp =
-  | { kind: 'createProject'; pid: string; name: string; stages?: StageInput[] }
+  | { kind: 'createProject'; pid: string; name: string; lang?: Lang; stages?: StageInput[] }
   /** `exclusive` (`If-None-Match: *`): solo crea; si el proyecto ya existe, `409` sin tocarlo */
   | { kind: 'replaceGraph'; pid: string; graph: ProjectGraphInput; actor: Role; exclusive?: boolean }
-  | { kind: 'patchProject'; pid: string; name?: string; stages?: StageInput[]; actor: Role }
+  | { kind: 'patchProject'; pid: string; name?: string; lang?: Lang; stages?: StageInput[]; actor: Role }
   | { kind: 'deleteProject'; pid: string }
   | { kind: 'addNode'; pid: string; input: NodeInput; actor: Role }
   | { kind: 'patchNode'; pid: string; nid: string; patch: NodePatch; actor: Role }
@@ -57,7 +66,14 @@ export type WriteOp =
       /** valor del acceso ya cifrado (AES-GCM, AAD = pid/bid) o null */
       sealed: string | null;
     }
-  | { kind: 'postMessage'; pid: string; nid: string; input: MessageInput; actor: Role };
+  | { kind: 'postMessage'; pid: string; nid: string; input: MessageInput; actor: Role }
+  /** un latido del pulso de la demo (#74): decide y aplica UN paso en la misma transacción. Solo ids demo */
+  | { kind: 'demoBeat'; pid: string }
+  /**
+   * la demo vuelve a empezar: replaceGraph del dueño y poda de eventos hasta `max seq − keep` (keep ≥ 1). Solo ids
+   * demo, y solo si sigue sin nada que avanzar (si no, `false` sin escribir)
+   */
+  | { kind: 'demoReseed'; pid: string; keep: number };
 
 export interface WriteValues {
   createProject: Project;
@@ -72,6 +88,8 @@ export interface WriteValues {
   openBlocker: Blocker;
   resolveBlocker: Blocker;
   postMessage: Message;
+  demoBeat: PulseStep;
+  demoReseed: boolean;
 }
 
 export type WriteResult =
@@ -79,9 +97,25 @@ export type WriteResult =
   | { ok: false; error: { code: Parameters<typeof fail>[0]; message: string } };
 
 const RESUME_TEXT = 'Gracias. Sigo desde donde me quedé.';
-const signature = (n: Pick<DagNode, 'team'>) => (n.team ? `Equipo de ${n.team}` : 'Agente');
-const toStages = (input: StageInput[] | undefined): Stage[] =>
-  (input ?? DEFAULT_STAGES).map((s) => ({ id: s.id ?? slugify(s.name), name: s.name }));
+const RESUME_TEXT_EN = 'Thanks. Picking up where I left off.';
+/** Firma de un mensaje sin `from`, en el idioma del proyecto (#77). */
+const signature = (n: Pick<DagNode, 'team'>, lang: Lang) =>
+  lang === 'en' ? (n.team ? `${n.team} team` : 'Agent') : n.team ? `Equipo de ${n.team}` : 'Agente';
+const NOT_DEMO = 'El pulso es solo de la demo';
+
+/** Lo que el pulso necesita del grafo vigente, leído dentro de la transacción. */
+function pulseState(tx: Tx, pid: string): PulseState {
+  return {
+    nodes: tx.all('SELECT * FROM nodes WHERE project_id = ? ORDER BY created_at, rowid', pid).map(toNode),
+    edges: tx.edges(pid),
+    blockers: tx.all('SELECT node_id, status FROM blockers WHERE project_id = ?', pid).map((r) => ({
+      nodeId: r.node_id as string,
+      status: r.status as Blocker['status'],
+    })),
+  };
+}
+const toStages = (input: StageInput[] | undefined, lang: Lang): Stage[] =>
+  (input ?? defaultStages(lang)).map((s) => ({ id: s.id ?? slugify(s.name), name: s.name }));
 
 type V = string | number | null;
 
@@ -177,13 +211,18 @@ class Tx {
   }
 
   emit(pid: string, actor: Role, ...specs: EventSpec[]): void {
+    this.append(pid, actor, specs, true);
+  }
+
+  /** Como `emit`; con `touch` en false no sube `projects.updated_at` (el latido de la demo no la sube en la lista). */
+  append(pid: string, actor: Role, specs: EventSpec[], touch: boolean): void {
     let seq = Number(this.one('SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE project_id = ?', pid)!.seq);
     for (const e of specs) {
       seq++;
       this.all('INSERT INTO events (project_id, seq, type, actor, at, payload) VALUES (?, ?, ?, ?, ?, ?)', pid, seq, e.type, actor, this.now, JSON.stringify(e.payload));
       this.events.push({ seq, projectId: pid, actor, at: this.now, ...e } as DagEvent);
     }
-    this.all('UPDATE projects SET updated_at = ? WHERE id = ?', this.now, pid);
+    if (touch) this.all('UPDATE projects SET updated_at = ? WHERE id = ?', this.now, pid);
   }
 }
 
@@ -206,6 +245,10 @@ function newNode(pid: string, input: NodeInput, stages: Stage[], now: string, at
     updatedAt: now,
   };
 }
+
+/** Una revisión sin opciones recibe las del idioma del proyecto (#77). */
+const withDefaultOptions = <B extends BlockerInput>(b: B, lang: Lang): B =>
+  b.kind === 'review' && !b.options?.length ? { ...b, options: [...REVIEW_OPTIONS[lang]] } : b;
 
 function newBlocker(pid: string, nodeId: string, input: BlockerInput, now: string): Blocker {
   return {
@@ -239,10 +282,13 @@ const blockerKey = (nodeId: unknown, kind: unknown, question: unknown, options: 
 const messageKey = (nodeId: unknown, text: unknown, reportUrl: unknown) => JSON.stringify([nodeId, text, reportUrl ?? null]);
 
 const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>) => WriteValues[K] } = {
-  createProject(tx, { pid, name, stages }) {
+  createProject(tx, { pid, name, lang = DEFAULT_LANG, stages }) {
     if (tx.one('SELECT 1 FROM projects WHERE id = ?', pid)) fail('conflict', `Ya existe un proyecto «${pid}»`);
-    const project: Project = { id: pid, name, stages: toStages(stages), createdAt: tx.now, updatedAt: tx.now };
-    tx.all('INSERT INTO projects (id, name, stages, created_at, updated_at) VALUES (?, ?, ?, ?, ?)', pid, name, JSON.stringify(project.stages), tx.now, tx.now);
+    const project: Project = { id: pid, name, lang, stages: toStages(stages, lang), createdAt: tx.now, updatedAt: tx.now };
+    tx.all(
+      'INSERT INTO projects (id, name, lang, stages, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+      pid, name, lang, JSON.stringify(project.stages), tx.now, tx.now,
+    );
     return project;
   },
 
@@ -250,7 +296,11 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
     const prevRow = tx.one('SELECT * FROM projects WHERE id = ?', pid);
     if (prevRow && exclusive) fail('conflict', `Ya existe un proyecto «${pid}»; no lo piso`);
     const prev = prevRow ? toProject(prevRow) : null;
-    const stages = g.stages ? toStages(g.stages) : (prev?.stages ?? toStages(undefined));
+    // sin `lang`, uno existente conserva el suyo tal cual está guardado (NULL incluido) y uno nuevo nace en inglés
+    const langCol = g.lang ?? (prevRow ? ((prevRow.lang as Lang | null) ?? null) : DEFAULT_LANG);
+    const lang = langCol ?? prev!.lang;
+    const stages = g.stages ? toStages(g.stages, lang) : (prev?.stages ?? toStages(undefined, lang));
+    const graphBlockers = (g.blockers ?? []).map((b) => withDefaultOptions(b, lang));
     // el PUT de un agente sobre un proyecto existente conserva lo que no le toca reescribir; el dueño recrea todo
     const keep = prev !== null && actor !== 'owner';
     const nodes = g.nodes.map((n, i) => newNode(pid, n, stages, tx.now, `nodes[${i}].`));
@@ -283,13 +333,13 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
     // entra como nueva: re-preguntar nunca se descarta en silencio
     const keptOpen = kept.filter((b) => b.status === 'open');
     const openKeys = new Set(keptOpen.map((b) => blockerKey(b.node_id, b.kind, b.question, b.options as string, b.access_label)));
-    const fresh = (g.blockers ?? []).filter(
+    const fresh = graphBlockers.filter(
       (b) => !openKeys.has(blockerKey(b.nodeId, b.kind, b.question, JSON.stringify(b.options ?? []), b.accessLabel)),
     );
     const answeredKeys = new Set(
       kept.filter((b) => b.status === 'resolved').map((b) => blockerKey(b.node_id, b.kind, b.question, b.options as string, b.access_label)),
     );
-    const blockedBy = new Set([...(g.blockers ?? []).map((b) => b.nodeId), ...keptOpen.map((b) => b.node_id as string)]);
+    const blockedBy = new Set([...graphBlockers.map((b) => b.nodeId), ...keptOpen.map((b) => b.node_id as string)]);
     nodes.forEach((node, i) => {
       if (node.status === 'blocked' && !blockedBy.has(node.id))
         fail('invalid', `nodes[${i}].status: «blocked» lo pone un bloqueante; agrégalo en blockers`);
@@ -307,11 +357,11 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
       if (blockedBy.has(node.id)) node.status = 'blocked';
     });
     const edges: Edge[] = g.nodes.flatMap((n, i) => [...new Set(n.deps ?? [])].map((d) => ({ projectId: pid, from: d, to: nodes[i]!.id })));
-    const project: Project = { id: pid, name: g.name, stages, createdAt: prev?.createdAt ?? tx.now, updatedAt: tx.now };
+    const project: Project = { id: pid, name: g.name, lang, stages, createdAt: prev?.createdAt ?? tx.now, updatedAt: tx.now };
     tx.all(
-      `INSERT INTO projects (id, name, stages, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
-       ON CONFLICT (id) DO UPDATE SET name = excluded.name, stages = excluded.stages, updated_at = excluded.updated_at`,
-      pid, project.name, JSON.stringify(stages), project.createdAt, tx.now,
+      `INSERT INTO projects (id, name, lang, stages, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT (id) DO UPDATE SET name = excluded.name, lang = excluded.lang, stages = excluded.stages, updated_at = excluded.updated_at`,
+      pid, project.name, langCol, JSON.stringify(stages), project.createdAt, tx.now,
     );
     tx.clearGraph(pid);
     for (const n of nodes) tx.insertNode(n);
@@ -340,23 +390,24 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
       });
     body.forEach((m, i) => {
       if (claimed.has(i)) return;
-      const from = m.from ?? signature(byId.get(m.nodeId)!);
+      const from = m.from ?? signature(byId.get(m.nodeId)!, lang);
       tx.insertMessage({ id: randomId('m_'), projectId: pid, nodeId: m.nodeId, from, text: m.text, reportUrl: m.reportUrl ?? null, createdAt: tx.now });
     });
     tx.emit(pid, actor, { type: 'project.replaced', payload: { project } });
     return null;
   },
 
-  patchProject(tx, { pid, name, stages: stageInput, actor }) {
+  patchProject(tx, { pid, name, lang, stages: stageInput, actor }) {
     const prev = tx.project(pid);
-    const stages = stageInput ? toStages(stageInput) : prev.stages;
+    const stages = stageInput ? toStages(stageInput, lang ?? prev.lang) : prev.stages;
     if (stageInput) {
       const ids = new Set(stages.map((s) => s.id));
       const orphan = tx.all('SELECT title, stage FROM nodes WHERE project_id = ?', pid).find((n) => !ids.has(n.stage as string));
       if (orphan) fail('invalid', `stages: la tarea «${orphan.title}» usa la etapa «${orphan.stage}»; muévela antes de quitarla`);
     }
-    const project: Project = { ...prev, name: name ?? prev.name, stages, updatedAt: tx.now };
+    const project: Project = { ...prev, name: name ?? prev.name, lang: lang ?? prev.lang, stages, updatedAt: tx.now };
     tx.all('UPDATE projects SET name = ?, stages = ? WHERE id = ?', project.name, JSON.stringify(stages), pid);
+    if (lang) tx.all('UPDATE projects SET lang = ? WHERE id = ?', lang, pid);
     tx.emit(pid, actor, { type: 'project.updated', payload: { project } });
     return project;
   },
@@ -449,9 +500,9 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
   },
 
   openBlocker(tx, { pid, nid, input, actor }) {
-    tx.project(pid);
+    const { lang } = tx.project(pid);
     tx.node(pid, nid);
-    const blocker = newBlocker(pid, nid, input, tx.now);
+    const blocker = newBlocker(pid, nid, withDefaultOptions(input, lang), tx.now);
     tx.insertBlocker(blocker);
     // solo la columna de estado: el resto del nodo queda como esté
     const node = tx.updateNode(pid, nid, { status: 'blocked' })!;
@@ -476,8 +527,19 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
     const unblocked = tx.openBlockers(pid, prev.nodeId) === 0;
     const node = tx.updateNode(pid, prev.nodeId, unblocked ? { status: 'working' } : {})!;
     // el mensaje del sistema solo cuando la tarea de verdad se destraba
+    // contesta en el idioma del proyecto (#77); la demo inglesa firma como sus equipos (#74)
+    const { lang } = tx.project(pid);
+    const en = lang === 'en';
     const message: Message | null = unblocked
-      ? { id: randomId('m_'), projectId: pid, nodeId: node.id, from: signature(node), text: RESUME_TEXT, reportUrl: null, createdAt: tx.now }
+      ? {
+          id: randomId('m_'),
+          projectId: pid,
+          nodeId: node.id,
+          from: en && demoLang(pid) === 'en' ? demoSignature('en', node.team) : signature(node, lang),
+          text: en ? RESUME_TEXT_EN : RESUME_TEXT,
+          reportUrl: null,
+          createdAt: tx.now,
+        }
       : null;
     if (message) tx.insertMessage(message);
     tx.emit(
@@ -491,13 +553,13 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
   },
 
   postMessage(tx, { pid, nid, input, actor }) {
-    tx.project(pid);
+    const { lang } = tx.project(pid);
     const node = tx.node(pid, nid);
     const message: Message = {
       id: randomId('m_'),
       projectId: pid,
       nodeId: nid,
-      from: input.from ?? signature(node),
+      from: input.from ?? signature(node, lang),
       text: input.text,
       reportUrl: input.reportUrl ?? null,
       createdAt: tx.now,
@@ -507,6 +569,59 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
     const adopted = message.reportUrl ? tx.updateNode(pid, nid, { report_url: message.reportUrl }, 'AND report_url IS NULL') : null;
     tx.emit(pid, actor, { type: 'message.posted', payload: { message } }, ...(adopted ? [{ type: 'node.updated' as const, payload: { node: adopted } }] : []));
     return message;
+  },
+
+  demoBeat(tx, { pid }) {
+    const lang = demoLang(pid) ?? fail('forbidden', NOT_DEMO);
+    tx.project(pid);
+    // se decide sobre el estado vigente: un visitante que acaba de resolver no compite con el latido
+    const step = demoPulse(pulseState(tx, pid), lang);
+    if (step.kind === 'idle') return step;
+    const cols: Parameters<Tx['updateNode']>[2] =
+      step.kind === 'start'
+        ? { status: 'working', progress: 0, team: step.team }
+        : step.kind === 'complete'
+          ? { status: 'done', progress: 1 }
+          : { progress: step.progress };
+    // la condición del estado va en el UPDATE: el pulso nunca pisa una tarea que esperaba al PM
+    const node = tx.updateNode(pid, step.nodeId, cols, `AND status = '${step.kind === 'start' ? 'pending' : 'working'}'`);
+    if (!node) return { kind: 'idle' };
+    const said = step.kind === 'start' ? null : step.message;
+    const message: Message | null = said
+      ? { id: randomId('m_'), projectId: pid, nodeId: node.id, from: said.from, text: said.text, reportUrl: null, createdAt: tx.now }
+      : null;
+    if (message) tx.insertMessage(message);
+    // latir no es actualizar el proyecto: la demo no sube en la lista solo porque late
+    tx.append(pid, 'agent', [{ type: 'node.updated', payload: { node } }, ...(message ? [{ type: 'message.posted' as const, payload: { message } }] : [])], false);
+    return step;
+  },
+
+  demoReseed(tx, { pid, keep }) {
+    const lang = demoLang(pid) ?? fail('forbidden', NOT_DEMO);
+    tx.project(pid);
+    // se vuelve a mirar aquí dentro: entre los latidos ociosos del room y esta escritura, el PM pudo resolver algo
+    if (demoPulse(pulseState(tx, pid), lang).kind !== 'idle') return false;
+    const open = tx.all("SELECT * FROM blockers WHERE project_id = ? AND status = 'open' ORDER BY rowid", pid);
+    // el dueño reemplaza el grafo sobre el mismo id: misma encarnación, así nadie que mira recibe 4004
+    ops.replaceGraph(tx, { kind: 'replaceGraph', pid, graph: demoProject(lang), actor: 'owner' });
+    // un bloqueante que seguía abierto conserva su fila y su id (el PM puede tener su ficha abierta y resolverla
+    // justo después); solo los ya resueltos vuelven como preguntas nuevas
+    const key = (b: Row) => blockerKey(b.node_id, b.kind, b.question, b.options as string, b.access_label);
+    const fresh = tx.all('SELECT * FROM blockers WHERE project_id = ? ORDER BY rowid', pid);
+    for (const old of open) {
+      const i = fresh.findIndex((b) => key(b) === key(old));
+      if (i < 0) continue;
+      tx.all('DELETE FROM blockers WHERE project_id = ? AND id = ?', pid, fresh.splice(i, 1)[0]!.id as string);
+      tx.restoreBlocker(old);
+    }
+    // keep ≥ 1: siempre queda al menos el último evento, si no el seq volvería a empezar
+    const max = Number(tx.one('SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE project_id = ?', pid)!.seq);
+    const floor = max - Math.max(1, Math.floor(keep));
+    if (floor > 0) {
+      tx.all('DELETE FROM events WHERE project_id = ? AND seq <= ?', pid, floor);
+      tx.all('UPDATE projects SET events_floor = MAX(events_floor, ?) WHERE id = ?', floor, pid);
+    }
+    return true;
   },
 };
 

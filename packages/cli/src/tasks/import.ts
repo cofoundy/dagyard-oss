@@ -1,15 +1,16 @@
 /**
  * `.cofoundy/tasks` → `ProjectGraphInput` (lo que recibe `PUT /api/projects/:id`).
  * Dependencias = `deps` ∪ `blockedBy`, solo ids que existen en el directorio. Etapas = `phase:` si
- * todas las tareas lo traen; si no, la profundidad topológica con nombre humano («Para empezar»,
- * «Después», «Luego», …, «Al final»), con tope de 12. Títulos: los de `titles` si vienen (#30); si no,
- * `legibleTitle` (D10, #21).
+ * todas las tareas lo traen; si no, la profundidad topológica con nombre humano («Getting started», «Next»,
+ * …, «Finally» o «Para empezar», «Después», …, «Al final»), con tope de 12. Títulos: los de `titles` si vienen
+ * (#30); si no, `legibleTitle` (D10, #21). Etapas, misiones y `lang` van en el idioma del proyecto (#77).
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { NodeInput, NodeStatus, ProjectGraphInput, StageInput } from '@dagyard/model';
-import { LIMITS } from '@dagyard/model';
-import { slugify } from '@dagyard/model';
+import { DEFAULT_LANG, DEFAULT_STAGES_BY_LANG, LIMITS, slugify } from '@dagyard/model';
+import { depthStageName, importGoal, PHASE_WORDS } from '../defaults.js';
+import { lang as currentLang, t as tr, withLang, type Lang } from '../i18n.js';
 import { humanize, legibleTitle, oneLine, parseTask, type ParsedTask } from './parse.js';
 
 export interface TaskFile {
@@ -51,6 +52,10 @@ export interface ImportOptions {
    * `legibleTitle`; claves desconocidas o títulos que no sirven van a `warnings`, nunca abortan.
    */
   titles?: Record<string, unknown>;
+  /** idioma de los avisos (los datos del grafo no cambian); default: el vigente (`withLang`), si no inglés */
+  lang?: Lang;
+  /** idioma de los datos (etapas, misiones, `lang` del grafo): el del proyecto; default DEFAULT_LANG (uno nuevo) */
+  projectLang?: Lang;
 }
 
 /** `parseProjectGraphInput` acepta hasta 12 etapas. */
@@ -74,11 +79,25 @@ export function projectNameFromDir(dir: string): string {
   return basename(abs);
 }
 
+/** El slug del proyecto que crea o reemplaza un import (lo necesita `dagyard import` antes de construirlo). */
+export function importProjectId(opts: Pick<ImportOptions, 'projectId' | 'dirName'>): string {
+  return slugify(opts.projectId || opts.dirName || 'proyecto');
+}
+
 export function buildImport(files: TaskFile[], opts: ImportOptions = {}): ImportResult {
+  return withLang(opts.lang ?? currentLang(), () => build(files, opts));
+}
+
+function build(files: TaskFile[], opts: ImportOptions): ImportResult {
   const warnings: string[] = [];
   const tasks = files.map((f) => parseTask(f.file, f.text));
   if (tasks.length > LIMITS.nodesPerProject) {
-    throw new Error(`son ${tasks.length} tareas; el máximo por proyecto es ${LIMITS.nodesPerProject}`);
+    throw new Error(
+      tr(
+        `there are ${tasks.length} tasks; a project holds at most ${LIMITS.nodesPerProject}`,
+        `son ${tasks.length} tareas; el máximo por proyecto es ${LIMITS.nodesPerProject}`,
+      ),
+    );
   }
 
   // ids de nodo: slug del id de la tarea, sin repetir
@@ -88,7 +107,7 @@ export function buildImport(files: TaskFile[], opts: ImportOptions = {}): Import
     const base = slugify(t.id) || slugify(t.file.replace(/\.md$/i, '')) || 'tarea';
     let id = base;
     for (let n = 2; used.has(id); n++) id = `${base.slice(0, LIMITS.slug - 3)}-${n}`;
-    if (id !== base) warnings.push(`${t.file}: el id «${t.id}» se repite; quedó como «${id}»`);
+    if (id !== base) warnings.push(tr(`${t.file}: the id «${t.id}» is repeated; it became «${id}»`, `${t.file}: el id «${t.id}» se repite; quedó como «${id}»`));
     used.add(id);
     nodeIds.push(id);
   }
@@ -113,18 +132,23 @@ export function buildImport(files: TaskFile[], opts: ImportOptions = {}): Import
         if (from !== to && !deps[to]!.includes(from)) deps[to]!.push(from);
       }
     }
-    if (unknown.size) warnings.push(`${t.file}: depende de ${[...unknown].join(', ')}, que no están en el directorio`);
+    if (unknown.size) {
+      const refs = [...unknown].join(', ');
+      warnings.push(tr(`${t.file}: depends on ${refs}, which are not in the folder`, `${t.file}: depende de ${refs}, que no están en el directorio`));
+    }
   });
 
   for (const [from, to] of breakCycles(deps)) {
     deps[to] = deps[to]!.filter((d) => d !== from);
-    warnings.push(`ciclo: se quitó la dependencia ${tasks[to]!.file} → ${tasks[from]!.file}`);
+    const edge = `${tasks[to]!.file} → ${tasks[from]!.file}`;
+    warnings.push(tr(`loop: removed the dependency ${edge}`, `ciclo: se quitó la dependencia ${edge}`));
   }
 
   const depth = longestPathDepth(deps);
   const statuses = tasks.map(effectiveStatus);
 
-  const { stages, stageOf, source } = inferStages(tasks, depth);
+  const dataLang = opts.projectLang ?? DEFAULT_LANG;
+  const { stages, stageOf, source } = inferStages(tasks, depth, dataLang);
 
   const given = opts.titles ? givenTitles(opts.titles, tasks, nodeIds, warnings) : null;
 
@@ -138,7 +162,7 @@ export function buildImport(files: TaskFile[], opts: ImportOptions = {}): Import
       status: statuses[i]!,
       progress: statuses[i] === 'done' ? 1 : 0,
       team: t.team,
-      goal: t.goal ?? oneLine(`${title} — sigue ${tasksPath}/${t.file} y cumple su aceptación`, LIMITS.goal),
+      goal: t.goal ?? oneLine(importGoal(title, `${tasksPath}/${t.file}`, dataLang), LIMITS.goal),
       deps: deps[i]!.map((d) => nodeIds[d]!),
     };
   });
@@ -149,10 +173,16 @@ export function buildImport(files: TaskFile[], opts: ImportOptions = {}): Import
   tasks.forEach((t, i) => {
     if (!asksHuman(t, deps[i]!, tasks)) return;
     askers++;
-    warnings.push(`«${nodes[i]!.title}» pide algo a una persona; quedó Pendiente. Pregúntaselo en vivo con dagyard block`);
+    const title = nodes[i]!.title;
+    warnings.push(
+      tr(
+        `«${title}» asks a person for something; it stays Pending. Ask them live with dagyard block`,
+        `«${title}» pide algo a una persona; quedó Pendiente. Pregúntaselo en vivo con dagyard block`,
+      ),
+    );
   });
 
-  const projectId = slugify(opts.projectId || opts.dirName || 'proyecto');
+  const projectId = importProjectId(opts);
   const name = oneLine(opts.name ?? humanize(opts.dirName ?? projectId), LIMITS.name);
 
   const status: Record<NodeStatus, number> = { pending: 0, working: 0, blocked: 0, done: 0 };
@@ -160,7 +190,7 @@ export function buildImport(files: TaskFile[], opts: ImportOptions = {}): Import
 
   return {
     projectId,
-    graph: { name, stages, nodes },
+    graph: { name, lang: dataLang, stages, nodes },
     stats: {
       nodes: nodes.length,
       edges: nodes.reduce((n, node) => n + (node.deps?.length ?? 0), 0),
@@ -184,17 +214,18 @@ export function readTitles(raw: string): Record<string, unknown> {
     try {
       text = readFileSync(raw, 'utf8');
     } catch {
-      throw new Error(`«${raw}» no es un objeto JSON ni un archivo que pueda leer`);
+      throw new Error(tr(`«${raw}» is neither a JSON object nor a file I can read`, `«${raw}» no es un objeto JSON ni un archivo que pueda leer`));
     }
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
   } catch (err) {
-    throw new Error(`no es JSON válido (${err instanceof Error ? err.message : String(err)})`);
+    const why = err instanceof Error ? err.message : String(err);
+    throw new Error(tr(`it is not valid JSON (${why})`, `no es JSON válido (${why})`));
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('se esperaba un objeto { "id de nodo": "título" }');
+    throw new Error(tr('expected an object { "node id": "title" }', 'se esperaba un objeto { "id de nodo": "título" }'));
   }
   return parsed as Record<string, unknown>;
 }
@@ -217,21 +248,30 @@ function givenTitles(
   for (const [key, value] of Object.entries(titles)) {
     const i = byKey.get(key) ?? byKey.get(slugify(key));
     if (i === undefined) {
-      warnings.push(`--titles: no hay ninguna tarea «${key}»; se ignoró`);
+      warnings.push(tr(`--titles: there is no task «${key}»; ignored`, `--titles: no hay ninguna tarea «${key}»; se ignoró`));
       continue;
     }
     const title = typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
-    const keep = `quedó «${legibleTitle(tasks[i]!.title, tasks[i]!.summary)}»`;
+    const fallback = legibleTitle(tasks[i]!.title, tasks[i]!.summary);
+    const keep = tr(`kept «${fallback}»`, `quedó «${fallback}»`);
     if (!title) {
-      warnings.push(`--titles: el título de «${key}» no es un texto con contenido; ${keep}`);
+      warnings.push(tr(`--titles: the title for «${key}» is not text with content; ${keep}`, `--titles: el título de «${key}» no es un texto con contenido; ${keep}`));
       continue;
     }
     const len = [...title].length;
     if (len > LIMITS.title) {
-      warnings.push(`--titles: el título de «${key}» tiene ${len} caracteres (máximo ${LIMITS.title}); ${keep}`);
+      warnings.push(
+        tr(
+          `--titles: the title for «${key}» has ${len} characters (at most ${LIMITS.title}); ${keep}`,
+          `--titles: el título de «${key}» tiene ${len} caracteres (máximo ${LIMITS.title}); ${keep}`,
+        ),
+      );
       continue;
     }
-    if (out.has(i)) warnings.push(`--titles: «${keyOf.get(i)}» y «${key}» son la misma tarea; quedó el de «${key}»`);
+    if (out.has(i)) {
+      const prev = keyOf.get(i);
+      warnings.push(tr(`--titles: «${prev}» and «${key}» are the same task; kept the one from «${key}»`, `--titles: «${prev}» y «${key}» son la misma tarea; quedó el de «${key}»`));
+    }
     out.set(i, title);
     keyOf.set(i, key);
   }
@@ -281,60 +321,33 @@ function longestPathDepth(deps: number[][]): number[] {
   return deps.map((_, i) => depthOf(i));
 }
 
-const PHASE_STAGES: Array<{ id: string; name: string; words: string[] }> = [
-  { id: 'descubrimiento', name: 'Descubrimiento', words: ['discovery', 'research', 'descubrimiento', 'spec', 'plan', 'planning'] },
-  { id: 'diseno', name: 'Diseño', words: ['design', 'diseño', 'diseno', 'ux'] },
-  { id: 'construccion', name: 'Construcción', words: ['build', 'implementation', 'implement', 'dev', 'development', 'construccion', 'construcción'] },
-  { id: 'pruebas', name: 'Pruebas', words: ['verification', 'verify', 'test', 'testing', 'qa', 'pruebas', 'review'] },
-  { id: 'lanzamiento', name: 'Lanzamiento', words: ['deploy', 'post-deploy', 'release', 'launch', 'lanzamiento', 'rollout', 'ship'] },
-];
-
 function inferStages(
   tasks: ParsedTask[],
   depth: number[],
+  lang: Lang,
 ): { stages: StageInput[]; stageOf: string[]; source: 'phase' | 'depth' } {
   const phases = new Set(tasks.map((t) => t.phase?.toLowerCase()));
   if (tasks.length > 0 && tasks.every((t) => t.phase) && phases.size <= MAX_STAGES) {
+    const known = DEFAULT_STAGES_BY_LANG[lang];
     const order: Array<{ id: string; name: string; rank: number; minDepth: number }> = [];
     const stageOf = tasks.map((t, i) => {
       const word = t.phase!.toLowerCase();
-      const known = PHASE_STAGES.findIndex((s) => s.words.includes(word));
-      const id = known >= 0 ? PHASE_STAGES[known]!.id : slugify(word) || 'etapa';
-      const name = known >= 0 ? PHASE_STAGES[known]!.name : humanize(t.phase!);
+      const k = PHASE_WORDS.findIndex((words) => words.includes(word));
+      const id = k >= 0 ? known[k]!.id : slugify(word) || 'etapa';
+      const name = k >= 0 ? known[k]!.name : humanize(t.phase!);
       const existing = order.find((s) => s.id === id);
       if (existing) existing.minDepth = Math.min(existing.minDepth, depth[i]!);
-      else order.push({ id, name, rank: known >= 0 ? known : PHASE_STAGES.length, minDepth: depth[i]! });
+      else order.push({ id, name, rank: k >= 0 ? k : PHASE_WORDS.length, minDepth: depth[i]! });
       return id;
     });
     order.sort((a, b) => a.rank - b.rank || a.minDepth - b.minDepth);
     return { stages: order.map(({ id, name }) => ({ id, name })), stageOf, source: 'phase' };
   }
-  // más de 12 niveles: los más profundos comparten «Al final»
+  // más de 12 niveles: los más profundos comparten la última
   const max = Math.min(depth.length ? Math.max(...depth) : 0, MAX_STAGES - 1);
   const stages = Array.from({ length: max + 1 }, (_, d) => {
-    const name = depthStageName(d, max);
+    const name = depthStageName(d, max, lang);
     return { id: slugify(name), name };
   });
   return { stages, stageOf: depth.map((d) => stages[Math.min(d, max)]!.id), source: 'depth' };
-}
-
-/** Etapas intermedias, en orden; alcanzan para las 10 que caben entre la primera y la última. */
-const MIDDLE_STAGES = [
-  'Después',
-  'Luego',
-  'Más adelante',
-  'Más tarde',
-  'Ya avanzado',
-  'Bien avanzado',
-  'Hacia el final',
-  'Cerca del final',
-  'Casi al final',
-  'Justo antes del final',
-];
-
-/** D10: nunca «Etapa N». La 1ª «Para empezar», la última «Al final», las del medio con nombre propio. */
-export function depthStageName(d: number, max: number): string {
-  if (d === 0) return 'Para empezar';
-  if (d === max) return 'Al final';
-  return MIDDLE_STAGES[d - 1] ?? 'Más adelante';
 }

@@ -6,6 +6,10 @@ import { FixtureApi } from '../data/fixture';
 import { measureSafeArea } from './useSafeArea';
 import { App } from './App';
 import { initialProject } from './Workspace';
+import { setLang } from '../i18n';
+
+// estos tests leen la interfaz en español; jsdom diría en-US (#73)
+beforeEach(() => setLang('es'));
 
 // La escena es de otro carril: aquí se reemplaza por un doble que registra lo que la interfaz le pide.
 const scene = vi.hoisted(() => ({ opts: null as CreateSkyOptions | null, calls: [] as Array<[string, unknown[]]> }));
@@ -107,7 +111,9 @@ describe('interfaz', () => {
   it('ningún texto contiene ids ni estados técnicos, abriendo cada ficha y con avisos en vivo', async () => {
     const api = await mountIn();
     const snap = await api.getSnapshot(P);
-    const ids = [...snap.nodes.map((n) => n.id), ...snap.blockers.map((b) => b.id), ...snap.messages.map((m) => m.id), snap.project.id];
+    // Un id de la demo que es una palabra de su propio texto («competencia») no se distingue de la prosa: se salta.
+    const prose = [snap.project.name, ...snap.stages.map((s) => s.name), ...snap.nodes.flatMap((n) => [n.title, n.goal ?? '']), ...snap.blockers.flatMap((b) => [b.question, ...b.options]), ...snap.messages.map((m) => m.text)].join(' ').toLowerCase();
+    const ids = [...snap.nodes.map((n) => n.id), ...snap.blockers.map((b) => b.id), ...snap.messages.map((m) => m.id), snap.project.id].filter((id) => !prose.includes(id));
     const seen: string[] = [readable()];
     for (const n of snap.nodes) {
       pick(n.id);
@@ -117,11 +123,11 @@ describe('interfaz', () => {
     }
     // Avisos de lo que hace la fábrica (los mismos eventos que manda el servidor).
     act(() => {
-      api.message(P, 'pagos-con-tarjeta', 'Ya conecté la pasarela. Falta probar un reembolso.');
-      api.done(P, 'buscador-con-filtros');
-      api.start(P, 'revision-de-velocidad');
-      api.addNode(P, { id: 'recuperar-contrasena', title: 'Recuperar contraseña', stageId: 'construccion', deps: ['registro-e-inicio-de-sesion'] });
-      api.block(P, 'avisos-por-whatsapp', 'review', '¿Te parece bien el texto del aviso?');
+      api.message(P, 'pagos', 'Ya conecté la pasarela. Falta probar un reembolso.');
+      api.done(P, 'buscador');
+      api.start(P, 'velocidad');
+      api.addNode(P, { id: 'recuperar-contrasena', title: 'Recuperar contraseña', stageId: 'construccion', deps: ['registro'] });
+      api.block(P, 'whatsapp', 'review', '¿Te parece bien el texto del aviso?');
     });
     await settle(2);
     seen.push(readable());
@@ -141,7 +147,7 @@ describe('interfaz', () => {
   it('resuelve los tres pedidos desde la ficha: decisión, revisión con cambios y acceso', async () => {
     await mountIn();
 
-    pick('modelo-de-comisiones');
+    pick('comision');
     await settle(1);
     expect(text()).toContain('Necesita tu decisión');
     click(button('Al proveedor (10 % por reserva)'));
@@ -149,7 +155,7 @@ describe('interfaz', () => {
     expect(text()).toContain('«Al proveedor (10 % por reserva)» · el equipo sigue');
     expect(host.querySelector('.card .chip')?.textContent).toBe('En progreso');
 
-    pick('diseno-del-pago');
+    pick('checkout-d');
     await settle(1);
     expect(text()).toContain('Necesita tu revisión');
     click(button('Pedir cambios'));
@@ -158,7 +164,7 @@ describe('interfaz', () => {
     await until(() => text().includes('Revisaste'), 'revisión registrada');
     expect(text()).toContain('Pediste cambios: Que el botón de pagar sea más visible');
 
-    pick('pagos-con-tarjeta');
+    pick('pagos');
     await settle(1);
     expect(text()).toContain('Clave de la pasarela de pagos');
     click(button('Desbloquear'));
@@ -169,15 +175,15 @@ describe('interfaz', () => {
     expect(readable()).not.toContain('sk_live_no_se_muestra');
 
     expect(text()).toContain('Nada te espera');
-    expect(scene.calls.some(([n, a]) => n === 'pulse' && a[0] === 'pagos-con-tarjeta' && a[1] === 'working')).toBe(true);
+    expect(scene.calls.some(([n, a]) => n === 'pulse' && a[0] === 'pagos' && a[1] === 'working')).toBe(true);
   });
 
   it('«te esperan» recorre lo que te toca y Escape vuelve a la vista general', async () => {
     await mountIn();
     click(button(/te esperan/));
-    expect(scene.calls.filter(([n]) => n === 'focus').at(-1)?.[1][0]).toBe('modelo-de-comisiones');
+    expect(scene.calls.filter(([n]) => n === 'focus').at(-1)?.[1][0]).toBe('comision');
     click(button(/te esperan/));
-    expect(scene.calls.filter(([n]) => n === 'focus').at(-1)?.[1][0]).toBe('diseno-del-pago');
+    expect(scene.calls.filter(([n]) => n === 'focus').at(-1)?.[1][0]).toBe('checkout-d');
     act(() => void window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })));
     expect(host.querySelector('.card.open')).toBeNull();
     expect(scene.calls.at(-1)?.[0]).toBe('overview');

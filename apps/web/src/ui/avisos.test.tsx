@@ -8,6 +8,10 @@ import { FixtureApi } from '../data/fixture';
 import type { DagEvent } from '../data/types';
 import { AMBER } from './attention';
 import { App } from './App';
+import { setLang } from '../i18n';
+
+// estos tests leen la interfaz en español; jsdom diría en-US (#73)
+beforeEach(() => setLang('es'));
 
 const scene = vi.hoisted(() => ({ opts: null as CreateSkyOptions | null, calls: [] as Array<[string, unknown[]]> }));
 vi.mock('../scene', () => ({
@@ -145,7 +149,7 @@ describe('pestaña y favicon', () => {
   it('un pedido nuevo por tiempo real sube la cuenta', async () => {
     installNotification('default');
     const api = await mount();
-    act(() => void api.block(P, 'avisos-por-whatsapp', 'review', '¿Te parece bien el texto del aviso?'));
+    act(() => void api.block(P, 'whatsapp', 'review', '¿Te parece bien el texto del aviso?'));
     await until(() => document.title === '(4) Dagyard', 'sube a 4');
     expect(favicon()).toContain(AMBER);
   });
@@ -201,7 +205,7 @@ describe('aviso del navegador', () => {
     expect(shown).toHaveLength(0);
 
     let id = '';
-    act(() => void (id = api.block(P, 'avisos-por-whatsapp', 'review', '¿Te parece bien el texto del aviso?').id));
+    act(() => void (id = api.block(P, 'whatsapp', 'review', '¿Te parece bien el texto del aviso?').id));
     await until(() => shown.length === 1, 'llega el aviso');
     expect(shown[0]!.title).toBe('Te espera: Avisos por WhatsApp');
     expect(shown[0]!.options?.tag).toBe(id);
@@ -212,10 +216,10 @@ describe('aviso del navegador', () => {
     await settle(1);
     expect(window.focus).toHaveBeenCalled();
     expect(host.querySelector('.card.open h2')?.textContent).toBe('Avisos por WhatsApp');
-    expect(scene.calls.filter(([n]) => n === 'focus').at(-1)?.[1][0]).toBe('avisos-por-whatsapp');
+    expect(scene.calls.filter(([n]) => n === 'focus').at(-1)?.[1][0]).toBe('whatsapp');
 
     // Mensajes, avances y otros eventos no avisan.
-    act(() => api.message(P, 'pagos-con-tarjeta', 'Ya conecté la pasarela.'));
+    act(() => api.message(P, 'pagos', 'Ya conecté la pasarela.'));
     await settle(2);
     expect(shown).toHaveLength(1);
   });
@@ -224,7 +228,7 @@ describe('aviso del navegador', () => {
     const { shown } = installNotification('granted');
     viewing({ hidden: false, focused: true });
     const api = await mount();
-    act(() => void api.block(P, 'avisos-por-whatsapp', 'review', '¿Te parece bien el texto del aviso?'));
+    act(() => void api.block(P, 'whatsapp', 'review', '¿Te parece bien el texto del aviso?'));
     await until(() => document.title === '(4) Dagyard', 'sube la cuenta igual');
     await settle(2);
     expect(shown).toHaveLength(0);
@@ -232,13 +236,13 @@ describe('aviso del navegador', () => {
 
     // Pestaña de fondo.
     viewing({ hidden: true, focused: false });
-    act(() => void api.block(P, 'reservas-y-calendario', 'decision', '¿Cuál?', { options: ['A', 'B'] }));
+    act(() => void api.block(P, 'reservas', 'decision', '¿Cuál?', { options: ['A', 'B'] }));
     await until(() => shown.length === 1, 'avisa con la pestaña de fondo');
     expect(shown[0]!.title).toBe('Te espera: Reservas y calendario');
 
     // Pestaña al frente pero la ventana sin foco (estás en otra app).
     viewing({ hidden: false, focused: false });
-    act(() => void api.block(P, 'panel-del-proveedor', 'decision', '¿Cuál?', { options: ['A', 'B'] }));
+    act(() => void api.block(P, 'panel', 'decision', '¿Cuál?', { options: ['A', 'B'] }));
     await until(() => shown.length === 2, 'avisa sin foco');
     expect(shown[1]!.title).toBe('Te espera: Panel del proveedor');
   });
@@ -247,7 +251,7 @@ describe('aviso del navegador', () => {
     const { shown } = installNotification('granted');
     const api = (await mount(new Flaky({ storage: null }))) as Flaky;
     api.mute = true;
-    act(() => void api.block(P, 'avisos-por-whatsapp', 'review', '¿Te parece bien el texto del aviso?'));
+    act(() => void api.block(P, 'whatsapp', 'review', '¿Te parece bien el texto del aviso?'));
     await settle(2);
     expect(document.title).toBe('(3) Dagyard');
     api.mute = false;
@@ -261,7 +265,7 @@ describe('aviso del navegador', () => {
     const { shown } = installNotification('granted');
     const api = await mount();
     let id = '';
-    act(() => void (id = api.block(P, 'avisos-por-whatsapp', 'decision', '¿Cuál?', { options: ['A', 'B'] }).id));
+    act(() => void (id = api.block(P, 'whatsapp', 'decision', '¿Cuál?', { options: ['A', 'B'] }).id));
     await until(() => shown.length === 1, 'llega el aviso');
     act(() => void api.resolveBlocker(id, { kind: 'decision', option: 'A' }));
     await until(() => shown[0]!.closed, 'se cierra');

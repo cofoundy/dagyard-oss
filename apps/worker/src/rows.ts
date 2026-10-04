@@ -1,5 +1,5 @@
 /** Filas de SQLite → tipos del contrato. */
-import type { Blocker, BlockerResolution, DagEvent, DagEventType, DagNode, Edge, Message, Project, Role } from '@dagyard/model';
+import { LANGS, LEGACY_LANG, demoLang, type Blocker, type BlockerResolution, type DagEvent, type DagEventType, type DagNode, type Edge, type Lang, type Message, type Project, type Role } from '@dagyard/model';
 import type { Row } from './db.js';
 
 const s = (v: unknown) => v as string;
@@ -8,6 +8,8 @@ const ns = (v: unknown) => (v ?? null) as string | null;
 export const toProject = (r: Row): Project => ({
   id: s(r.id),
   name: s(r.name),
+  // NULL (guardado antes de #77) → el de la demo si es una (la inglesa antes de re-sembrarla), si no español
+  lang: LANGS.includes(r.lang as Lang) ? (r.lang as Lang) : (demoLang(s(r.id)) ?? LEGACY_LANG),
   stages: JSON.parse(s(r.stages)),
   createdAt: s(r.created_at),
   updatedAt: s(r.updated_at),

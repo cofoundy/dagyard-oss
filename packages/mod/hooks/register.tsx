@@ -8,7 +8,11 @@
 // El proyecto sale del entorno, del .dagyard.json más cercano subiendo desde el cwd, o de
 // ~/.config/dagyard; sin ninguno el mod calla (instalado para todas las sesiones, no ensucia otros repos).
 // Todo cambio se ve en el cielo (la UI) en tiempo real, porque escribe en la misma API.
+// Habla inglés, o español si el entorno lo pide (LC_ALL > LC_MESSAGES > LANG, #73): ver ./i18n.
 import type { Register } from 'claude-code'
+
+import { langFromEnv, REQUEST_CHANGES, text } from './i18n'
+import type { Strings } from './i18n'
 
 import { skyLink, viewOf } from './view'
 import type { Item, Node, Snapshot, View } from './view'
@@ -34,6 +38,7 @@ let busy = false
 let lastError = ''
 let loading = false
 let commenting: string | null = null // la revisión a la que se le está escribiendo «qué cambiarías»
+let s: Strings = text('en') // los textos en el idioma del entorno; se fija en session.start
 
 async function home($: any): Promise<string> {
   const fromEnv = await $.env.get('HOME')
@@ -77,10 +82,9 @@ function notice($: any, v: View): void {
   const first = fresh[0]
   if (fresh.length === 1 && first?.kind === 'waiting') {
     const { node, blocker: b } = first
-    const what = b.kind === 'decision' ? 'tu decisión' : b.kind === 'review' ? 'tu revisión' : 'un acceso'
-    $.ui.toast(`«${node.title}» espera ${what}: ${b.question}`)
+    $.ui.toast(s.needsYou(node.title, b.kind, b.question))
   } else if (fresh.length > 1) {
-    $.ui.toast(`${fresh.length} cosas nuevas te esperan · /dagyard`)
+    $.ui.toast(s.manyNew(fresh.length))
   }
 }
 
@@ -114,7 +118,7 @@ function transient(res: { status: number; text: string } | null): boolean {
  */
 async function api($: any, path: string, method: string, body: unknown, owner: boolean): Promise<any> {
   const token = await key($, owner ? 'owner-token' : 'agent-key')
-  if (!token) throw new Error('falta la clave en ~/.config/dagyard')
+  if (!token) throw new Error(s.missingKey)
   const headers: Record<string, string> = { authorization: `Bearer ${token}`, 'user-agent': 'dagyard-mod/0.2' }
   if (body !== undefined) headers['content-type'] = 'application/json'
   if (method !== 'GET' && method !== 'HEAD') headers['idempotency-key'] = crypto.randomUUID()
@@ -155,7 +159,7 @@ async function refresh($: any): Promise<void> {
 }
 
 async function settle($: any, err: unknown): Promise<void> {
-  if (err) $.ui.toast(`Dagyard no respondió (${(err as Error).message})`)
+  if (err) $.ui.toast(s.noAnswer((err as Error).message))
   busy = false
   await refresh($)
 }
@@ -168,7 +172,7 @@ async function resolve($: any, it: Extract<Item, { kind: 'waiting' }>, choice: n
   try {
     await api($, `/api/projects/${project}/blockers/${it.blocker.id}/resolve`, 'POST', { choice, note: note || 'Desde Claude Code' }, true)
     commenting = null
-    $.ui.toast(`«${it.node.title}»: ${it.blocker.options[choice]}. El equipo sigue.`)
+    $.ui.toast(s.resolved(it.node.title, it.blocker.options[choice] ?? ''))
   } catch (e) {
     err = e
   }
@@ -183,12 +187,12 @@ async function take($: any, node: Node): Promise<void> {
   try {
     await api($, `/api/projects/${project}/nodes/${node.id}`, 'PATCH', { status: 'working', team: TEAM, progress: 0.05 }, false)
     working = node
-    $.ui.toast(`Tomaste «${node.title}». Ya brilla en azul en el cielo.`)
+    $.ui.toast(s.took(node.title))
   } catch (e) {
     err = e
   }
   await settle($, err)
-  if (!err) await $.command.run({ command: 'goal', args: node.goal ?? `Termina «${node.title}»` })
+  if (!err) await $.command.run({ command: 'goal', args: node.goal ?? s.finish(node.title) })
 }
 
 async function patchWorking($: any, node: Node, body: unknown, toast: string): Promise<void> {
@@ -215,7 +219,7 @@ async function openSky($: any, node?: string): Promise<void> {
 // persona está detrás; una espera de red antes del open lo vuelve «no pedido» (y bajo 144 columnas espera).
 async function openMenu($: any): Promise<void> {
   const opened = await $.ui.open({ id: MENU, title: 'Dagyard', focus: true, closeOnEscape: true })
-  if (!opened.isPlaced) $.ui.toast(`Dagyard: el menú no cabe aquí (${opened.reason})`)
+  if (!opened.isPlaced) $.ui.toast(s.menuDoesNotFit(opened.reason))
   void refresh($)
 }
 
@@ -239,9 +243,10 @@ export const register: Register = on => {
     const link = await linkOf($, e.cwd)
     base = ((await $.env.get('DAGYARD_URL')) || link.url || (await key($, 'url')) || URL_DEFAULT).replace(/\/+$/, '')
     project = (await $.env.get('DAGYARD_PROJECT')) || link.project || (await key($, 'project')) || null
+    s = text(langFromEnv({ LC_ALL: await $.env.get('LC_ALL'), LC_MESSAGES: await $.env.get('LC_MESSAGES'), LANG: await $.env.get('LANG') }))
     view = null
     seen = null
-    await $.command.register({ name: 'dagyard', description: 'Abre el menú de Dagyard: todo lo que te espera y lo que está para tomar' })
+    await $.command.register({ name: 'dagyard', description: s.commandDescription })
     if (project) {
       $.clock.every(POLL_MS, () => void refresh($))
       void refresh($)
@@ -252,14 +257,14 @@ export const register: Register = on => {
   on('command.run', { command: 'dagyard' }, async $ => {
     if (!project)
       return {
-        text: `Este repo no está enlazado a un proyecto de Dagyard. Agrega ${LINK_FILE} en su raíz con {"project": "<id>"} (o DAGYARD_PROJECT) y abre otra sesión.`,
+        text: s.notLinked(LINK_FILE),
       }
     await openMenu($)
     const v = view
     return {
       text: v
-        ? `${v.project}: ${v.waiting.length} te esperan, ${v.startable.length} para tomar.`
-        : `Dagyard no respondió (${lastError || 'sin detalle'}) · ${base}/api/projects/${project}`,
+        ? s.summary(v.project, v.waiting.length, v.startable.length)
+        : `${s.noAnswer(lastError || s.noDetail)} · ${base}/api/projects/${project}`,
     }
   })
 
@@ -278,7 +283,7 @@ export const register: Register = on => {
       const { Box: B, Text: T } = $.ui.resolve(e)
       return (
         <B flexDirection="column">
-          <T color={MUTED}>◆ dagyard · sin conexión con {base} ({lastError || 'cargando…'}) · /dagyard reintenta</T>
+          <T color={MUTED}>{s.offline(base, lastError || s.loading)}</T>
           {below}
         </B>
       )
@@ -291,10 +296,10 @@ export const register: Register = on => {
       <Text wrap="truncate-end">
         <Text color={BLUE}>◆ dagyard </Text>
         <Text bold>{v.project}</Text>
-        <Text color={MUTED}> · {v.done} de {v.total} listas{v.now ? ` · ahora en ${v.now}` : ''} · </Text>
-        <Text color={v.waiting.length ? AMBER : MUTED}>{v.waiting.length} te esperan</Text>
+        <Text color={MUTED}>{s.progress(v.done, v.total, v.now)} · </Text>
+        <Text color={v.waiting.length ? AMBER : MUTED}>{s.waitingCount(v.waiting.length)}</Text>
         <Text color={MUTED}> · </Text>
-        <Text color={v.startable.length ? BLUE : MUTED}>{v.startable.length} para tomar</Text>
+        <Text color={v.startable.length ? BLUE : MUTED}>{s.startableCount(v.startable.length)}</Text>
       </Text>
     )
 
@@ -306,13 +311,13 @@ export const register: Register = on => {
       body = (
         <Box flexDirection="column">
           <Text wrap="truncate-end">
-            <Text color={BLUE}>Trabajando en </Text>
+            <Text color={BLUE}>{s.workingOn}</Text>
             <Text bold>{w.title}</Text>
           </Text>
           <Box flexWrap="wrap">
-            <Button key="dy-done" label="Hecha" hotkey="h" variant="primary" onPress={() => void patchWorking($, w, { status: 'done' }, `«${w.title}» está lista.`)} />
-            <Button key="dy-release" label="Soltarla" hotkey="l" onPress={() => void patchWorking($, w, { status: 'pending', team: null, progress: 0 }, '')} />
-            <Button key="dy-open" label="Ver el cielo" hotkey="o" dimColor onPress={() => void openSky($, w.id)} />
+            <Button key="dy-done" label={s.done} hotkey="h" variant="primary" onPress={() => void patchWorking($, w, { status: 'done' }, s.isDone(w.title))} />
+            <Button key="dy-release" label={s.release} hotkey="l" onPress={() => void patchWorking($, w, { status: 'pending', team: null, progress: 0 }, '')} />
+            <Button key="dy-open" label={s.openSky} hotkey="o" dimColor onPress={() => void openSky($, w.id)} />
           </Box>
         </Box>
       )
@@ -321,14 +326,14 @@ export const register: Register = on => {
       const it = list[i]!
       const more =
         list.length > 1 ? (
-          <Button key="dy-next" label={`Otra (${i + 1}/${list.length})`} hotkey="s" dimColor onPress={() => void skip($)} />
+          <Button key="dy-next" label={s.other(i + 1, list.length)} hotkey="s" dimColor onPress={() => void skip($)} />
         ) : null
       if (it.kind === 'waiting') {
         const b = it.blocker
-        const label = b.kind === 'decision' ? 'Te espera tu decisión' : b.kind === 'review' ? 'Te espera tu revisión' : 'Te espera un acceso'
+        const label = s.waitingLabel(b.kind)
         const buttons =
           b.kind === 'access'
-            ? [<Button key="dy-sky" label="Darlo en el cielo" hotkey="o" variant="primary" onPress={() => void openSky($, it.node.id)} />]
+            ? [<Button key="dy-sky" label={s.grantInSky} hotkey="o" variant="primary" onPress={() => void openSky($, it.node.id)} />]
             : b.options.slice(0, 3).map((opt, k) => (
                 <Button key={`dy-opt-${k}`} label={opt} hotkey={String(k + 1)} variant={k === 0 ? 'primary' : undefined} onPress={() => void resolve($, it, k, '')} />
               ))
@@ -342,7 +347,7 @@ export const register: Register = on => {
             <Box flexWrap="wrap">
               {buttons}
               {more}
-              <Button key="dy-menu" label="Ver todo" hotkey="m" dimColor onPress={() => void openMenu($)} />
+              <Button key="dy-menu" label={s.seeAll} hotkey="m" dimColor onPress={() => void openMenu($)} />
             </Box>
           </Box>
         )
@@ -351,14 +356,14 @@ export const register: Register = on => {
         body = (
           <Box flexDirection="column">
             <Text wrap="truncate-end">
-              <Text color={BLUE}>Para tomar · </Text>
+              <Text color={BLUE}>{s.readyToTake}</Text>
               <Text bold>{n.title}</Text>
               {n.goal ? <Text color={MUTED}> — /goal {n.goal}</Text> : null}
             </Text>
             <Box flexWrap="wrap">
-              <Button key="dy-take" label="Trabajar en esto" hotkey="t" variant="primary" onPress={() => void take($, n)} />
+              <Button key="dy-take" label={s.workOnThis} hotkey="t" variant="primary" onPress={() => void take($, n)} />
               {more}
-              <Button key="dy-menu" label="Ver todo" hotkey="m" dimColor onPress={() => void openMenu($)} />
+              <Button key="dy-menu" label={s.seeAll} hotkey="m" dimColor onPress={() => void openMenu($)} />
             </Box>
           </Box>
         )
@@ -384,8 +389,8 @@ export const register: Register = on => {
     if (!v) {
       return (
         <Box flexDirection="column">
-          <Text color={MUTED}>Sin conexión con {base} ({lastError || 'cargando…'}).</Text>
-          <Button key="mn-retry" label="Reintentar" onPress={() => void refresh($)} />
+          <Text color={MUTED}>{s.offlineMenu(base, lastError || s.loading)}</Text>
+          <Button key="mn-retry" label={s.retry} onPress={() => void refresh($)} />
         </Box>
       )
     }
@@ -395,46 +400,46 @@ export const register: Register = on => {
     rows.push(
       <Text key="mn-head" wrap="truncate-end">
         <Text bold>{v.project}</Text>
-        <Text color={MUTED}> · {v.done} de {v.total} listas{v.now ? ` · ahora en ${v.now}` : ''}</Text>
+        <Text color={MUTED}>{s.progress(v.done, v.total, v.now)}</Text>
       </Text>,
     )
 
     if (w) {
-      rows.push(<Text key="mn-w-sec" color={BLUE}>{'\n'}TRABAJANDO</Text>)
+      rows.push(<Text key="mn-w-sec" color={BLUE}>{'\n'}{s.working}</Text>)
       rows.push(
         <Box key="mn-w" flexDirection="column">
           <Text bold>{w.title}</Text>
           <Box flexWrap="wrap">
-            <Button key="mn-w-done" label="Hecha" variant="primary" onPress={() => void patchWorking($, w, { status: 'done' }, `«${w.title}» está lista.`)} />
-            <Button key="mn-w-release" label="Soltarla" onPress={() => void patchWorking($, w, { status: 'pending', team: null, progress: 0 }, '')} />
+            <Button key="mn-w-done" label={s.done} variant="primary" onPress={() => void patchWorking($, w, { status: 'done' }, s.isDone(w.title))} />
+            <Button key="mn-w-release" label={s.release} onPress={() => void patchWorking($, w, { status: 'pending', team: null, progress: 0 }, '')} />
           </Box>
         </Box>,
       )
     }
 
-    rows.push(<Text key="mn-wait-sec" color={v.waiting.length ? AMBER : MUTED}>{'\n'}TE ESPERAN ({v.waiting.length})</Text>)
-    if (v.waiting.length === 0) rows.push(<Text key="mn-wait-none" color={MUTED}>Nada te espera.</Text>)
+    rows.push(<Text key="mn-wait-sec" color={v.waiting.length ? AMBER : MUTED}>{'\n'}{s.waitingSection(v.waiting.length)}</Text>)
+    if (v.waiting.length === 0) rows.push(<Text key="mn-wait-none" color={MUTED}>{s.nothingWaiting}</Text>)
     v.waiting.forEach(it => {
       if (it.kind !== 'waiting') return
       const b = it.blocker
-      const kind = b.kind === 'decision' ? 'Decisión' : b.kind === 'review' ? 'Revisión' : 'Acceso'
+      const kind = s.kindName(b.kind)
       const id = b.id
       let actions: any
       if (b.kind === 'access') {
-        actions = <Button key={`mn-${id}-sky`} label="Darlo en el cielo" variant="primary" onPress={() => void openSky($, it.node.id)} />
+        actions = <Button key={`mn-${id}-sky`} label={s.grantInSky} variant="primary" onPress={() => void openSky($, it.node.id)} />
       } else if (commenting === id && Input) {
-        const k = b.options.findIndex(o => /cambio/i.test(o))
+        const k = b.options.findIndex(o => REQUEST_CHANGES.test(o))
         actions = (
           <Box flexDirection="column">
-            <Input key={`mn-${id}-note`} label="Qué cambiarías: " placeholder="en una línea" submitLabel="enviar" autoFocus onSubmit={(value: string) => void resolve($, it, k < 0 ? b.options.length - 1 : k, value)} />
-            <Button key={`mn-${id}-cancel`} label="Cancelar" dimColor onPress={() => void comment($, null)} />
+            <Input key={`mn-${id}-note`} label={s.whatWouldYouChange} placeholder={s.oneLine} submitLabel={s.send} autoFocus onSubmit={(value: string) => void resolve($, it, k < 0 ? b.options.length - 1 : k, value)} />
+            <Button key={`mn-${id}-cancel`} label={s.cancel} dimColor onPress={() => void comment($, null)} />
           </Box>
         )
       } else {
         actions = (
           <Box flexWrap="wrap">
             {b.options.map((opt, k) =>
-              b.kind === 'review' && Input && /cambio/i.test(opt) ? (
+              b.kind === 'review' && Input && REQUEST_CHANGES.test(opt) ? (
                 <Button key={`mn-${id}-${k}`} label={opt} onPress={() => void comment($, id)} />
               ) : (
                 <Button key={`mn-${id}-${k}`} label={opt} variant={k === 0 ? 'primary' : undefined} onPress={() => void resolve($, it, k, '')} />
@@ -449,21 +454,21 @@ export const register: Register = on => {
             <Text color={AMBER}>{kind} · </Text>
             <Text bold>{it.node.title}</Text>
           </Text>
-          <Text wrap="wrap" color={MUTED}>{b.kind === 'access' ? `${b.question} (${b.accessLabel ?? 'acceso'})` : b.question}</Text>
+          <Text wrap="wrap" color={MUTED}>{b.kind === 'access' ? `${b.question} (${b.accessLabel ?? s.access})` : b.question}</Text>
           {actions}
         </Box>,
       )
     })
 
-    rows.push(<Text key="mn-take-sec" color={v.startable.length ? BLUE : MUTED}>{'\n'}PARA TOMAR ({v.startable.length})</Text>)
-    if (v.startable.length === 0) rows.push(<Text key="mn-take-none" color={MUTED}>Nada desbloqueado sin tomar.</Text>)
+    rows.push(<Text key="mn-take-sec" color={v.startable.length ? BLUE : MUTED}>{'\n'}{s.startableSection(v.startable.length)}</Text>)
+    if (v.startable.length === 0) rows.push(<Text key="mn-take-none" color={MUTED}>{s.nothingStartable}</Text>)
     v.startable.forEach(it => {
       const n = it.node
       rows.push(
         <Box key={`mn-t-${n.id}`} flexDirection="column">
           <Text bold>{n.title}</Text>
           {n.goal ? <Text wrap="wrap" color={MUTED}>/goal {n.goal}</Text> : null}
-          <Button key={`mn-t-${n.id}-take`} label="Trabajar en esto" variant="primary" onPress={() => void take($, n)} />
+          <Button key={`mn-t-${n.id}-take`} label={s.workOnThis} variant="primary" onPress={() => void take($, n)} />
         </Box>,
       )
     })
@@ -471,8 +476,8 @@ export const register: Register = on => {
     rows.push(
       <Box key="mn-foot">
         <Text>{'\n'}</Text>
-        <Button key="mn-sky" label="Ver el cielo" dimColor onPress={() => void openSky($, w?.id)} />
-        <Button key="mn-band" label={hidden ? 'Mostrar la banda' : 'Ocultar la banda'} dimColor onPress={() => void toggleBand($)} />
+        <Button key="mn-sky" label={s.openSky} dimColor onPress={() => void openSky($, w?.id)} />
+        <Button key="mn-band" label={hidden ? s.showBand : s.hideBand} dimColor onPress={() => void toggleBand($)} />
       </Box>,
     )
 

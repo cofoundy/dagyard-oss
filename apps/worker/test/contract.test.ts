@@ -12,6 +12,7 @@ const resolve = (pid: string, bid: string, body: unknown) =>
 /** Un proyecto chico: «a» y «b» (depende de «a»), con un acceso pendiente sobre «b». */
 const small = (): ProjectGraphInput => ({
   name: 'Con acceso',
+  lang: 'es', // etapas por defecto en español (#77)
   nodes: [
     { id: 'a', stage: 'diseno', title: 'A', status: 'done' },
     { id: 'b', stage: 'construccion', title: 'B', status: 'blocked', deps: ['a'] },
@@ -138,7 +139,7 @@ describe('un agente no borra bloqueantes', () => {
 
   it('PUT del agente sobre un proyecto sin bloqueantes → 200 (lo usa la QA de tiempo real)', async () => {
     const pid = uniquePid();
-    const g = { name: 'Sin preguntas', nodes: [{ id: 'a', stage: 'diseno', title: 'A' }] };
+    const g = { name: 'Sin preguntas', lang: 'es' as const, nodes: [{ id: 'a', stage: 'diseno', title: 'A' }] };
     await json(await put(pid, g), 200);
     const again = await json<ProjectSnapshot>(
       await put(pid, { ...g, nodes: [...g.nodes, { id: 'b', stage: 'diseno', title: 'B', deps: ['a'] }] }),
@@ -181,7 +182,7 @@ describe('el PUT de un agente conserva mensajes y antigüedad', () => {
 
   it('resolver un bloqueante → PUT de agente idéntico → el mensaje del sistema sigue y next no cambia', async () => {
     const pid = uniquePid();
-    const g: ProjectGraphInput = { name: 'Orden', nodes: [{ id: 'z', stage: 'diseno', title: 'Z' }, ...small().nodes], blockers: small().blockers };
+    const g: ProjectGraphInput = { name: 'Orden', lang: 'es', nodes: [{ id: 'z', stage: 'diseno', title: 'Z' }, ...small().nodes], blockers: small().blockers };
     await json(await put(pid, g), 200);
     // «a2» llega después: es más nueva que «z», así que next elige «z» aunque «a2» gane por id
     await new Promise((r) => setTimeout(r, 5));
@@ -225,6 +226,7 @@ describe('el PUT de un agente conserva mensajes y antigüedad', () => {
     const pid = uniquePid();
     const g = (team: string): ProjectGraphInput => ({
       name: 'Equipo',
+      lang: 'es',
       nodes: [{ id: 't', stage: 'diseno', title: 'T', team }],
       messages: [{ nodeId: 't', text: 'Avance del día' }],
     });

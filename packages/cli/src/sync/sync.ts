@@ -12,11 +12,15 @@
  * - Completado = `state_reason` `completed` o null; `not_planned` y `duplicate` no cuentan (#50).
  * - Aristas solo si ambos nodos existen; nunca borra. `founder-input` → bloqueante `decision`, solo si el
  *   nodo no tiene ninguna decisión (abierta o resuelta, con cualquier texto: contrato #31).
+ * - Nunca crea etapas: la de `--stage` (o la de construcción) se reconoce por id o nombre en cualquier idioma, y
+ *   las opciones por defecto van en el idioma del proyecto, no en el de `LANG` (#77).
  */
 import type { Blocker, BlockerInput, DagNode, Edge, NodeInput, NodePatch, NodeStatus, Stage } from '@dagyard/model';
-import { LIMITS, slugify, wouldCreateCycle } from '@dagyard/model';
+import { LIMITS, projectLang, wouldCreateCycle, type Lang } from '@dagyard/model';
 import { ApiRequestError, type DagyardClient } from '../api.js';
 import { UsageError } from '../args.js';
+import { defaultSyncStage, findStage, YES_NO } from '../defaults.js';
+import { t } from '../i18n.js';
 import { oneLine } from '../tasks/parse.js';
 import { cleanTitle, closingRefs, dependencyRefs, issueNodeTitle, parseOptions, type GhIssue, type GithubSource } from './github.js';
 
@@ -25,7 +29,7 @@ export type SyncApi = Pick<DagyardClient, 'snapshot' | 'addNode' | 'updateNode' 
 export interface SyncOptions {
   repo: string;
   label?: string;
-  /** etapa de los nodos nuevos (id o nombre); default `construccion` si existe, si no la primera */
+  /** etapa de los nodos nuevos (id o nombre, en cualquier idioma); default la de construcción si existe, si no la primera */
   stage?: string;
   /** también crea los issues cerrados como completados */
   all?: boolean;
@@ -49,16 +53,19 @@ export interface SyncReport {
 export const FOUNDER_LABEL = 'founder-input';
 /** Una épica no es una tarea: no se crea (si ya existe como nodo, se sincroniza como cualquier otro). */
 export const EPIC_LABEL = 'epic';
-const DEFAULT_STAGE = 'construccion';
 const RANK: Record<NodeStatus, number> = { pending: 0, working: 1, blocked: 1, done: 2 };
-const STATUS_HUMAN: Record<NodeStatus, string> = { pending: 'Pendiente', working: 'En progreso', blocked: 'Te espera', done: 'Lista' };
+/** Los estados con las palabras de la web (glosario de #73). */
+const STATUS_EN: Record<NodeStatus, string> = { pending: 'Pending', working: 'In progress', blocked: 'Needs you', done: 'Done' };
+const STATUS_ES: Record<NodeStatus, string> = { pending: 'Pendiente', working: 'En progreso', blocked: 'Te espera', done: 'Lista' };
+const statusHuman = (s: NodeStatus) => t(STATUS_EN[s], STATUS_ES[s]);
 
 export const nodeIdOf = (n: number) => `gh-${n}`;
 
 export async function syncGithub(api: SyncApi, source: GithubSource, projectId: string, opts: SyncOptions): Promise<SyncReport> {
   const dry = !!opts.dryRun;
   const snap = await api.snapshot(projectId);
-  const stage = pickStage(snap.project.stages, opts.stage);
+  const lang = projectLang(snap.project);
+  const stage = pickStage(snap.project.stages, opts.stage, lang);
 
   const listed = await source.issues(opts.repo, opts.label ? { label: opts.label } : {});
   const issues = listed.filter((i) => !i.isPull).sort((a, b) => a.number - b.number);
@@ -114,16 +121,21 @@ export async function syncGithub(api: SyncApi, source: GithubSource, projectId: 
         link: issue.url,
       };
       considered.push(issue);
-      const ok = dry || (await soft(`no pude crear ${id}`, () => api.addNode(projectId, input))) !== undefined;
+      const ok = dry || (await soft(t(`could not create ${id}`, `no pude crear ${id}`), () => api.addNode(projectId, input))) !== undefined;
       if (!ok) continue;
       nodes.set(id, { id, status: input.status!, link: input.link! });
       created.add(id);
-      report.actions.push(`nuevo ${id} «${input.title}» (${STATUS_HUMAN[input.status!]})`);
+      report.actions.push(t(`new ${id} «${input.title}» (${statusHuman(input.status!)})`, `nuevo ${id} «${input.title}» (${statusHuman(input.status!)})`));
       continue;
     }
     if (existing.link && linkClash(existing.link, issue, opts.repo)) {
       foreign.add(id);
-      report.warnings.push(`${id} apunta a ${existing.link}, no a ${issue.url}: lo salté (¿otro repo con el mismo número?)`);
+      report.warnings.push(
+        t(
+          `${id} points to ${existing.link}, not to ${issue.url}: skipped it (another repo with the same number?)`,
+          `${id} apunta a ${existing.link}, no a ${issue.url}: lo salté (¿otro repo con el mismo número?)`,
+        ),
+      );
       continue;
     }
     considered.push(issue);
@@ -132,7 +144,7 @@ export async function syncGithub(api: SyncApi, source: GithubSource, projectId: 
     const want: NodeStatus | null = completed ? 'done' : issue.state === 'open' && withPr.has(issue.number) ? 'working' : null;
     if (want && RANK[want] > RANK[existing.status]) {
       if (existing.status === 'blocked' || hasOpenBlocker(snap.blockers, id)) {
-        report.warnings.push(`${id} tiene una pregunta abierta para el dueño; no lo pasé a ${STATUS_HUMAN[want]}`);
+        report.warnings.push(openQuestion(id, want));
       } else {
         patch.status = want;
       }
@@ -145,20 +157,20 @@ export async function syncGithub(api: SyncApi, source: GithubSource, projectId: 
       } catch (err) {
         if (!(err instanceof ApiRequestError) || ![400, 404, 409].includes(err.status)) throw err;
         if (err.status !== 409 || !patch.status) {
-          report.warnings.push(`no pude actualizar ${id}: ${err.message}`);
+          report.warnings.push(t(`could not update ${id}: ${err.message}`, `no pude actualizar ${id}: ${err.message}`));
           continue;
         }
         // 409 al cambiar el estado: tiene un bloqueante abierto. Aviso, y el resto del cambio sí entra
-        report.warnings.push(`${id} tiene una pregunta abierta para el dueño; no lo pasé a ${STATUS_HUMAN[patch.status]}`);
+        report.warnings.push(openQuestion(id, patch.status));
         const { status: _skip, ...rest } = patch;
         applied = rest;
         if (!Object.keys(rest).length) continue;
-        if ((await soft(`no pude actualizar ${id}`, () => api.updateNode(projectId, id, rest))) === undefined) continue;
+        if ((await soft(t(`could not update ${id}`, `no pude actualizar ${id}`), () => api.updateNode(projectId, id, rest))) === undefined) continue;
       }
     }
     nodes.set(id, { ...existing, ...(applied.link ? { link: applied.link } : {}), ...(applied.status ? { status: applied.status } : {}) });
     updated.add(id);
-    const what = [applied.status ? STATUS_HUMAN[applied.status] : null, applied.link ? 'enlace al issue' : null].filter(Boolean);
+    const what = [applied.status ? statusHuman(applied.status) : null, applied.link ? t('link to the issue', 'enlace al issue') : null].filter(Boolean);
     report.actions.push(`${id}: ${what.join(', ')}`);
   }
 
@@ -176,7 +188,7 @@ export async function syncGithub(api: SyncApi, source: GithubSource, projectId: 
       if (edges.some((e) => e.from === from && e.to === to)) continue;
       if (dry) {
         if (wouldCreateCycle(edges, from, to)) {
-          report.warnings.push(`no agregué ${from} → ${to}: cerraría un ciclo`);
+          report.warnings.push(cycleWarning(from, to));
           continue;
         }
       } else {
@@ -184,9 +196,9 @@ export async function syncGithub(api: SyncApi, source: GithubSource, projectId: 
           await api.addEdge(projectId, from, to);
         } catch (err) {
           if (!(err instanceof ApiRequestError)) throw err;
-          if (err.status === 400 && err.code === 'cycle') report.warnings.push(`no agregué ${from} → ${to}: cerraría un ciclo`);
-          else if (err.status === 409) report.warnings.push(`${from} → ${to} ya existía`);
-          else if ([400, 404].includes(err.status)) report.warnings.push(`no agregué ${from} → ${to}: ${err.message}`);
+          if (err.status === 400 && err.code === 'cycle') report.warnings.push(cycleWarning(from, to));
+          else if (err.status === 409) report.warnings.push(t(`${from} → ${to} already existed`, `${from} → ${to} ya existía`));
+          else if ([400, 404].includes(err.status)) report.warnings.push(t(`did not add ${from} → ${to}: ${err.message}`, `no agregué ${from} → ${to}: ${err.message}`));
           else throw err;
           continue;
         }
@@ -208,11 +220,11 @@ export async function syncGithub(api: SyncApi, source: GithubSource, projectId: 
     if (snap.blockers.some((b) => b.nodeId === id && b.kind === 'decision')) continue;
     const question = oneLine(cleanTitle(issue.title), LIMITS.question);
     const options = parseOptions(issue.body);
-    const input: BlockerInput = { kind: 'decision', question, options: options.length ? options : ['Sí', 'No'] };
-    if (!dry && (await soft(`no pude abrir la pregunta de ${id}`, () => api.openBlocker(projectId, id, input))) === undefined) continue;
+    const input: BlockerInput = { kind: 'decision', question, options: options.length ? options : [...YES_NO[lang]] };
+    if (!dry && (await soft(t(`could not open the question for ${id}`, `no pude abrir la pregunta de ${id}`), () => api.openBlocker(projectId, id, input))) === undefined) continue;
     nodes.set(id, { ...node, status: 'blocked' });
     updated.add(id);
-    report.actions.push(`${id}: pregunta al dueño «${question}»`);
+    report.actions.push(t(`${id}: asks the owner «${question}»`, `${id}: pregunta al dueño «${question}»`));
   }
 
   report.issues = considered.length;
@@ -239,26 +251,42 @@ export function linkClash(link: string, issue: Pick<GhIssue, 'number' | 'url'>, 
   return !!m && Number(m[1]) !== issue.number;
 }
 
+function openQuestion(id: string, status: NodeStatus): string {
+  return t(
+    `${id} has an open question for the owner; did not move it to ${statusHuman(status)}`,
+    `${id} tiene una pregunta abierta para el dueño; no lo pasé a ${statusHuman(status)}`,
+  );
+}
+
+function cycleWarning(from: string, to: string): string {
+  return t(`did not add ${from} → ${to}: it would close a loop`, `no agregué ${from} → ${to}: cerraría un ciclo`);
+}
+
 function hasOpenBlocker(blockers: Blocker[], nodeId: string): boolean {
   return blockers.some((b) => b.nodeId === nodeId && b.status === 'open');
 }
 
-function pickStage(stages: Stage[], wanted: string | undefined): string {
-  if (!stages.length) throw new UsageError('el proyecto no tiene etapas');
+function pickStage(stages: Stage[], wanted: string | undefined, lang: Lang): string {
+  if (!stages.length) throw new UsageError(t('the project has no stages', 'el proyecto no tiene etapas'));
   if (wanted !== undefined) {
-    const slug = slugify(wanted);
-    const hit = stages.find((s) => s.id === slug || slugify(s.name) === slug);
-    if (!hit) throw new UsageError(`no existe la etapa «${wanted}»; las del proyecto: ${stages.map((s) => s.id).join(', ')}`);
+    const hit = findStage(stages, wanted);
+    if (!hit) {
+      const ids = stages.map((s) => s.id).join(', ');
+      throw new UsageError(t(`there is no stage «${wanted}»; the project has: ${ids}`, `no existe la etapa «${wanted}»; las del proyecto: ${ids}`));
+    }
     return hit.id;
   }
-  return stages.find((s) => s.id === DEFAULT_STAGE)?.id ?? stages[0]!.id;
+  return defaultSyncStage(stages, lang)!.id;
 }
 
 export function formatSync(r: SyncReport): string {
   const lines = [
-    `Sincronicé ${r.issues} issues: ${r.created.length} nuevas · ${r.updated.length} actualizadas · ${r.unchanged.length} sin cambios`,
+    t(
+      `Synced ${r.issues} issues: ${r.created.length} new · ${r.updated.length} updated · ${r.unchanged.length} unchanged`,
+      `Sincronicé ${r.issues} issues: ${r.created.length} nuevas · ${r.updated.length} actualizadas · ${r.unchanged.length} sin cambios`,
+    ),
   ];
-  if (r.dryRun) lines.push(`Fue una simulación: no se envió nada a «${r.project}».`);
-  if (r.warnings.length) lines.push(`Avisos (${r.warnings.length}):`, ...r.warnings.map((w) => `  - ${w}`));
+  if (r.dryRun) lines.push(t(`This was a dry run: nothing was sent to «${r.project}».`, `Fue una simulación: no se envió nada a «${r.project}».`));
+  if (r.warnings.length) lines.push(t(`Warnings (${r.warnings.length}):`, `Avisos (${r.warnings.length}):`), ...r.warnings.map((w) => `  - ${w}`));
   return `${lines.join('\n')}\n`;
 }

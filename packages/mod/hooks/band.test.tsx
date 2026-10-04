@@ -1,4 +1,5 @@
 // La banda dibujada de verdad: el árbol tiene que validar en terminal y en desktop.
+// El mundo fija LANG=es_PE.UTF-8 (estos tests leen los textos en español); el idioma se prueba abajo (#73).
 import { describe, expect, mock, test } from 'claude-code/testing'
 
 const PLUGIN = 'dagyard'
@@ -36,7 +37,7 @@ function world(on: any, ok: boolean | World = true) {
   const files: Record<string, string> = o.files ?? LINKED
   const clock = mock.clock(on)
   mock.store(on)
-  mock.env(on, { HOME: '/h', ...o.env })
+  mock.env(on, { HOME: '/h', LANG: 'es_PE.UTF-8', ...o.env })
   const calls: string[] = []
   const sent: string[] = []
   const toasts: string[] = []
@@ -267,6 +268,70 @@ describe('durante un deploy', () => {
     await clock.advance(5_000)
     expect(calls.filter(c => c === `PATCH ${NODE}`).length).toBe(3)
     expect(sent).toEqual([])
+    await ui.unmount()
+  })
+})
+
+describe('el idioma del entorno (#73)', () => {
+  test('con LANG=en_US la banda y el menú hablan inglés', async ($, on) => {
+    world(on, { env: { LANG: 'en_US.UTF-8' } })
+    await start($)
+    const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND } as any)
+    expect(await band.find({ type: 'Text', text: /3 need you/ })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: /1 ready to take/ })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: /Needs your decision/ })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: /te esperan/ })).toBeUndefined()
+    await band.unmount()
+    const menu = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...MENU } as any)
+    expect(await menu.find({ type: 'Text', text: /NEEDS YOU \(3\)/ })).toBeDefined()
+    expect(await menu.find({ type: 'Text', text: /READY TO TAKE \(1\)/ })).toBeDefined()
+    expect(await menu.find({ type: 'Text', text: /TE ESPERAN/ })).toBeUndefined()
+    await menu.unmount()
+  })
+
+  test('con LANG=es_PE la banda y el menú hablan español', async ($, on) => {
+    world(on, { env: { LANG: 'es_PE.UTF-8' } })
+    await start($)
+    const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND } as any)
+    expect(await band.find({ type: 'Text', text: /3 te esperan/ })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: /Te espera tu decisión/ })).toBeDefined()
+    await band.unmount()
+    const menu = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...MENU } as any)
+    expect(await menu.find({ type: 'Text', text: /TE ESPERAN \(3\)/ })).toBeDefined()
+    await menu.unmount()
+  })
+
+  test('LC_ALL gana a LANG', async ($, on) => {
+    world(on, { env: { LANG: 'es_PE.UTF-8', LC_ALL: 'en_US.UTF-8' } })
+    await start($)
+    const menu = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...MENU } as any)
+    expect(await menu.find({ type: 'Text', text: /NEEDS YOU \(3\)/ })).toBeDefined()
+    await menu.unmount()
+  })
+
+  test('sin variables de idioma → inglés, también el aviso y /dagyard', async ($, on) => {
+    const snap: any = JSON.parse(JSON.stringify(SNAP))
+    const { toasts, clock } = world(on, { snap: () => snap, env: { LANG: '' } })
+    await start($)
+    await clock.settle()
+    snap.blockers.push({ id: 'b4', nodeId: 'comision', kind: 'review', question: 'Revisa el logo', options: ['Approve', 'Request changes'], accessLabel: null, status: 'open' })
+    await clock.advance(10_000)
+    expect(toasts).toEqual(['«Modelo de comisiones» needs your review: Revisa el logo'])
+    const out: any = await $.command.run({ command: 'dagyard', args: '' } as any)
+    expect(out.text).toMatch(/need you, \d+ ready to take\.$/)
+  })
+
+  test('«Request changes» en inglés también pide el comentario', async ($, on) => {
+    const snap: any = JSON.parse(JSON.stringify(SNAP))
+    snap.blockers[1].options = ['Approve', 'Request changes']
+    const { bodies } = world(on, { snap: () => snap, env: { LANG: 'en_US.UTF-8' } })
+    await start($)
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...MENU } as any)
+    await ui.press({ key: 'mn-b2-1' })
+    await (ui as any).input({ key: 'mn-b2-note', text: 'Bigger pay button' })
+    const sent = JSON.parse(bodies[bodies.length - 1]!)
+    expect(sent.choice).toBe(1)
+    expect(sent.note).toBe('Bigger pay button')
     await ui.unmount()
   })
 })

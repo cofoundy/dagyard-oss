@@ -37,9 +37,20 @@ la tapan con `***`).
 | `next` | `/goal …` en una sola línea (exit 3 si no hay nada arrancable); el link de la tarea va por stderr (`en el cielo: …`) y en `--json` como `link` |
 | `open [<tarea>] [--print]` | imprime el link del cielo al proyecto (`<url>/?p=<proyecto>`) o a la tarea (`&n=<tarea>`, abre su ficha) y en macOS lo abre; `--print` solo lo imprime. No usa la key |
 | `sync --github <owner/repo> [--label <l>] [--stage <etapa>] [--all] [--dry-run] [--json]` | crea o actualiza las tareas `gh-<n>` desde los issues (ver abajo) |
-| `import --from <.cofoundy/tasks> [--replace] [--dry-run]` | crea el proyecto desde las tareas del orchestrator; si ya existe, falla (`PUT` con `If-None-Match: *`) salvo `--replace` (`PUT` del grafo entero; con la clave de agente conserva las preguntas y respuestas del dueño y da 409 si quita una tarea que tiene alguna, con el token del dueño las recrea desde el archivo) |
+| `import --from <.cofoundy/tasks> [--lang en\|es] [--replace] [--dry-run]` | crea el proyecto desde las tareas del orchestrator; si ya existe, falla (`PUT` con `If-None-Match: *`) salvo `--replace` (`PUT` del grafo entero; con la clave de agente conserva las preguntas y respuestas del dueño y da 409 si quita una tarea que tiene alguna, con el token del dueño las recrea desde el archivo) |
 
 Exit codes: 0 ok · 1 API o red · 2 `wait` venció · 3 `next` vacío · 64 uso.
+
+## Idioma
+
+Los mensajes para personas (ayuda, errores, resultados, avisos) salen en inglés; en español si el
+entorno lo pide: `LC_ALL` > `LC_MESSAGES` > `LANG`, manda el primero no vacío y `es`/`es_*`/`es-*` es
+español (`C`, `POSIX` o nada → inglés). Comandos, flags, JSON y exit codes no cambian con el idioma.
+
+Lo que el CLI escribe en un proyecto (etapas y misiones del import, opciones por defecto de `block --kind
+review` y de `sync`) va en el idioma **del proyecto** (`project.lang`, #77), nunca en el de `LANG`: un mismo
+proyecto no mezcla idiomas según quién lo toque. Un proyecto nuevo es `en` salvo `import --lang es`; un
+proyecto guardado sin el campo (como `dagyard`) es `es`. Las tablas viven en `src/defaults.ts`.
 
 ## Contrato REST
 
@@ -54,8 +65,10 @@ bloqueante abierto del nodo en `GET /api/projects/:p/blockers/:b/wait`. `import`
 `## `). `deps ∪ blockedBy`, solo ids que existen en el directorio; `—`, `none` o `[]` al inicio = sin
 dependencias, y lo que va entre paréntesis se ignora. `blocked` que espera a otra tarea queda
 Pendiente; solo es «Te espera» si no espera a nadie o si el status nombra a un humano. Etapas por
-`phase` si todas la traen; si no, por profundidad con nombre humano: «Para empezar», «Después»,
-«Luego», «Más adelante»… y «Al final» (máximo 12, lo que acepta el modelo; nunca «Etapa N»).
+`phase` si todas la traen; si no, por profundidad con nombre humano: «Getting started», «Next», «Then»…
+y «Finally», o «Para empezar», «Después», «Luego»… y «Al final» en un proyecto en español (máximo 12, lo
+que acepta el modelo; nunca «Etapa N»). Sin `--lang`, un import nuevo es `en` y `--replace` conserva el
+idioma del proyecto que reemplaza.
 Los títulos visibles pasan por `legibleTitle` (D10, #21): sin `T-xxx` ni `#123`, sin prefijos de
 ruta, archivo o código (`lib/x.ts —`, `SEC —`, `P0.1`), sin nombres de archivo (`verify.sh` →
 `verify`), sin paréntesis (notas y llamadas: `var()` → `var`) y sin MAYÚSCULAS enfáticas (las
@@ -69,7 +82,9 @@ GitHub con `gh api --paginate` (necesita `gh` autenticado); los PRs del listado 
 
 - **Tarea `gh-<n>` nueva:** solo issues abiertos (con `--all`, también los cerrados como completados, ya
   Listos; los cerrados como `not_planned` nunca; los de la etiqueta `epic` tampoco). Título = el del issue
-  sin el prefijo `algo: `, sin referencias (`desde #35`) y pasado por `legibleTitle` del import; etapa `--stage`, o `construccion` si existe, o la primera; enlace = la URL del issue.
+  sin el prefijo `algo: `, sin referencias (`desde #35`) y pasado por `legibleTitle` del import; etapa `--stage`, o la de construcción («Build» / «Construcción») si existe, o la primera; `--stage` acepta id o
+  nombre en cualquiera de los dos idiomas (`build` encuentra «Construcción») y sync nunca crea una etapa;
+  enlace = la URL del issue.
 - **Tarea que ya existe:** nunca le cambia título, etapa, equipo ni misión (los cura la fábrica); el
   enlace, solo si no tiene. Si su enlace es de otro issue (otro repo u otro número; su PR en este repo sí
   vale), la salta con un aviso.
@@ -79,7 +94,8 @@ GitHub con `gh api --paginate` (necesita `gh` autenticado); los PRs del listado 
 - **Aristas** (solo si las dos tareas existen; nunca borra): «Parte de #n» → la épica `gh-n` necesita esta;
   «depende de #n», «blocked by #n» o «bloqueado por #n» → esta necesita `gh-n`. Repetida o con ciclo → aviso.
 - **`founder-input`** → decisión para el dueño: la pregunta es el título y las opciones salen de las líneas
-  `- **A (…):** texto`, `- **A:** texto` o `- A) texto` del cuerpo (máx. 6; sin ninguna, «Sí» / «No»). Solo
+  `- **A (…):** texto`, `- **A:** texto` o `- A) texto` del cuerpo (máx. 6; sin ninguna, «Yes» / «No» o «Sí» / «No»
+  según el idioma del proyecto). Solo
   si la tarea no tiene ya una decisión, abierta o respondida y con el texto que sea (contrato #31).
 
 Salida: `Sincronicé N issues: X nuevas · Y actualizadas · Z sin cambios` y los avisos. Correrlo dos veces

@@ -1,46 +1,119 @@
-# Dagyard
+<h1 align="center">Dagyard</h1>
 
-**Your agent factory's plan as a living 3D DAG.** See which stage the project is in, get only what is yours
-to answer (decisions, reviews and access requests) and unblock your agents from there.
+<p align="center">
+  <b>Your agent factory's plan as a living sky.</b><br>
+  Every task is a star. When an agent needs you, its star turns amber, you answer, and the agent keeps going.
+</p>
 
-[Leer en español](README.es.md)
+<p align="center">
+  <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-3a5a86?style=flat-square"></a>
+  <a href="https://github.com/cofoundy/dagyard/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/cofoundy/dagyard/actions/workflows/ci.yml/badge.svg"></a>
+  &nbsp;·&nbsp; <a href="README.es.md">Leer en español</a>
+</p>
 
-![The example project, «Marketplace de reservas», in overview](design/preview-vista-general.png)
+<p align="center">
+  <img src="docs/media/hero.webp" width="880" alt="The example project «Booking marketplace»: the sky moves on its own as the teams work, you open the amber star «Commission model», pick an answer, and the star turns blue while the team picks the task back up">
+</p>
 
-Dagyard is built for the person who runs a team of coding agents, usually a PM, not a developer. Every task
-is a star; dependencies are the lines between them; stages are the constellations. When an agent needs a
-human (pick an option, approve a design, hand over a credential) it opens a *blocker* on its task, the star
-turns amber, and the answer flows back to the agent in real time.
+Dagyard is for the person who runs a team of coding agents, usually a PM and not a developer. Tasks are
+stars, dependencies are the lines between them, and stages are the constellations. You see at a glance what
+stage the project is in, you only get what is yours to answer (a decision, a review, an access) and the
+answer reaches the agent the moment you give it.
 
-The interface is in Peruvian Spanish on purpose: it was designed for the people who use it every day.
-The code, the API and the CLI are plain TypeScript.
+## What you get
 
-## What's inside
+### The whole plan, in one look
 
-| Path | What it is |
-|---|---|
-| `apps/worker` | Cloudflare Worker: REST API + WebSocket, state in Durable Objects with SQLite, serves the UI |
-| `apps/web` | Vite + React + three.js: the 3D sky, the task card, the stage rail |
-| `packages/model` | Shared types, validation, graph helpers and the demo project |
-| `packages/cli` | `dagyard`: the CLI agents use to move their tasks, open blockers and wait for answers |
-| `packages/channel` | MCP server that Claude Code loads as a *channel*: pushes your answers into the agent's session |
-| `packages/mod` | Claude Code plugin: a band over the prompt with what is waiting for you, and a `/dagyard` menu |
-| `docs/` | API contract (`docs/api.md`), v0 spec, QA evidence |
-| `design/` | Visual reference (`preview-constelacion.html`) and anti-references |
+<img src="docs/media/sky.jpg" width="880" alt="The overview of «Booking marketplace»: five stages from Discovery to Launch, finished tasks in white, tasks in progress in blue and three amber tasks waiting for you">
 
-## Try it in 30 seconds (no server)
+White stars are done, blue ones are being worked on, amber ones are waiting for you. The rail at the bottom
+says how far each stage is, and the header says where the project is now.
+
+### Answer from the card
+
+<img src="docs/media/decision.jpg" width="880" alt="The card of «Commission model» open next to its star: the Design team asks who should pay the commission, with two options to pick from">
+
+Click a star and its card opens: who is on it, what they said, what it needs and what it unlocks. When the
+team asked you something, the question and its options are right there. A decision is one click, a review is
+approve or ask for changes, and an access is pasted once and stored encrypted.
+
+### It moves while you watch
+
+<img src="docs/media/realtime.webp" width="880" alt="An agent runs «dagyard block» from its terminal and right away the star «Mobile speed check» turns amber and the counter goes from 3 to 4 waiting for you">
+
+Agents move their own tasks with the `dagyard` CLI: start, progress, short messages, a question for you,
+done. Every change shows up in the sky right away, for everyone looking at it.
+
+### In Claude Code, too
+
+<img src="docs/media/claude-code-band.png" width="880" alt="Claude Code with the Dagyard band above the prompt: the project's progress, what waits for you and the options of the first decision">
+
+<img src="docs/media/claude-code-menu.png" width="880" alt="The /dagyard menu in Claude Code: the three things that need you, a decision, a review and an access, each with its buttons">
+
+The mod puts a band above the prompt with what waits for you, and `/dagyard` opens everything at once. You
+answer from the terminal and the sky updates. Access values are never typed here: they are given in the sky.
+
+### The tab tells you
+
+<img src="docs/media/tab-notice.png" width="880" alt="A browser tab titled «(3) Dagyard» with an amber dot on its icon, next to another tab">
+
+The browser tab counts what waits for you and its icon lights up, so you can leave Dagyard open and do
+something else. «Notify me» also lets the browser alert you when something new needs you, even from another tab.
+
+## How it works
+
+<img src="docs/media/how-it-works.svg" width="880" alt="Your coding agents talk to Dagyard through the CLI and send tasks, progress and questions; Dagyard shows you what waits for you in the sky and in Claude Code; your decisions, reviews and accesses go back to the agents in real time">
+
+Dagyard is a single Cloudflare Worker: a REST API and a WebSocket, with each project's state in a Durable
+Object. Agents use the CLI (or the MCP channel, which pushes your answers into a Claude Code session). You use
+the web app or the Claude Code mod. Everything speaks the same API, so what you do in one place appears in
+the others at once.
+
+## Quickstart
 
 Requires Node ≥ 22 and pnpm 10.
+
+**1. Try it in 30 seconds, no server.** The example project lives in memory:
 
 ```bash
 pnpm install
 pnpm --filter @dagyard/web dev:fixture
 ```
 
-Open the URL Vite prints. The example project lives in memory; from the browser console you can play the
-agent's part, e.g. `dagyard.message('marketplace-reservas', 'pagos-con-tarjeta', 'Ya conecté la pasarela.')`.
+**2. Deploy your own.** With a Cloudflare account and `wrangler` logged in:
 
-## Run the full stack locally
+```bash
+pnpm install && pnpm build
+cd apps/worker
+npx wrangler secret put OWNER_TOKEN    # any long random string; also AGENT_KEY and VAULT_KEY
+npx wrangler deploy --var VERSION:$(git rev-parse --short HEAD)
+```
+
+Open the URL wrangler prints and sign in with `OWNER_TOKEN`. To load the example project, put the same token
+in `~/.config/dagyard/owner-token` (chmod 600) and run `node apps/worker/scripts/seed.mjs <your-url>`.
+
+**3. Connect your agents.** They use `AGENT_KEY`:
+
+```bash
+pnpm --filter @dagyard/cli build
+export DAGYARD_URL=<your-url> DAGYARD_KEY=<AGENT_KEY> DAGYARD_PROJECT=booking-marketplace
+node packages/cli/dist/dagyard.mjs next      # the next task an agent can start
+node packages/cli/dist/dagyard.mjs --help
+```
+
+A repo can commit a `.dagyard.json` (`{"project": "…", "url": "…"}`) so its agents need no flags. Details in
+[`packages/cli/README.md`](packages/cli/README.md).
+
+**4. Add the Claude Code mod** (from the root of your clone):
+
+```bash
+claude plugin marketplace add "$PWD/packages/mod" && claude plugin install dagyard@dagyard
+```
+
+The interface, the CLI and the mod speak English by default and Spanish when your system is in Spanish.
+
+<details>
+<summary><b>Run the full stack locally</b></summary>
 
 ```bash
 pnpm install && pnpm build
@@ -59,35 +132,26 @@ pnpm --filter @dagyard/worker dev
 pnpm --filter @dagyard/web dev
 ```
 
-Sign in with `OWNER_TOKEN`. To load the example project, put the same token in
-`~/.config/dagyard/owner-token` (chmod 600) and run `node apps/worker/scripts/seed.mjs http://127.0.0.1:8787`.
+Sign in with `OWNER_TOKEN` and seed the example with `node apps/worker/scripts/seed.mjs http://127.0.0.1:8787`.
+`GET /api/health` answers with the running `version`.
 
-Agents talk to the same server with `AGENT_KEY`:
+</details>
 
-```bash
-pnpm --filter @dagyard/cli build
-export DAGYARD_URL=http://127.0.0.1:8787 DAGYARD_KEY=<AGENT_KEY> DAGYARD_PROJECT=marketplace-reservas
-node packages/cli/dist/dagyard.mjs next          # the next startable task, as a /goal line
-node packages/cli/dist/dagyard.mjs --help
-```
+<details>
+<summary><b>What's inside</b></summary>
 
-A repo can commit a `.dagyard.json` (`{"project": "…", "url": "…"}`) so its agents need no flags; the CLI
-sends the key to that URL only if it is `https` and trusted. The key itself only comes from `DAGYARD_KEY`
-or `~/.config/dagyard/agent-key`. Details in `packages/cli/README.md`.
+| Path | What it is |
+|---|---|
+| `apps/worker` | Cloudflare Worker: REST API + WebSocket, state in Durable Objects with SQLite, serves the UI |
+| `apps/web` | Vite + React + three.js: the 3D sky, the task card, the stage rail |
+| `packages/model` | Shared types, validation, graph helpers and the example project |
+| `packages/cli` | `dagyard`: the CLI agents use to move their tasks, open blockers and wait for answers |
+| `packages/channel` | MCP server that Claude Code loads as a *channel*: pushes your answers into the agent's session |
+| `packages/mod` | Claude Code plugin: the band over the prompt and the `/dagyard` menu |
+| `docs/` | API contract (`docs/api.md`), v0 spec, QA evidence, README media (`docs/media/`) |
+| `design/` | Visual reference (`preview-constelacion.html`) and anti-references |
 
-## Deploy your own
-
-Dagyard is a single Worker. With a Cloudflare account and `wrangler` logged in:
-
-```bash
-pnpm build
-cd apps/worker
-npx wrangler secret put OWNER_TOKEN    # and AGENT_KEY, VAULT_KEY
-npx wrangler deploy --var VERSION:$(git rev-parse --short HEAD)
-```
-
-`GET /api/health` answers with the deployed `version`. Access values (the credentials a human hands to an
-agent) are stored encrypted with `VAULT_KEY` and never appear in snapshots or events.
+</details>
 
 ## Development
 
@@ -95,12 +159,13 @@ agent) are stored encrypted with `VAULT_KEY` and never appear in snapshots or ev
 pnpm typecheck && pnpm test && pnpm build   # the same three gates CI runs
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md). The media in this README is recorded from the example project with
+`docs/media/capture/` (see its README).
 
 ## Status
 
 v0, built in the open by Cofoundy's own agent factory, which uses Dagyard to plan Dagyard
-(`docs/dogfooding.md`). Single owner per deployment; multi-tenant is out of scope for v0.
+([`docs/dogfooding.md`](docs/dogfooding.md)). One owner per deployment; multi-tenant is out of scope for v0.
 
 ## License
 

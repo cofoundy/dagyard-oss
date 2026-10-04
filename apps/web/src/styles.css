@@ -194,7 +194,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 /* ---------------------------------------------------------------- entrada */
 .entry { position: absolute; inset: 0; z-index: 5; display: grid; place-items: center; padding: 24px 16px; }
 .entry-card { width: min(380px, 100%); display: grid; gap: 12px; padding: 26px 24px 22px; background: linear-gradient(180deg, rgba(12,18,28,.9), rgba(8,12,19,.9)); border: 1px solid var(--line); border-radius: 16px; backdrop-filter: blur(12px); animation: tin .7s var(--ease-out); box-shadow: 0 30px 80px rgba(0,0,0,.5); }
-.entry-card .word { margin-bottom: 8px; }
+.entry-card .entry-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
 .entry-card h1 { margin: 0; font-size: 24px; line-height: 1.2; font-weight: 500; letter-spacing: -.015em; color: var(--star); text-wrap: balance; }
 .entry-card .lead { margin: 0 0 6px; font-size: 14px; line-height: 1.5; color: var(--mute); }
 .entry-card label { font: 11px var(--font-mono); color: var(--mute); letter-spacing: .1em; text-transform: uppercase; }
@@ -228,3 +228,15 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* selector de idioma (#73): discreto, en mono, como los rótulos */
+.lang { display: inline-flex; align-items: center; gap: 2px; font: 500 10px var(--font-mono); letter-spacing: .12em; }
+.lang button { background: none; border: 0; border-radius: 6px; padding: 4px 6px; font: inherit; letter-spacing: inherit; color: var(--dim); cursor: pointer; transition: color .2s, background .2s; }
+.lang button:hover { color: var(--text); }
+.lang button[aria-pressed="true"] { color: var(--star); }
+.lang button:focus-visible { outline: 1px solid var(--line-hi); outline-offset: 1px; }
+.entry-card .lang { margin-right: -6px; }
+.picker .lang { padding: 6px 4px 2px; }
+.picker .lang button { display: inline-block; padding: 4px 6px; font-size: 10px; color: var(--dim); }
+.picker .lang button[aria-pressed="true"] { color: var(--star); }
+.picker .lang button:hover { background: none; color: var(--text); }

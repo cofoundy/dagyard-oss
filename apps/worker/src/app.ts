@@ -188,7 +188,13 @@ app.get('/api/projects', async (c) => {
 
 app.post('/api/projects', async (c) => {
   const input = ok(parseProjectInput(await body(c)));
-  const project = await run(c, { kind: 'createProject', pid: input.id ?? slugify(input.name), name: input.name, stages: input.stages });
+  const project = await run(c, {
+    kind: 'createProject',
+    pid: input.id ?? slugify(input.name),
+    name: input.name,
+    ...(input.lang && { lang: input.lang }),
+    stages: input.stages,
+  });
   return c.json(project, 201);
 });
 
@@ -207,16 +213,19 @@ app.patch('/api/projects/:pid', async (c) => {
   const pid = pidParam(c);
   const b = await body(c);
   if (typeof b !== 'object' || b === null || Array.isArray(b)) return fail('invalid', 'body: se esperaba un objeto');
-  const extra = Object.keys(b).filter((k) => k !== 'name' && k !== 'stages');
+  const extra = Object.keys(b).filter((k) => k !== 'name' && k !== 'lang' && k !== 'stages');
   if (extra.length) fail('invalid', `campos no editables: ${extra.join(', ')}`);
-  const o = b as { name?: unknown; stages?: unknown };
-  if (o.name === undefined && o.stages === undefined) fail('invalid', 'nada que actualizar');
-  // reusa el parser de proyecto; el nombre de relleno solo sirve para validar las etapas
-  const input = ok(parseProjectInput({ name: o.name ?? 'x', ...(o.stages !== undefined && { stages: o.stages }) }));
+  const o = b as { name?: unknown; lang?: unknown; stages?: unknown };
+  if (o.name === undefined && o.lang === undefined && o.stages === undefined) fail('invalid', 'nada que actualizar');
+  // reusa el parser de proyecto; el nombre de relleno solo sirve para validar las etapas y el idioma
+  const input = ok(
+    parseProjectInput({ name: o.name ?? 'x', ...(o.lang !== undefined && { lang: o.lang }), ...(o.stages !== undefined && { stages: o.stages }) }),
+  );
   const project = await run(c, {
     kind: 'patchProject',
     pid,
     ...(o.name !== undefined && { name: input.name }),
+    ...(input.lang && { lang: input.lang }),
     ...(input.stages && { stages: input.stages }),
     actor: c.get('role'),
   });
@@ -251,7 +260,9 @@ app.get('/api/projects/:pid/events', async (c) => {
   await requireProject(dbOf(c.env), pid);
   const raw = c.req.query('since') ?? '0';
   if (!/^\d+$/.test(raw)) fail('invalid', 'since: un número entero ≥ 0');
-  return c.json({ events: await eventsSince(dbOf(c.env), pid, Number(raw), 500) });
+  const { events, resync } = await eventsSince(dbOf(c.env), pid, Number(raw), 500);
+  // bajo el piso (la demo poda su log al re-sembrar, #74): nada de replay con hueco, vuelve a pedir el snapshot
+  return c.json(resync ? { events, resync } : { events });
 });
 
 /* ------------------------------------------------------------------ nodos y aristas */

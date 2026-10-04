@@ -3,6 +3,7 @@
 // pedido nuevo. Solo cuenta el proyecto que estás mirando (el tiempo real es por proyecto).
 
 import type { DagEvent, Snapshot } from '../data/types';
+import { lang } from '../i18n';
 import { BLOCK_TEXT, COPY } from './copy';
 
 export const APP_TITLE = 'Dagyard';
@@ -128,7 +129,7 @@ export function showNotice(n: BlockerNotice, onOpen: (nodeId: string) => void): 
   const N = ctor();
   if (!N || notifyPermission() !== 'granted') return null;
   try {
-    const notice = new N(noticeTitle(n.taskTitle), { body: noticeBody(n), tag: n.blockerId, lang: 'es' });
+    const notice = new N(noticeTitle(n.taskTitle), { body: noticeBody(n), tag: n.blockerId, lang: lang() });
     notice.onclick = (ev) => {
       ev.preventDefault?.();
       try {

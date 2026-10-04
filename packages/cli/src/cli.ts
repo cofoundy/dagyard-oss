@@ -2,9 +2,10 @@ import { spawn } from 'node:child_process';
 import { ApiRequestError, DagyardClient } from './api.js';
 import { assertKnownFlags, flag, parseArgs, UsageError, type ParsedArgs } from './args.js';
 import { loadConfig, loadKey } from './config.js';
-import type { BlockerInput, BlockerKind, BlockerWaitResult, NodeInput, NodePatch, NodeStatus } from '@dagyard/model';
-import { BLOCKER_KINDS, LIMITS, NODE_STATUSES, parseProjectGraphInput, slugify } from '@dagyard/model';
-import { buildImport, projectNameFromDir, readTasksDir, readTitles, type ImportResult } from './tasks/import.js';
+import { langFromEnv, plural, t, withLang } from './i18n.js';
+import type { BlockerInput, BlockerKind, BlockerWaitResult, Lang, NodeInput, NodePatch, NodeStatus } from '@dagyard/model';
+import { BLOCKER_KINDS, DEFAULT_LANG, LANGS, LIMITS, NODE_STATUSES, parseProjectGraphInput, projectLang, slugify } from '@dagyard/model';
+import { buildImport, importProjectId, projectNameFromDir, readTasksDir, readTitles, type ImportResult } from './tasks/import.js';
 import { oneLine } from './tasks/parse.js';
 import { ghCliSource, type GithubSource } from './sync/github.js';
 import { formatSync, syncGithub } from './sync/sync.js';
@@ -35,10 +36,14 @@ interface Ctx {
   args: ParsedArgs;
 }
 
+/** Un texto de la ayuda en los dos idiomas; `tx` elige al imprimir. */
+type Text = readonly [en: string, es: string];
+const tx = (text: Text) => t(text[0], text[1]);
+
 interface Command {
-  usage: string;
-  summary: string;
-  help: string;
+  usage: Text;
+  summary: Text;
+  help: Text;
   flags: readonly string[];
   bools?: readonly string[];
   run: (ctx: Ctx) => Promise<number>;
@@ -46,25 +51,45 @@ interface Command {
 
 const GLOBAL_FLAGS = ['project', 'url'] as const;
 
-const HELP_GLOBAL = `Opciones comunes (antes o después del comando):
+const HELP_GLOBAL: Text = [
+  `Common options (before or after the command):
+  -p, --project <p>   project (or DAGYARD_PROJECT, .dagyard.json or ~/.config/dagyard/project)
+  --url <url>         server (or DAGYARD_URL, .dagyard.json or ~/.config/dagyard/url)
+  -h, --help          this help
+.dagyard.json = {"project": "…", "url": "…"}, the first one found walking up from the current folder (never
+past the repo root or $HOME); it is committed. Its url gets the key only if it is https and trusted (the
+preview, dagyard.run, the one in DAGYARD_URL or ~/.config/dagyard/url, or a line of ~/.config/dagyard/trusted-urls).
+The API key comes only from DAGYARD_KEY or ~/.config/dagyard/agent-key; it is never printed.
+Messages are in English; with LANG=es (or LC_ALL / LC_MESSAGES) they are in Spanish.`,
+  `Opciones comunes (antes o después del comando):
   -p, --project <p>   proyecto (o DAGYARD_PROJECT, .dagyard.json o ~/.config/dagyard/project)
   --url <url>         servidor (o DAGYARD_URL, .dagyard.json o ~/.config/dagyard/url)
   -h, --help          esta ayuda
 .dagyard.json = {"project": "…", "url": "…"}, el primero subiendo desde la carpeta actual (sin pasar de la
 raíz del repo ni de $HOME); se commitea. Su url recibe la key solo si es https y de confianza (la preview,
 dagyard.run, la de DAGYARD_URL o ~/.config/dagyard/url, o una línea de ~/.config/dagyard/trusted-urls).
-La API key sale solo de DAGYARD_KEY o ~/.config/dagyard/agent-key; nunca se imprime.`;
+La API key sale solo de DAGYARD_KEY o ~/.config/dagyard/agent-key; nunca se imprime.
+Los mensajes salen en inglés; con LANG=es (o LC_ALL / LC_MESSAGES), en español.`,
+];
 
 const COMMANDS: Record<string, Command> = {
   'node add': {
-    usage: 'dagyard node add <nodo> --title "…" --stage <etapa> [--goal "…"] [--team "…"] [--dep <nodo>]… [--status <estado>] [--link <url>]',
-    summary: 'agrega una tarea al plan',
-    help: `<nodo> es un id corto (T-314-A se guarda como t-314-a). --dep se repite o va separado por comas.
+    usage: [
+      'dagyard node add <node> --title "…" --stage <stage> [--goal "…"] [--team "…"] [--dep <node>]… [--status <status>] [--link <url>]',
+      'dagyard node add <nodo> --title "…" --stage <etapa> [--goal "…"] [--team "…"] [--dep <nodo>]… [--status <estado>] [--link <url>]',
+    ],
+    summary: ['adds a task to the plan', 'agrega una tarea al plan'],
+    help: [
+      `<node> is a short id (T-314-A is stored as t-314-a). Repeat --dep or separate it with commas.
+Statuses: pending, working, done (blocked is set by dagyard block).
+--link is the technical detail (the issue or PR URL); the task card shows it as a technical-detail link.`,
+      `<nodo> es un id corto (T-314-A se guarda como t-314-a). --dep se repite o va separado por comas.
 Estados: pending, working, done (blocked lo pone dagyard block).
 --link es el detalle técnico (URL del issue o del PR); la ficha lo muestra como «Detalle técnico ↗».`,
+    ],
     flags: ['title', 'stage', 'goal', 'team', 'dep', 'status', 'report', 'link', ...GLOBAL_FLAGS],
     async run({ io, args }) {
-      const [id] = need(args, ['nodo']);
+      const [id] = need(args, [['node', 'nodo']]);
       const input: NodeInput = {
         id: nodeId(id),
         title: required(args, 'title', LIMITS.title),
@@ -87,12 +112,18 @@ Estados: pending, working, done (blocked lo pone dagyard block).
     },
   },
   'node update': {
-    usage: 'dagyard node update <nodo> [--title "…"] [--stage <etapa>] [--goal "…"] [--team "…"] [--status <estado>] [--progress <p>] [--report <url>] [--link <url>]',
-    summary: 'cambia campos de una tarea',
-    help: '--progress acepta 0..1 o un porcentaje (40%). --link: URL del issue o del PR («Detalle técnico ↗»).',
+    usage: [
+      'dagyard node update <node> [--title "…"] [--stage <stage>] [--goal "…"] [--team "…"] [--status <status>] [--progress <p>] [--report <url>] [--link <url>]',
+      'dagyard node update <nodo> [--title "…"] [--stage <etapa>] [--goal "…"] [--team "…"] [--status <estado>] [--progress <p>] [--report <url>] [--link <url>]',
+    ],
+    summary: ['changes fields of a task', 'cambia campos de una tarea'],
+    help: [
+      '--progress takes 0..1 or a percentage (40%). --link: the issue or PR URL (the technical-detail link).',
+      '--progress acepta 0..1 o un porcentaje (40%). --link: URL del issue o del PR («Detalle técnico ↗»).',
+    ],
     flags: ['title', 'stage', 'goal', 'team', 'status', 'progress', 'report', 'link', ...GLOBAL_FLAGS],
     async run({ io, args }) {
-      const [id] = need(args, ['nodo']);
+      const [id] = need(args, [['node', 'nodo']]);
       const patch: NodePatch = {};
       const title = optional(args, 'title', LIMITS.title);
       if (title !== undefined) patch.title = title;
@@ -110,19 +141,19 @@ Estados: pending, working, done (blocked lo pone dagyard block).
       if (report !== undefined) patch.reportUrl = report;
       const link = linkArg(args);
       if (link !== undefined) patch.link = link;
-      if (Object.keys(patch).length === 0) throw new UsageError('no hay nada que cambiar');
+      if (Object.keys(patch).length === 0) throw new UsageError(t('nothing to change', 'no hay nada que cambiar'));
       await client(io, args).updateNode(project(io, args), nodeId(id), patch);
       io.stdout(`${nodeId(id)}\n`);
       return EXIT.ok;
     },
   },
   'node start': {
-    usage: 'dagyard node start <nodo> [--team "…"]',
-    summary: 'marca una tarea En progreso',
-    help: 'Atajo: dagyard start <nodo>.',
+    usage: ['dagyard node start <node> [--team "…"]', 'dagyard node start <nodo> [--team "…"]'],
+    summary: ['marks a task In progress', 'marca una tarea En progreso'],
+    help: ['Shortcut: dagyard start <node>.', 'Atajo: dagyard start <nodo>.'],
     flags: ['team', ...GLOBAL_FLAGS],
     async run({ io, args }) {
-      const [id] = need(args, ['nodo']);
+      const [id] = need(args, [['node', 'nodo']]);
       const patch: NodePatch = { status: 'working' };
       const team = optional(args, 'team', LIMITS.name);
       if (team !== undefined) patch.team = team;
@@ -132,24 +163,27 @@ Estados: pending, working, done (blocked lo pone dagyard block).
     },
   },
   'node progress': {
-    usage: 'dagyard node progress <nodo> <p>',
-    summary: 'reporta avance (0..1 o 40%)',
-    help: 'Atajo: dagyard progress <nodo> <p>.',
+    usage: ['dagyard node progress <node> <p>', 'dagyard node progress <nodo> <p>'],
+    summary: ['reports progress (0..1 or 40%)', 'reporta avance (0..1 o 40%)'],
+    help: ['Shortcut: dagyard progress <node> <p>.', 'Atajo: dagyard progress <nodo> <p>.'],
     flags: [...GLOBAL_FLAGS],
     async run({ io, args }) {
-      const [id, p] = need(args, ['nodo', 'avance']);
+      const [id, p] = need(args, [['node', 'nodo'], ['progress', 'avance']]);
       await client(io, args).updateNode(project(io, args), nodeId(id), { progress: progressArg(p) });
       io.stdout(`${nodeId(id)}\n`);
       return EXIT.ok;
     },
   },
   'node done': {
-    usage: 'dagyard node done <nodo> [--report <url>]',
-    summary: 'marca una tarea Lista',
-    help: '--report cuelga el informe de Basalt de la tarea. Atajo: dagyard done <nodo>.',
+    usage: ['dagyard node done <node> [--report <url>]', 'dagyard node done <nodo> [--report <url>]'],
+    summary: ['marks a task Done', 'marca una tarea Lista'],
+    help: [
+      "--report attaches the task's Basalt report. Shortcut: dagyard done <node>.",
+      '--report cuelga el informe de Basalt de la tarea. Atajo: dagyard done <nodo>.',
+    ],
     flags: ['report', ...GLOBAL_FLAGS],
     async run({ io, args }) {
-      const [id] = need(args, ['nodo']);
+      const [id] = need(args, [['node', 'nodo']]);
       const patch: NodePatch = { status: 'done' }; // el servidor fija progress = 1
       const report = optional(args, 'report', LIMITS.url);
       if (report !== undefined) patch.reportUrl = report;
@@ -159,42 +193,55 @@ Estados: pending, working, done (blocked lo pone dagyard block).
     },
   },
   'edge add': {
-    usage: 'dagyard edge add <de> <a>',
-    summary: 'agrega una dependencia: <a> necesita que <de> esté lista',
-    help: 'El servidor rechaza la arista si arma un ciclo.',
+    usage: ['dagyard edge add <from> <to>', 'dagyard edge add <de> <a>'],
+    summary: ['adds a dependency: <to> needs <from> to be done', 'agrega una dependencia: <a> necesita que <de> esté lista'],
+    help: ['The server rejects the dependency if it closes a loop.', 'El servidor rechaza la arista si arma un ciclo.'],
     flags: [...GLOBAL_FLAGS],
     async run({ io, args }) {
-      const [from, to] = need(args, ['de', 'a']);
+      const [from, to] = need(args, [['from', 'de'], ['to', 'a']]);
       await client(io, args).addEdge(project(io, args), nodeId(from), nodeId(to));
       io.stdout(`${nodeId(from)} → ${nodeId(to)}\n`);
       return EXIT.ok;
     },
   },
   block: {
-    usage: 'dagyard block <nodo> --kind decision|review|access --q "…" [--opt "…"]… [--label "…"]',
-    summary: 'le pide al humano una decisión, una revisión o un acceso',
-    help: `decision: --opt al menos una vez (máximo ${LIMITS.options}).
-review: sin --opt ofrece «Aprobar» y «Pedir cambios».
+    usage: [
+      'dagyard block <node> --kind decision|review|access --q "…" [--opt "…"]… [--label "…"]',
+      'dagyard block <nodo> --kind decision|review|access --q "…" [--opt "…"]… [--label "…"]',
+    ],
+    summary: ['asks a person for a decision, a review or an access', 'le pide al humano una decisión, una revisión o un acceso'],
+    help: [
+      `decision: --opt at least once (at most ${LIMITS.options}).
+review: without --opt it offers «Approve» and «Request changes» (in a Spanish project, «Aprobar» and «Pedir cambios»).
+access: --label names the access (e.g. «Payment gateway key»).
+Prints the blocker id, to pass to dagyard wait --blocker.`,
+      `decision: --opt al menos una vez (máximo ${LIMITS.options}).
+review: sin --opt ofrece «Approve» y «Request changes» (en un proyecto en español, «Aprobar» y «Pedir cambios»).
 access: --label nombra el acceso (p. ej. «Clave de la pasarela de pagos»).
 Imprime el id del bloqueante, para pasarlo a dagyard wait --blocker.`,
+    ],
     flags: ['kind', 'q', 'opt', 'label', ...GLOBAL_FLAGS],
     bools: ['json'],
     async run({ io, args }) {
-      const [id] = need(args, ['nodo']);
+      const [id] = need(args, [['node', 'nodo']]);
       const kind = required(args, 'kind') as BlockerKind;
-      if (!BLOCKER_KINDS.includes(kind)) throw new UsageError(`--kind debe ser ${BLOCKER_KINDS.join(', ')}`);
+      const kinds = BLOCKER_KINDS.join(', ');
+      if (!BLOCKER_KINDS.includes(kind)) throw new UsageError(t(`--kind must be ${kinds}`, `--kind debe ser ${kinds}`));
       const input: BlockerInput = { kind, question: required(args, 'q', LIMITS.question) };
       const opts = (args.flags.opt ?? []).map((o) => o.trim()).filter(Boolean);
-      for (const o of opts) if (o.length > LIMITS.option) throw new UsageError(`cada --opt va hasta ${LIMITS.option} caracteres`);
-      if (opts.length > LIMITS.options) throw new UsageError(`máximo ${LIMITS.options} opciones`);
+      for (const o of opts) {
+        if (o.length > LIMITS.option) throw new UsageError(t(`each --opt is at most ${LIMITS.option} characters`, `cada --opt va hasta ${LIMITS.option} caracteres`));
+      }
+      if (opts.length > LIMITS.options) throw new UsageError(t(`at most ${LIMITS.options} options`, `máximo ${LIMITS.options} opciones`));
       if (kind === 'access') {
-        if (opts.length) throw new UsageError('access no lleva --opt; usa --label');
+        if (opts.length) throw new UsageError(t('access takes no --opt; use --label', 'access no lleva --opt; usa --label'));
         input.options = [];
         input.accessLabel = required(args, 'label', LIMITS.name);
       } else {
-        if (flag(args, 'label') !== undefined) throw new UsageError('--label es solo para access');
-        input.options = opts.length ? opts : kind === 'review' ? ['Aprobar', 'Pedir cambios'] : [];
-        if (!input.options.length) throw new UsageError('decision necesita al menos un --opt');
+        if (flag(args, 'label') !== undefined) throw new UsageError(t('--label is only for access', '--label es solo para access'));
+        if (!opts.length && kind !== 'review') throw new UsageError(t('decision needs at least one --opt', 'decision necesita al menos un --opt'));
+        // una revisión sin --opt no manda opciones: el Worker pone las del idioma del proyecto (#77)
+        if (opts.length) input.options = opts;
       }
       const blocker = await client(io, args).openBlocker(project(io, args), nodeId(id), input);
       io.stdout(args.bools.has('json') ? `${JSON.stringify(blocker)}\n` : `${blocker.id}\n`);
@@ -202,18 +249,23 @@ Imprime el id del bloqueante, para pasarlo a dagyard wait --blocker.`,
     },
   },
   wait: {
-    usage: 'dagyard wait <nodo> [--blocker <id>] [--timeout <seg>] [--json]',
-    summary: 'espera a que el humano resuelva y devuelve la resolución',
-    help: `Sin --blocker espera el último bloqueante abierto del nodo (o devuelve el último resuelto).
+    usage: ['dagyard wait <node> [--blocker <id>] [--timeout <sec>] [--json]', 'dagyard wait <nodo> [--blocker <id>] [--timeout <seg>] [--json]'],
+    summary: ['waits for the person to answer and prints the answer', 'espera a que el humano resuelva y devuelve la resolución'],
+    help: [
+      `Without --blocker it waits on the node's latest open blocker (or prints the latest answered one).
+First line: the chosen option (or the access value). If there is a note, «note: …» follows.
+Without --timeout it waits forever. Exit 2 when it runs out.`,
+      `Sin --blocker espera el último bloqueante abierto del nodo (o devuelve el último resuelto).
 Primera línea: la opción elegida (o el valor del acceso). Si hay nota, sigue «nota: …».
 Sin --timeout espera para siempre. Exit 2 si vence.`,
+    ],
     flags: ['blocker', 'timeout', ...GLOBAL_FLAGS],
     bools: ['json'],
     async run({ io, args }) {
-      const [id] = need(args, ['nodo']);
+      const [id] = need(args, [['node', 'nodo']]);
       const timeoutRaw = flag(args, 'timeout');
       const timeout = timeoutRaw === undefined ? 0 : Number(timeoutRaw);
-      if (!Number.isFinite(timeout) || timeout < 0) throw new UsageError('--timeout va en segundos (≥0)');
+      if (!Number.isFinite(timeout) || timeout < 0) throw new UsageError(t('--timeout is in seconds (≥0)', '--timeout va en segundos (≥0)'));
       const sleep = io.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
       const api = client(io, args);
       const proj = project(io, args);
@@ -222,7 +274,7 @@ Sin --timeout espera para siempre. Exit 2 si vence.`,
       for (;;) {
         const left = Math.ceil((deadline - Date.now()) / 1000);
         if (left <= 0) {
-          io.stderr(`dagyard: nadie resolvió el bloqueante de ${nodeId(id)} en ${timeout} s\n`);
+          io.stderr(t(`dagyard: nobody answered the blocker on ${nodeId(id)} within ${timeout} s\n`, `dagyard: nadie resolvió el bloqueante de ${nodeId(id)} en ${timeout} s\n`));
           return EXIT.timeout;
         }
         let result: BlockerWaitResult | null;
@@ -243,16 +295,17 @@ Sin --timeout espera para siempre. Exit 2 si vence.`,
     },
   },
   msg: {
-    usage: 'dagyard msg <nodo> "…" [--report <url>] [--from "…"]',
-    summary: `le escribe al PM en corto (≤${LIMITS.message} caracteres)`,
-    help: '--from por defecto lo pone el servidor («Equipo de <equipo>»).',
+    usage: ['dagyard msg <node> "…" [--report <url>] [--from "…"]', 'dagyard msg <nodo> "…" [--report <url>] [--from "…"]'],
+    summary: [`writes a short note to the PM (≤${LIMITS.message} characters)`, `le escribe al PM en corto (≤${LIMITS.message} caracteres)`],
+    help: ['By default the server fills in --from (the team name).', '--from por defecto lo pone el servidor («Equipo de <equipo>»).'],
     flags: ['report', 'from', ...GLOBAL_FLAGS],
     async run({ io, args }) {
-      const [id] = need(args, ['nodo', 'texto']);
+      const [id] = need(args, [['node', 'nodo'], ['text', 'texto']]);
       const text = args.positionals.slice(1).join(' ').trim();
-      if (!text) throw new UsageError('el mensaje está vacío');
+      if (!text) throw new UsageError(t('the message is empty', 'el mensaje está vacío'));
       if ([...text].length > LIMITS.message) {
-        throw new UsageError(`el mensaje tiene ${[...text].length} caracteres; el máximo es ${LIMITS.message}`);
+        const len = [...text].length;
+        throw new UsageError(t(`the message has ${len} characters; the limit is ${LIMITS.message}`, `el mensaje tiene ${len} caracteres; el máximo es ${LIMITS.message}`));
       }
       const input: { text: string; from?: string; reportUrl?: string } = { text };
       const from = optional(args, 'from', LIMITS.name);
@@ -265,10 +318,14 @@ Sin --timeout espera para siempre. Exit 2 si vence.`,
     },
   },
   next: {
-    usage: 'dagyard next [--project <p>] [--json]',
-    summary: 'la siguiente tarea arrancable, con su línea /goal lista para pegar',
-    help: `Imprime una sola línea: /goal <misión>; el link de la tarea en el cielo va aparte, por stderr
+    usage: ['dagyard next [--project <p>] [--json]', 'dagyard next [--project <p>] [--json]'],
+    summary: ['the next task ready to start, with its /goal line ready to paste', 'la siguiente tarea arrancable, con su línea /goal lista para pegar'],
+    help: [
+      `Prints a single line: /goal <mission>; the task's link in the sky goes separately, on stderr
+(«in the sky: …»), so the output pastes as is. --json carries it in «link». Exit 3 when nothing is ready to start.`,
+      `Imprime una sola línea: /goal <misión>; el link de la tarea en el cielo va aparte, por stderr
 («en el cielo: …»), así la salida se pega tal cual. --json lo trae en «link». Exit 3 si no hay nada arrancable.`,
+    ],
     flags: [...GLOBAL_FLAGS],
     bools: ['json'],
     async run({ io, args }) {
@@ -282,24 +339,29 @@ Sin --timeout espera para siempre. Exit 2 si vence.`,
         return res.goalLine ? EXIT.ok : EXIT.nothing;
       }
       if (!res.goalLine) {
-        io.stderr(`dagyard: no hay tareas arrancables en ${proj}\n`);
+        io.stderr(t(`dagyard: no task is ready to start in ${proj}\n`, `dagyard: no hay tareas arrancables en ${proj}\n`));
         return EXIT.nothing;
       }
       io.stdout(`${goalLine(res.goalLine)}\n`);
-      if (link) io.stderr(`en el cielo: ${link}\n`);
+      if (link) io.stderr(t(`in the sky: ${link}\n`, `en el cielo: ${link}\n`));
       return EXIT.ok;
     },
   },
   open: {
-    usage: 'dagyard open [<tarea>] [--print]',
-    summary: 'el link del cielo al proyecto o a una tarea; en macOS lo abre',
-    help: `Sin <tarea>, el proyecto; con <tarea>, el cielo vuela a ella y abre su ficha.
+    usage: ['dagyard open [<task>] [--print]', 'dagyard open [<tarea>] [--print]'],
+    summary: ['the sky link to the project or to a task; on macOS it opens it', 'el link del cielo al proyecto o a una tarea; en macOS lo abre'],
+    help: [
+      `Without <task>, the project; with <task>, the sky flies to it and opens its card.
+Prints the link (safe to send to anyone: the key is never in it) and on macOS opens it in the browser.
+--print only prints it. It does not use the API key or call the server.`,
+      `Sin <tarea>, el proyecto; con <tarea>, el cielo vuela a ella y abre su ficha.
 Imprime el link (se puede mandar a quien sea: la clave nunca va en él) y en macOS lo abre en el navegador.
 --print solo lo imprime. No usa la API key ni llama al servidor.`,
+    ],
     flags: [...GLOBAL_FLAGS],
     bools: ['print'],
     async run({ io, args }) {
-      if (args.positionals.length > 1) throw new UsageError(`sobra «${args.positionals[1]}»`);
+      if (args.positionals.length > 1) throw new UsageError(extra(args.positionals[1]!));
       const [task] = args.positionals;
       const link = skyLink(server(io, args).url, project(io, args), task === undefined ? undefined : nodeId(task));
       io.stdout(`${link}\n`);
@@ -307,17 +369,35 @@ Imprime el link (se puede mandar a quien sea: la clave nunca va en él) y en mac
         try {
           await (io.open ?? openInBrowser)(link);
         } catch (err) {
-          io.stderr(`dagyard: no pude abrir el navegador (${err instanceof Error ? err.message : String(err)}); copia el link\n`);
+          const why = err instanceof Error ? err.message : String(err);
+          io.stderr(t(`dagyard: could not open the browser (${why}); copy the link\n`, `dagyard: no pude abrir el navegador (${why}); copia el link\n`));
         }
       }
       return EXIT.ok;
     },
   },
   import: {
-    usage: 'dagyard import --from <ruta a .cofoundy/tasks> [--project <p>] [--name "…"] [--titles <json>] [--replace] [--dry-run] [--json]',
-    summary: 'crea un proyecto nuevo desde las tareas del orchestrator',
-    help: `deps y blockedBy se vuelven dependencias; status se normaliza a ${NODE_STATUSES.join(', ')}.
-Etapas: phase si todas las tareas lo traen; si no, por profundidad («Para empezar», «Después», «Luego», … «Al final»).
+    usage: [
+      'dagyard import --from <path to .cofoundy/tasks> [--project <p>] [--name "…"] [--lang en|es] [--titles <json>] [--replace] [--dry-run] [--json]',
+      'dagyard import --from <ruta a .cofoundy/tasks> [--project <p>] [--name "…"] [--lang en|es] [--titles <json>] [--replace] [--dry-run] [--json]',
+    ],
+    summary: ["creates a new project from the orchestrator's tasks", 'crea un proyecto nuevo desde las tareas del orchestrator'],
+    help: [
+      `deps and blockedBy become dependencies; status is normalized to ${NODE_STATUSES.join(', ')}.
+Stages: phase if every task has one; otherwise by depth («Getting started», «Next», «Then», … «Finally»).
+Stages and missions go in the project's language: --lang for a new one (default en); --replace keeps the
+existing project's language unless you pass --lang.
+If the project already exists it is not overwritten (the server decides on create): pick another with --project
+or pass --replace to replace it. With the agent key, replacing keeps the owner's questions and answers and the
+server rejects it (409) if the new graph drops a task that has any; with the owner token, --replace deletes them
+and recreates them from the files.
+--titles sets PM-friendly titles: a JSON object { "node id": "title" }, inline or the path to a .json file.
+They replace the ones taken from the tasks; unknown ids or titles over ${LIMITS.title} characters only warn.
+--dry-run only counts, sends nothing and needs no server (with --replace it reads the project's language if it can).`,
+      `deps y blockedBy se vuelven dependencias; status se normaliza a ${NODE_STATUSES.join(', ')}.
+Etapas: phase si todas las tareas lo traen; si no, por profundidad («Para empezar», «Después», «Luego», … «Al final»
+en un proyecto en español). Etapas y misiones van en el idioma del proyecto: --lang para uno nuevo (default en);
+--replace conserva el del proyecto existente salvo que pases --lang.
 Si el proyecto ya existe no lo pisa (el servidor lo decide al crear): elige otro con --project o pasa
 --replace para reemplazarlo. Con la clave de agente, el reemplazo conserva las preguntas y respuestas
 del dueño y el servidor lo rechaza (409) si el grafo nuevo quita una tarea que tiene alguna; con el token
@@ -325,19 +405,25 @@ del dueño, --replace las borra y las recrea desde el archivo.
 --titles pone los títulos en lenguaje de PM: un objeto JSON { "id de nodo": "título" }, en línea o la ruta a un
 archivo .json. Reemplazan a los que se sacan de las tareas; ids desconocidos o títulos de más de ${LIMITS.title}
 caracteres solo avisan.
---dry-run solo cuenta, no envía nada y no necesita servidor.`,
-    flags: ['from', 'name', 'titles', ...GLOBAL_FLAGS],
+--dry-run solo cuenta, no envía nada y no necesita servidor (con --replace lee el idioma del proyecto si puede).`,
+    ],
+    flags: ['from', 'name', 'lang', 'titles', ...GLOBAL_FLAGS],
     bools: ['dry-run', 'json', 'replace'],
     async run({ io, args }) {
       need(args, []);
       const from = required(args, 'from');
+      const langFlag = flag(args, 'lang');
+      if (langFlag !== undefined && !LANGS.includes(langFlag as Lang)) {
+        throw new UsageError(t(`--lang is ${LANGS.join(' or ')}: «${langFlag}»`, `--lang va ${LANGS.join(' o ')}: «${langFlag}»`));
+      }
       let files;
       try {
         files = readTasksDir(from);
       } catch (err) {
-        throw new UsageError(`no pude leer ${from}: ${err instanceof Error ? err.message : String(err)}`);
+        const why = err instanceof Error ? err.message : String(err);
+        throw new UsageError(t(`could not read ${from}: ${why}`, `no pude leer ${from}: ${why}`));
       }
-      if (!files.length) throw new UsageError(`no hay tareas (*.md) en ${from}`);
+      if (!files.length) throw new UsageError(t(`no tasks (*.md) in ${from}`, `no hay tareas (*.md) en ${from}`));
       const name = flag(args, 'name');
       const titlesRaw = flag(args, 'titles');
       let titles;
@@ -346,16 +432,25 @@ caracteres solo avisan.
       } catch (err) {
         throw new UsageError(`--titles: ${err instanceof Error ? err.message : String(err)}`);
       }
-      const result = buildImport(files, {
-        dirName: projectNameFromDir(from),
-        ...(flag(args, 'project') ? { projectId: flag(args, 'project')! } : {}),
-        ...(name ? { name } : {}),
-        ...(titles ? { titles } : {}),
-      });
-      const check = parseProjectGraphInput(result.graph);
-      if (!check.ok) throw new Error(`el grafo importado no pasa la validación del modelo: ${check.message}`);
+      const where = { dirName: projectNameFromDir(from), ...(flag(args, 'project') ? { projectId: flag(args, 'project')! } : {}) };
       const dry = args.bools.has('dry-run');
       const replace = args.bools.has('replace');
+      // idioma de los datos (#77): --lang; si no, el del proyecto que se reemplaza; si no, el de uno nuevo
+      let dataLang = (langFlag as Lang | undefined) ?? DEFAULT_LANG;
+      let langNote: string | null = null;
+      if (langFlag === undefined && replace) {
+        try {
+          dataLang = (await existingProjectLang(client(io, args), importProjectId(where))) ?? DEFAULT_LANG;
+        } catch (err) {
+          if (!dry) throw err;
+          const why = err instanceof Error ? err.message : String(err);
+          langNote = t(`could not read the project's language (${why}); the preview uses English`, `no pude leer el idioma del proyecto (${why}); la simulación va en inglés`);
+        }
+      }
+      const result = buildImport(files, { ...where, ...(name ? { name } : {}), ...(titles ? { titles } : {}), projectLang: dataLang });
+      if (langNote) result.warnings.unshift(langNote);
+      const check = parseProjectGraphInput(result.graph);
+      if (!check.ok) throw new Error(t(`the imported graph fails the model's validation: ${check.message}`, `el grafo importado no pasa la validación del modelo: ${check.message}`));
       if (!dry) {
         // sin --replace, el «¿ya existe?» lo decide el servidor en la misma escritura: dos imports a la vez no se pisan
         try {
@@ -365,7 +460,10 @@ caracteres solo avisan.
           throw new ApiRequestError(
             409,
             'conflict',
-            `el proyecto «${result.projectId}» ya existe y no lo piso; usa --project <otro> para crear uno nuevo o --replace para reemplazarlo`,
+            t(
+              `the project «${result.projectId}» already exists and I will not overwrite it; use --project <other> to create a new one or --replace to replace it`,
+              `el proyecto «${result.projectId}» ya existe y no lo piso; usa --project <otro> para crear uno nuevo o --replace para reemplazarlo`,
+            ),
           );
         }
       }
@@ -374,23 +472,40 @@ caracteres solo avisan.
     },
   },
   sync: {
-    usage: 'dagyard sync --github <owner/repo> [--label <l>] [--stage <etapa>] [--all] [--dry-run] [--json]',
-    summary: 'crea o actualiza las tareas gh-<n> desde los issues de GitHub',
-    help: `Usa gh (GitHub CLI) autenticado. Nunca reemplaza el grafo: solo agrega y avanza, cada cambio en vivo.
-Tarea nueva = issue abierto (con --all también los cerrados, ya Listos), en --stage o «construccion» o la primera etapa,
-con el enlace al issue. A una tarea que ya existe nunca le cambia título, etapa, equipo ni misión; el enlace, solo si
+    usage: [
+      'dagyard sync --github <owner/repo> [--label <l>] [--stage <stage>] [--all] [--dry-run] [--json]',
+      'dagyard sync --github <owner/repo> [--label <l>] [--stage <etapa>] [--all] [--dry-run] [--json]',
+    ],
+    summary: ['creates or updates the gh-<n> tasks from GitHub issues', 'crea o actualiza las tareas gh-<n> desde los issues de GitHub'],
+    help: [
+      `Uses gh (GitHub CLI), signed in. It never replaces the graph: it only adds and moves forward, every change live.
+New task = open issue (with --all also the closed ones, already Done), in --stage, or the build stage (Build /
+Construcción), or the first stage, with the link to the issue. --stage takes the id or the name, in either language,
+and sync never creates a stage. A decision with no options in the body offers Yes / No in the project's language.
+On an existing task it never changes title, stage, team or mission; the link, only if it
+has none. Status only moves forward: closed → Done; open with an open PR that says «closes #n» → In progress.
+«Part of #n» → task n needs this one; «depends on #n», «blocked by #n» or «bloqueado por #n» → this one needs n.
+The founder-input label opens a decision with the options from the body (- **A:** …, - A) …), only if the task
+has no decision yet (open or answered). The epic label creates no task.
+--dry-run reads but writes nothing.`,
+      `Usa gh (GitHub CLI) autenticado. Nunca reemplaza el grafo: solo agrega y avanza, cada cambio en vivo.
+Tarea nueva = issue abierto (con --all también los cerrados, ya Listos), en --stage, o la de construcción (Build /
+Construcción), o la primera etapa, con el enlace al issue. --stage acepta el id o el nombre, en cualquiera de los dos
+idiomas, y sync nunca crea una etapa. Una decisión sin opciones en el cuerpo ofrece Sí / No en el idioma del proyecto.
+A una tarea que ya existe nunca le cambia título, etapa, equipo ni misión; el enlace, solo si
 no tiene. El estado solo avanza: cerrado → Lista; abierto con un PR abierto que dice «closes #n» → En progreso.
 «Parte de #n» → la tarea n necesita esta; «depende de #n», «blocked by #n» o «bloqueado por #n» → esta necesita la n.
 La etiqueta founder-input abre una decisión con las opciones del cuerpo (- **A:** …, - A) …), solo si la tarea
 no tiene ya una decisión (abierta o respondida). La etiqueta epic no crea tarea.
 --dry-run lee pero no escribe nada.`,
+    ],
     flags: ['github', 'label', 'stage', ...GLOBAL_FLAGS],
     bools: ['all', 'dry-run', 'json'],
     async run({ io, args }) {
       need(args, []);
       const repo = required(args, 'github');
       if (!/^[\w.-]+\/[\w.-]+$/.test(repo) || repo.split('/').some((seg) => seg === '.' || seg.includes('..'))) {
-        throw new UsageError(`--github va como owner/repo: «${repo}»`);
+        throw new UsageError(t(`--github goes as owner/repo: «${repo}»`, `--github va como owner/repo: «${repo}»`));
       }
       const label = optional(args, 'label');
       const stage = optional(args, 'stage');
@@ -410,6 +525,10 @@ no tiene ya una decisión (abierta o respondida). La etiqueta epic no crea tarea
 const SHORTCUTS: Record<string, string> = { start: 'node start', progress: 'node progress', done: 'node done' };
 
 export async function run(argv: string[], io: Io): Promise<number> {
+  return withLang(langFromEnv(io.env), () => runIn(argv, io));
+}
+
+async function runIn(argv: string[], io: Io): Promise<number> {
   let key: string | null = null;
   try {
     key = loadKey(io.env);
@@ -438,7 +557,7 @@ export async function run(argv: string[], io: Io): Promise<number> {
       rest = argv.slice(1);
     }
     const cmd = COMMANDS[name];
-    if (!cmd) throw new UsageError(`no conozco el comando «${name}»`);
+    if (!cmd) throw new UsageError(t(`unknown command «${name}»`, `no conozco el comando «${name}»`));
     // las globales de antes del comando van primero: si se repiten después, gana la de después
     const args = parseArgs([...lead.globals, ...rest], cmd.bools ?? []);
     if (args.bools.has('help')) {
@@ -447,13 +566,14 @@ export async function run(argv: string[], io: Io): Promise<number> {
     }
     assertKnownFlags(args, cmd.flags);
     for (const b of args.bools) {
-      if (b !== 'help' && !(cmd.bools ?? []).includes(b)) throw new UsageError(`opción desconocida: --${b}`);
+      if (b !== 'help' && !(cmd.bools ?? []).includes(b)) throw new UsageError(t(`unknown option: --${b}`, `opción desconocida: --${b}`));
     }
     return await cmd.run({ io, args });
   } catch (err) {
     const redact = (s: string) => (key ? s.split(key).join('***') : s);
     if (err instanceof UsageError) {
-      io.stderr(redact(`dagyard: ${err.message}\nUsa «dagyard --help» o «dagyard <comando> --help».\n`));
+      const hint = t('See «dagyard --help» or «dagyard <command> --help».', 'Usa «dagyard --help» o «dagyard <comando> --help».');
+      io.stderr(redact(`dagyard: ${err.message}\n${hint}\n`));
       return EXIT.usage;
     }
     if (err instanceof ApiRequestError) {
@@ -480,7 +600,8 @@ function leadingGlobals(argv: string[]): { globals: string[]; rest: string[] } {
     globals.push(argv[i]!);
     if (m[3] !== undefined) continue;
     const value = argv[i + 1];
-    if (value === undefined) throw new UsageError(`a --${m[1] ?? 'project'} le falta el valor`);
+    const opt = m[1] ?? 'project';
+    if (value === undefined) throw new UsageError(t(`--${opt} needs a value`, `a --${opt} le falta el valor`));
     globals.push(value);
     i++;
   }
@@ -497,12 +618,16 @@ function server(io: Io, args: ParsedArgs): { url: string; key: string | null } {
   const urlFlag = flag(args, 'url');
   const cfg = config(io, urlFlag !== undefined);
   const url = urlFlag ?? cfg.url;
-  if (!url) throw new UsageError('falta el servidor: --url, DAGYARD_URL, .dagyard.json o ~/.config/dagyard/url');
+  if (!url) {
+    throw new UsageError(
+      t('missing server: --url, DAGYARD_URL, .dagyard.json or ~/.config/dagyard/url', 'falta el servidor: --url, DAGYARD_URL, .dagyard.json o ~/.config/dagyard/url'),
+    );
+  }
   return { url, key: cfg.key };
 }
 
 function client(io: Io, args: ParsedArgs, srv = server(io, args)): DagyardClient {
-  if (!srv.key) throw new UsageError('falta la API key: DAGYARD_KEY o ~/.config/dagyard/agent-key');
+  if (!srv.key) throw new UsageError(t('missing API key: DAGYARD_KEY or ~/.config/dagyard/agent-key', 'falta la API key: DAGYARD_KEY o ~/.config/dagyard/agent-key'));
   return new DagyardClient({ baseUrl: srv.url, key: srv.key, ...(io.fetch ? { fetch: io.fetch } : {}), ...(io.sleep ? { sleep: io.sleep } : {}) });
 }
 
@@ -511,28 +636,40 @@ function openInBrowser(link: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn('open', [link], { stdio: 'ignore' });
     child.on('error', reject);
-    child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`open salió con ${code}`))));
+    child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(t(`open exited with ${code}`, `open salió con ${code}`)))));
   });
 }
 
 function project(io: Io, args: ParsedArgs): string {
   const p = flag(args, 'project') ?? config(io, true).project;
-  if (!p) throw new UsageError('falta el proyecto: --project, DAGYARD_PROJECT, .dagyard.json o ~/.config/dagyard/project');
+  if (!p) {
+    throw new UsageError(
+      t(
+        'missing project: --project, DAGYARD_PROJECT, .dagyard.json or ~/.config/dagyard/project',
+        'falta el proyecto: --project, DAGYARD_PROJECT, .dagyard.json o ~/.config/dagyard/project',
+      ),
+    );
+  }
   return slugify(p);
 }
 
-/** Los posicionales obligatorios, en orden (los que se piden siempre existen). */
-function need(args: ParsedArgs, names: string[]): [string, string] {
+/** Los posicionales obligatorios, en orden (los que se piden siempre existen); cada nombre en inglés y español. */
+function need(args: ParsedArgs, names: Text[]): [string, string] {
   const missing = names.slice(args.positionals.length);
-  if (missing.length) throw new UsageError(`falta <${missing[0]}>`);
-  if (names.length === 0 && args.positionals.length) {
-    throw new UsageError(`sobra «${args.positionals[0]}»`);
+  if (missing.length) {
+    const name = tx(missing[0]!);
+    throw new UsageError(t(`missing <${name}>`, `falta <${name}>`));
   }
+  if (names.length === 0 && args.positionals.length) throw new UsageError(extra(args.positionals[0]!));
   return args.positionals as [string, string];
 }
 
+function extra(arg: string): string {
+  return t(`unexpected «${arg}»`, `sobra «${arg}»`);
+}
+
 function nodeId(raw: string): string {
-  if (!/[a-z0-9]/i.test(raw.normalize('NFD'))) throw new UsageError(`«${raw}» no sirve como id de nodo`);
+  if (!/[a-z0-9]/i.test(raw.normalize('NFD'))) throw new UsageError(t(`«${raw}» is not a usable node id`, `«${raw}» no sirve como id de nodo`));
   return slugify(raw);
 }
 
@@ -542,20 +679,20 @@ async function blockerOf(api: DagyardClient, proj: string, node: string): Promis
     .filter((b) => b.nodeId === node)
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const pick = mine.filter((b) => b.status === 'open').pop() ?? mine.pop();
-  if (!pick) throw new UsageError(`${node} no tiene bloqueantes; ábrelo con «dagyard block ${node} …»`);
+  if (!pick) throw new UsageError(t(`${node} has no blockers; open one with «dagyard block ${node} …»`, `${node} no tiene bloqueantes; ábrelo con «dagyard block ${node} …»`));
   return pick.id;
 }
 
 function required(args: ParsedArgs, key: string, max?: number): string {
   const v = optional(args, key, max);
-  if (v === undefined || v === '') throw new UsageError(`falta --${key}`);
+  if (v === undefined || v === '') throw new UsageError(t(`missing --${key}`, `falta --${key}`));
   return v;
 }
 
 function optional(args: ParsedArgs, key: string, max?: number): string | undefined {
   const v = flag(args, key)?.trim();
   if (v !== undefined && max !== undefined && [...v].length > max) {
-    throw new UsageError(`--${key} va hasta ${max} caracteres`);
+    throw new UsageError(t(`--${key} is at most ${max} characters`, `--${key} va hasta ${max} caracteres`));
   }
   return v;
 }
@@ -563,14 +700,14 @@ function optional(args: ParsedArgs, key: string, max?: number): string | undefin
 function linkArg(args: ParsedArgs): string | undefined {
   const link = optional(args, 'link', LIMITS.url);
   if (link !== undefined && !/^https?:\/\/\S+$/i.test(link)) {
-    throw new UsageError(`--link debe ser una URL http(s) (la del issue o del PR): «${link}»`);
+    throw new UsageError(t(`--link must be an http(s) URL (the issue or PR one): «${link}»`, `--link debe ser una URL http(s) (la del issue o del PR): «${link}»`));
   }
   return link;
 }
 
 function statusArg(s: string): NodeStatus {
-  if (s === 'blocked') throw new UsageError('blocked no se pone a mano: lo pone «dagyard block»');
-  if (!NODE_STATUSES.includes(s as NodeStatus)) throw new UsageError(`--status debe ser ${MANUAL_STATUSES}`);
+  if (s === 'blocked') throw new UsageError(t('blocked is not set by hand: «dagyard block» sets it', 'blocked no se pone a mano: lo pone «dagyard block»'));
+  if (!NODE_STATUSES.includes(s as NodeStatus)) throw new UsageError(t(`--status must be ${MANUAL_STATUSES}`, `--status debe ser ${MANUAL_STATUSES}`));
   return s as NodeStatus;
 }
 
@@ -579,9 +716,9 @@ const MANUAL_STATUSES = NODE_STATUSES.filter((s) => s !== 'blocked').join(', ');
 export function progressArg(raw: string): number {
   const pct = raw.trim().endsWith('%');
   let n = Number(raw.trim().replace(/%$/, ''));
-  if (!Number.isFinite(n)) throw new UsageError(`avance inválido: «${raw}»`);
+  if (!Number.isFinite(n)) throw new UsageError(t(`invalid progress: «${raw}»`, `avance inválido: «${raw}»`));
   if (pct || n > 1) n /= 100;
-  if (n < 0 || n > 1) throw new UsageError(`el avance va de 0 a 1 (o de 0% a 100%): «${raw}»`);
+  if (n < 0 || n > 1) throw new UsageError(t(`progress goes from 0 to 1 (or 0% to 100%): «${raw}»`, `el avance va de 0 a 1 (o de 0% a 100%): «${raw}»`));
   return Math.round(n * 1000) / 1000;
 }
 
@@ -603,33 +740,71 @@ export function goalLine(raw: string): string {
 function formatResolution(r: BlockerWaitResult): string {
   const res = r.blocker.resolution;
   const first = r.blocker.kind === 'access' ? (r.value ?? '') : (res?.choice ?? '');
-  return `${first}\n${res?.note ? `nota: ${oneLine(res.note, 10_000)}\n` : ''}`;
+  return `${first}\n${res?.note ? `${t('note', 'nota')}: ${oneLine(res.note, 10_000)}\n` : ''}`;
+}
+
+/** El idioma del proyecto que se va a reemplazar; null si no existe (será uno nuevo). */
+async function existingProjectLang(api: DagyardClient, pid: string): Promise<Lang | null> {
+  try {
+    return projectLang((await api.snapshot(pid)).project);
+  } catch (err) {
+    if (err instanceof ApiRequestError && err.status === 404) return null;
+    throw err;
+  }
 }
 
 function formatImport(r: ImportResult, dry: boolean, replace: boolean): string {
   const s = r.stats;
-  const how = s.stageSource === 'phase' ? 'por fase' : 'por profundidad';
-  const done = replace ? ' — reemplazado' : ' — importado';
+  const how = s.stageSource === 'phase' ? t('by phase', 'por fase') : t('by depth', 'por profundidad');
+  const done = replace ? t(' — replaced', ' — reemplazado') : t(' — imported', ' — importado');
+  const st = s.status;
   const lines = [
-    `Proyecto «${r.graph.name}» (${r.projectId})${dry ? ' — simulación, no se envió nada' : done}`,
-    `${s.nodes} nodos · ${s.edges} aristas · ${s.stages.length} etapas (${how})`,
-    ...s.stages.map((st) => `  ${st.name}: ${st.nodes}`),
+    t(
+      `Project «${r.graph.name}» (${r.projectId})${dry ? ' — dry run, nothing was sent' : done}`,
+      `Proyecto «${r.graph.name}» (${r.projectId})${dry ? ' — simulación, no se envió nada' : done}`,
+    ),
+    [
+      plural(s.nodes, ['task', 'tasks'], ['nodo', 'nodos']),
+      plural(s.edges, ['dependency', 'dependencies'], ['arista', 'aristas']),
+      `${plural(s.stages.length, ['stage', 'stages'], ['etapa', 'etapas'])} (${how})`,
+    ].join(' · '),
+    ...s.stages.map((stage) => `  ${stage.name}: ${stage.nodes}`),
     // desde #35 el import nunca manda `blocked`: «te esperan» siempre daba 0 (#38); se cuentan los avisos
     [
-      `Estados: ${s.status.pending} pendientes · ${s.status.working} en progreso · ${s.status.done} listas`,
-      ...(s.asksHuman ? [s.asksHuman === 1 ? '1 pide algo a una persona' : `${s.asksHuman} piden algo a una persona`] : []),
+      t(
+        `Status: ${st.pending} pending · ${st.working} in progress · ${st.done} done`,
+        `Estados: ${st.pending} pendientes · ${st.working} en progreso · ${st.done} listas`,
+      ),
+      ...(s.asksHuman
+        ? [
+            s.asksHuman === 1
+              ? t('1 asks a person for something', '1 pide algo a una persona')
+              : t(`${s.asksHuman} ask a person for something`, `${s.asksHuman} piden algo a una persona`),
+          ]
+        : []),
     ].join(' · '),
   ];
-  if (s.titled !== undefined) lines.push(`Títulos de --titles: ${s.titled} de ${s.nodes}`);
+  if (s.titled !== undefined) lines.push(t(`Titles from --titles: ${s.titled} of ${s.nodes}`, `Títulos de --titles: ${s.titled} de ${s.nodes}`));
   if (r.warnings.length) {
-    lines.push(`Avisos (${r.warnings.length}):`, ...r.warnings.map((w) => `  - ${w}`));
+    lines.push(t(`Warnings (${r.warnings.length}):`, `Avisos (${r.warnings.length}):`), ...r.warnings.map((w) => `  - ${w}`));
   }
   return `${lines.join('\n')}\n`;
 }
 
 function globalHelp(): string {
-  const rows = Object.entries(COMMANDS).map(([name, c]) => `  ${name.padEnd(14)} ${c.summary}`);
-  return `dagyard ${VERSION} — el plan de la fábrica como un DAG vivo
+  const rows = Object.entries(COMMANDS).map(([name, c]) => `  ${name.padEnd(14)} ${tx(c.summary)}`);
+  return t(
+    `dagyard ${VERSION} — the factory's plan as a live DAG
+
+Usage: dagyard <command> [options]
+
+Commands:
+${rows.join('\n')}
+  start | progress | done   shortcuts for node start | node progress | node done
+
+${tx(HELP_GLOBAL)}
+`,
+    `dagyard ${VERSION} — el plan de la fábrica como un DAG vivo
 
 Uso: dagyard <comando> [opciones]
 
@@ -637,17 +812,19 @@ Comandos:
 ${rows.join('\n')}
   start | progress | done   atajos de node start | node progress | node done
 
-${HELP_GLOBAL}
-`;
+${tx(HELP_GLOBAL)}
+`,
+  );
 }
 
 function groupHelp(group: string): string {
   const rows = Object.entries(COMMANDS)
     .filter(([name]) => name.startsWith(`${group} `))
-    .map(([, c]) => `  ${c.usage}\n      ${c.summary}`);
-  return `Uso:\n${rows.join('\n')}\n\n${HELP_GLOBAL}\n`;
+    .map(([, c]) => `  ${tx(c.usage)}\n      ${tx(c.summary)}`);
+  return `${t('Usage', 'Uso')}:\n${rows.join('\n')}\n\n${tx(HELP_GLOBAL)}\n`;
 }
 
 function commandHelp(c: Command): string {
-  return `Uso: ${c.usage}\n\n${c.summary.charAt(0).toUpperCase()}${c.summary.slice(1)}.\n${c.help}\n\n${HELP_GLOBAL}\n`;
+  const summary = tx(c.summary);
+  return `${t('Usage', 'Uso')}: ${tx(c.usage)}\n\n${summary.charAt(0).toUpperCase()}${summary.slice(1)}.\n${tx(c.help)}\n\n${tx(HELP_GLOBAL)}\n`;
 }

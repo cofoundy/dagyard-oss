@@ -6,6 +6,7 @@ import type { ProjectSummary, Snapshot } from '../data/types';
 import { doneCount, liveStages, stageStats } from '../data/view';
 import { COPY, listas, roman, stageLabel, waitingText } from './copy';
 import type { ToastKind } from './feedback';
+import { LangSwitch } from './LangSwitch';
 
 /* ------------------------------------------------------------------ marca */
 
@@ -79,6 +80,7 @@ export const Brand = forwardRef<HTMLDivElement, BrandProps>(function Brand(
                 {p.id === currentId && <span className="tick">●</span>}
               </button>
             ))}
+            <LangSwitch />
             <button type="button" className="out" onClick={onLogout}>
               {COPY.logout}
             </button>
@@ -93,7 +95,7 @@ export const Brand = forwardRef<HTMLDivElement, BrandProps>(function Brand(
             {listas(doneCount(snapshot), snapshot.nodes.length)}
             {live.length > 0 && (
               <span className="live">
-                {' · ahora en '}
+                {` · ${COPY.liveIn} `}
                 <b>{live.map((s) => `${roman(s.index)} ${s.stage.name}`).join(' · ')}</b>
               </span>
             )}
@@ -166,7 +168,7 @@ export const Rail = forwardRef<HTMLElement, RailProps>(function Rail({ snapshot,
     else if (ref) ref.current = el;
   };
   return (
-    <nav className="hud rail" aria-label="Etapas del proyecto" ref={setRef}>
+    <nav className="hud rail" aria-label={COPY.stagesLabel} ref={setRef}>
       {stats.map((s) => (
         <button
           key={s.stage.id}

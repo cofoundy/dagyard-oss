@@ -52,6 +52,7 @@ import {
   type OverviewSolution,
   type Viewport,
 } from './framing';
+import { t, type MessageKey } from '../i18n';
 import { LabelLayer, injectStyles } from './labels';
 import type { LayoutResult } from './layout';
 import { makeTextures, type SkyTextures } from './textures';
@@ -63,7 +64,8 @@ const PCOUNT = 160;
 /** Proyecto grande: brillo de las estrellas sin etiqueta fija (pendientes y listas) en la vista general. */
 const QUIET_DIM = 0.55;
 const FAR: Omit<CamState, 'tx' | 'ty' | 'tz' | 'ox' | 'oy'> = { r: 190, theta: -0.9, phi: 0.75 };
-const NO_WEBGL = 'Este navegador no tiene WebGL. Ábrelo en Chrome, Safari o Firefox de escritorio.';
+/** El idioma se fija después de cargar el módulo: el texto se lee al usarlo. */
+const NO_WEBGL: MessageKey = 'scene.noWebgl';
 
 const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 
@@ -121,7 +123,7 @@ export function createSky(opts: CreateSkyOptions): Sky {
   try {
     renderer = new WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
   } catch {
-    labels.fallback(NO_WEBGL);
+    labels.fallback(t(NO_WEBGL));
     const sky = noop();
     sky.dispose = () => {
       labels.dispose();

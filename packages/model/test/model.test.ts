@@ -15,6 +15,7 @@ import {
   slugify,
   wouldCreateCycle,
   DEFAULT_STAGES,
+  REVIEW_OPTIONS,
   type DagNode,
   type ProjectSnapshot,
 } from '../src/index.js';
@@ -68,9 +69,10 @@ describe('validación', () => {
     expect(parseNodePatch({ id: 'x' }).ok).toBe(false);
     expect(parseNodePatch({ status: 'done', progress: 1 })).toEqual({ ok: true, value: { status: 'done', progress: 1 } });
   });
-  it('bloqueantes: la revisión trae opciones por defecto; el acceso exige su nombre y no lleva opciones', () => {
+  it('bloqueantes: la revisión sin opciones las deja al servidor (idioma del proyecto, #77); el acceso exige su nombre y no lleva opciones', () => {
     const rv = parseBlockerInput({ kind: 'review', question: '¿Lo revisas?' });
-    expect(rv.ok && rv.value.options).toEqual(['Aprobar', 'Pedir cambios']);
+    expect(rv.ok && rv.value.options).toBeUndefined();
+    expect(REVIEW_OPTIONS).toEqual({ en: ['Approve', 'Request changes'], es: ['Aprobar', 'Pedir cambios'] });
     expect(parseBlockerInput({ kind: 'decision', question: '¿A o B?' }).ok).toBe(false);
     expect(parseBlockerInput({ kind: 'access', question: 'Necesito la clave' }).ok).toBe(false);
     expect(parseBlockerInput({ kind: 'access', question: 'Necesito la clave', accessLabel: 'Clave', options: ['a'] }).ok).toBe(false);
@@ -145,7 +147,7 @@ describe('grafo', () => {
 
 describe('applyEvent', () => {
   const snap = (): ProjectSnapshot => ({
-    project: { id: 'p', name: 'P', stages: [...DEFAULT_STAGES], createdAt: at, updatedAt: at },
+    project: { id: 'p', name: 'P', lang: 'es', stages: [...DEFAULT_STAGES], createdAt: at, updatedAt: at },
     nodes: [node('a', 'pending')],
     edges: [],
     blockers: [],

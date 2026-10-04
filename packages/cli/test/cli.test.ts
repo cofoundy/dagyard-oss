@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { EXIT, goalLine, progressArg, run, skyLink, type Io } from '../src/cli.js';
-import { nextStartable, type Blocker, type DagNode, type Edge, type Stage } from '@dagyard/model';
+import { nextStartable, REVIEW_OPTIONS, type Blocker, type DagNode, type Edge, type Stage } from '@dagyard/model';
 
 const KEY = 'clave-secreta-123';
 
@@ -30,6 +30,8 @@ let edges: Edge[] = [];
 /** Proyectos que el mock da por existentes; `lockedProjects` responden 409 al PUT (bloqueantes abiertos). */
 let projects = new Set<string>();
 let lockedProjects = new Set<string>();
+/** idioma guardado de cada proyecto del mock; sin entrada = guardado antes del campo (#77) */
+let projectLangs = new Map<string, string>();
 
 /** Un nodo del mock con defaults; `next` lo elige con `nextStartable` del modelo, como el Worker. */
 function mockNode(id: string, stage: string, status: DagNode['status'], goal: string | null = null): DagNode {
@@ -66,11 +68,14 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       return reply(res, 409, { error: { code: 'conflict', message: 'El proyecto tiene una pregunta abierta para el dueño' } });
     }
     projects.add(projectId!);
+    const lang = (body as { lang?: string }).lang;
+    if (lang) projectLangs.set(projectId!, lang);
     return reply(res, 200, { ok: true });
   }
   if (req.method === 'GET' && parts.length === 3) {
     if (!projects.has(projectId!)) return reply(res, 404, { error: { code: 'not_found', message: `El proyecto «${projectId}» no existe` } });
-    return reply(res, 200, { project: { id: projectId }, nodes: [], edges: [], blockers: [...blockers.values()], messages: [], seq: 0 });
+    const lang = projectLangs.get(projectId!);
+    return reply(res, 200, { project: { id: projectId, ...(lang ? { lang } : {}) }, nodes: [], edges: [], blockers: [...blockers.values()], messages: [], seq: 0 });
   }
   if (req.method === 'GET' && kind === 'next') {
     return reply(res, 200, nextStartable(stages, nodes, edges));
@@ -97,7 +102,8 @@ async function handle(req: IncomingMessage, res: ServerResponse) {
       nodeId: nodeId!,
       kind: input.kind,
       question: input.question,
-      options: input.options,
+      // como el Worker (#77): una revisión sin opciones recibe las del idioma del proyecto
+      options: input.options ?? (input.kind === 'review' ? [...REVIEW_OPTIONS[projectLangs.get(projectId!) === 'en' ? 'en' : 'es']] : []),
       accessLabel: input.accessLabel ?? null,
       status: 'open',
       resolution: null,
@@ -146,6 +152,7 @@ beforeEach(() => {
   edges = [];
   projects = new Set(['demo']);
   lockedProjects = new Set();
+  projectLangs = new Map();
 });
 
 /** `cwd` por defecto: una carpeta temporal vacía, así ningún `.dagyard.json` del repo se cuela en los tests. */
@@ -163,6 +170,7 @@ async function cli(
     stdout: (s) => (stdout += s),
     stderr: (s) => (stderr += s),
     env: {
+      LANG: 'es_PE.UTF-8',
       DAGYARD_URL: baseUrl,
       DAGYARD_KEY: KEY,
       DAGYARD_PROJECT: 'demo',
@@ -468,12 +476,12 @@ describe('import', () => {
     expect(seen.map((x) => `${x.method} ${x.path} ${x.ifNoneMatch}`)).toEqual(['PUT /api/projects/basalt *']);
   });
 
-  it('--replace reemplaza un proyecto existente: PUT sin If-None-Match', async () => {
+  it('--replace reemplaza un proyecto existente: lee su idioma y PUT sin If-None-Match', async () => {
     projects.add('basalt');
     const r = await cli(['import', '--from', from, '--project', 'basalt', '--replace']);
     expect(r.code).toBe(0);
     expect(r.stdout).toContain('reemplazado');
-    expect(seen.map((x) => `${x.method} ${x.path}`)).toEqual(['PUT /api/projects/basalt']);
+    expect(seen.map((x) => `${x.method} ${x.path}`)).toEqual(['GET /api/projects/basalt', 'PUT /api/projects/basalt']);
     expect(last().ifNoneMatch).toBeUndefined();
   });
 
@@ -516,6 +524,109 @@ describe('import', () => {
     expect(r.code).toBe(EXIT.api);
     expect(r.stderr).toContain('unauthorized');
     expect(r.stderr).not.toContain('--replace');
+  });
+});
+
+describe('idioma de los datos = el del proyecto, no LANG (#77)', () => {
+  const from = join(__dirname, 'fixtures', 'basalt');
+  type Put = { lang?: string; stages: Array<{ id: string; name: string }>; nodes: Array<{ id: string; goal: string }> };
+  const putBody = () => seen.find((x) => x.method === 'PUT')!.body as Put;
+
+  it('import de un proyecto nuevo sin flag: etapas, misión y lang en inglés (la consola sigue a LANG)', async () => {
+    const r = await cli(['import', '--from', from, '--project', 'nuevo']);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('importado');
+    expect(seen.map((x) => `${x.method} ${x.path}`)).toEqual(['PUT /api/projects/nuevo']);
+    const body = putBody();
+    expect(body.lang).toBe('en');
+    expect(body.stages.map((s) => s.name)).toEqual(['Getting started', 'Finally']);
+    expect(body.nodes.find((n) => n.id === 'l1')!.goal).toContain('meet its acceptance criteria');
+  });
+
+  it('un proyecto en es sigue recibiendo etapas en español aunque LANG=en_US', async () => {
+    projects.add('fabrica');
+    projectLangs.set('fabrica', 'es');
+    const r = await cli(['import', '--from', from, '--project', 'fabrica', '--replace'], { LANG: 'en_US.UTF-8' });
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('replaced');
+    const body = putBody();
+    expect(body.lang).toBe('es');
+    expect(body.stages.map((s) => s.name)).toEqual(['Para empezar', 'Al final']);
+    expect(body.nodes.find((n) => n.id === 'l1')!.goal).toContain('cumple su aceptación');
+  });
+
+  it('--replace sobre un proyecto guardado sin idioma (dagyard, las demos) lo trata como español', async () => {
+    projects.add('dagyard');
+    await cli(['import', '--from', from, '--project', 'dagyard', '--replace'], { LANG: 'en_US.UTF-8' });
+    expect(putBody().stages.map((s) => s.name)).toEqual(['Para empezar', 'Al final']);
+  });
+
+  it('--replace sobre un proyecto en inglés lo deja en inglés aunque LANG=es', async () => {
+    projects.add('shop');
+    projectLangs.set('shop', 'en');
+    await cli(['import', '--from', from, '--project', 'shop', '--replace']);
+    expect(putBody().lang).toBe('en');
+    expect(putBody().stages[0]!.name).toBe('Getting started');
+  });
+
+  it('--replace sobre un proyecto que no existe: nuevo, en inglés', async () => {
+    const r = await cli(['import', '--from', from, '--project', 'otro', '--replace']);
+    expect(r.code).toBe(0);
+    expect(putBody().lang).toBe('en');
+  });
+
+  it('--lang es crea el proyecto nuevo en español; --lang gana al idioma guardado', async () => {
+    await cli(['import', '--from', from, '--project', 'tienda', '--lang', 'es'], { LANG: 'en_US.UTF-8' });
+    expect(putBody()).toMatchObject({ lang: 'es' });
+    expect(putBody().stages[0]!.name).toBe('Para empezar');
+    seen = [];
+    await cli(['import', '--from', from, '--project', 'tienda', '--replace', '--lang', 'en']);
+    expect(putBody().lang).toBe('en');
+  });
+
+  it('--lang que no es en | es es error de uso (64) y no envía nada', async () => {
+    const r = await cli(['import', '--from', from, '--project', 'x', '--lang', 'fr']);
+    expect(r.code).toBe(EXIT.usage);
+    expect(r.stderr).toContain('--lang');
+    expect(seen).toHaveLength(0);
+  });
+
+  it('--dry-run sigue sin servidor: sin --lang, inglés', async () => {
+    const r = await cli(['import', '--from', from, '--dry-run', '--json'], { DAGYARD_URL: '', DAGYARD_KEY: '' });
+    expect(r.code).toBe(0);
+    expect(seen).toHaveLength(0);
+    expect(JSON.parse(r.stdout).graph.lang).toBe('en');
+  });
+
+  it('--dry-run --replace lee el idioma si hay servidor; si no puede, avisa y sigue', async () => {
+    projects.add('fabrica');
+    projectLangs.set('fabrica', 'es');
+    const ok = await cli(['import', '--from', from, '--project', 'fabrica', '--replace', '--dry-run', '--json']);
+    expect(JSON.parse(ok.stdout).graph.lang).toBe('es');
+    expect(seen.map((x) => x.method)).toEqual(['GET']);
+    const off = await cli(['import', '--from', from, '--project', 'fabrica', '--replace', '--dry-run'], { DAGYARD_URL: '', DAGYARD_KEY: '' });
+    expect(off.code).toBe(0);
+    expect(off.stdout).toContain('Getting started');
+    expect(off.stdout).toMatch(/no pude leer el idioma/);
+  });
+
+  it('review sin --opt: no manda opciones ni lee el proyecto; el servidor las pone en su idioma', async () => {
+    const r = await cli(['block', 'pagos', '--kind', 'review', '--q', 'Revisa el flujo']);
+    expect(r.code).toBe(0);
+    expect(seen.map((x) => x.method)).toEqual(['POST']);
+    expect(last().body).not.toHaveProperty('options');
+    projectLangs.set('demo', 'en');
+    const en = await cli(['block', 'pagos', '--kind', 'review', '--q', 'Revisa el flujo']);
+    expect(blockers.get(en.stdout.trim())?.options).toEqual(['Approve', 'Request changes']);
+    projectLangs.set('demo', 'es');
+    const es = await cli(['block', 'pagos', '--kind', 'review', '--q', 'Check the flow'], { LANG: 'en_US.UTF-8' });
+    expect(blockers.get(es.stdout.trim())?.options).toEqual(['Aprobar', 'Pedir cambios']);
+  });
+
+  it('review con --opt o una decision no leen el proyecto', async () => {
+    await cli(['block', 'pagos', '--kind', 'review', '--q', 'x', '--opt', 'Listo']);
+    await cli(['block', 'pagos', '--kind', 'decision', '--q', 'x', '--opt', 'A']);
+    expect(seen.map((x) => x.method)).toEqual(['POST', 'POST']);
   });
 });
 
@@ -638,7 +749,7 @@ describe('.dagyard.json: la url recibe la key solo si es de confianza (#50)', ()
     writeFileSync(join(root, '.dagyard.json'), JSON.stringify({ project: 'p', url }));
     const dir = mkdtempSync(join(tmpdir(), 'dagyard-cfg-'));
     for (const [k, v] of Object.entries(cfg)) writeFileSync(join(dir, k), v);
-    return { root, env: { DAGYARD_URL: '', DAGYARD_PROJECT: '', DAGYARD_CONFIG_DIR: dir } };
+    return { root, env: { LANG: 'es_PE.UTF-8', DAGYARD_URL: '', DAGYARD_PROJECT: '', DAGYARD_CONFIG_DIR: dir } };
   }
   const go = (r: ReturnType<typeof repoWith>) => cli(['start', 'x'], r.env, r.root, { fetch: capture.fetch });
 

@@ -12,6 +12,7 @@ import {
   type WireServerFrame,
   type WireSnapshot,
 } from './adapter';
+import { onLangChange, t } from '../i18n';
 import { ApiError, type AppApi } from './session';
 import { UnauthorizedError, type Blocker, type DagEvent, type ProjectSummary, type Resolution, type Snapshot } from './types';
 
@@ -102,7 +103,7 @@ export class HttpApi implements AppApi {
 
   async resolveBlocker(blockerId: string, resolution: Resolution): Promise<Blocker> {
     const pid = this.blockerProject.get(blockerId);
-    if (!pid) throw new ApiError(404, 'not_found', 'No encuentro ese pedido. Recarga la página.');
+    if (!pid) throw new ApiError(404, 'not_found', t('card.notFound'));
     const w = await this.request<WireBlocker>(
       'POST',
       `/projects/${enc(pid)}/blockers/${enc(blockerId)}/resolve`,
@@ -261,10 +262,15 @@ export class HttpApi implements AppApi {
       document.addEventListener('visibilitychange', wake);
     }
 
+    // Los resúmenes de las respuestas se escriben en el idioma de la interfaz al traducir el cable: si el PM cambia de
+    // idioma, se vuelve a traer el plan para que salgan en el nuevo sin recargar (#73).
+    const offLang = onLangChange(() => handlers.onResync?.());
+
     void connect();
 
     return () => {
       closed = true;
+      offLang();
       clearTimers();
       if (typeof window !== 'undefined') {
         window.removeEventListener('online', wake);

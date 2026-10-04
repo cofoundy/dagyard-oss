@@ -97,4 +97,10 @@ export const MIGRATIONS: string[][] = [
      )`,
     `CREATE INDEX idempotency_created ON idempotency(created_at)`,
   ],
+  // v5: piso de los eventos (#74). La demo poda su log al re-sembrar; un `since` por debajo del piso recibe
+  // `resync` en vez de un replay con hueco. Un proyecto que no es demo nunca se poda: su piso queda en 0.
+  [`ALTER TABLE projects ADD COLUMN events_floor INTEGER NOT NULL DEFAULT 0`],
+  // v6: idioma de los datos del proyecto (#77). NULL = guardado antes del campo; se lee como LEGACY_LANG ('es')
+  // y nadie lo reescribe: solo cambia si un POST, PUT o PATCH manda `lang`.
+  [`ALTER TABLE projects ADD COLUMN lang TEXT`],
 ];

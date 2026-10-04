@@ -4,13 +4,16 @@
  * aquí solo se recuerda `lastSent`, el último seq repartido, para no saltarse ni repetir eventos, y la
  * encarnación del proyecto a la que pertenece (su `created_at`): un proyecto borrado y recreado con el mismo
  * id vuelve a empezar su seq, y sin la encarnación sus eventos se confundirían con los del muerto (#67).
+ *
+ * En una demo (#74), además, su alarma es el pulso: mientras alguien la mira, el equipo trabaja solo.
  */
 import { DurableObject } from 'cloudflare:workers';
-import type { DagEvent, ServerFrame } from '@dagyard/model';
+import { isDemoProject, type DagEvent, type PulseStep, type ServerFrame } from '@dagyard/model';
 import { sessionAlive } from './auth.js';
 import { db } from './db.js';
 import type { Env } from './env.js';
 import { liveState } from './store.js';
+import type { WriteOp } from './writes.js';
 
 /** Si el cliente está más atrás que esto, recibe `resync` y vuelve a pedir el snapshot. */
 export const REPLAY_LIMIT = 500;
@@ -18,6 +21,16 @@ export const REPLAY_LIMIT = 500;
 export const SESSION_RECHECK_MS = 30_000;
 /** Código de cierre de un socket cuya sesión del navegador se cerró, venció o es de un token rotado. */
 export const CLOSE_SESSION_ENDED = 4001;
+
+/** Cada cuánto late el pulso de la demo (#74), con ±20 % de jitter. */
+export const PULSE_MS = 3500;
+/** Sin un saludo nuevo en este tiempo el pulso deja de re-armarse: una pestaña olvidada no lo mantiene vivo. */
+export const PULSE_IDLE_LIMIT_MS = 30 * 60_000;
+/** Latidos seguidos sin nada que avanzar antes de que la demo vuelva a empezar. */
+export const PULSE_RESEED_AFTER = 2;
+const pulseDelay = () => Math.round(PULSE_MS * (0.8 + Math.random() * 0.4));
+/** Estado del pulso en el storage del room (sobrevive a la hibernación). */
+const PULSE = { pid: 'pulse:pid', lastHello: 'pulse:lastHello', idle: 'pulse:idle' } as const;
 
 interface Attachment {
   pid: string;
@@ -102,12 +115,14 @@ export class ProjectRoom extends DurableObject<Env> {
   }
 
   private async greet(ws: WebSocket, pid: string, since: number | null, session: string | undefined): Promise<void> {
-    const { incarnation, seq, events } = await liveState(db(this.env), pid, since, REPLAY_LIMIT + 1);
+    const { incarnation, seq, floor, events } = await liveState(db(this.env), pid, since, REPLAY_LIMIT + 1);
     // se borró entre la auth del Worker y este hello
     if (incarnation === null) return closeQuietly(ws, 4004, 'proyecto eliminado');
     ws.send(frame({ type: 'hello', projectId: pid, seq }));
     // un since del futuro (p. ej. el proyecto se borró y se volvió a crear): el cliente debe recargar
     if (since !== null && since > seq) ws.send(frame({ type: 'resync', seq }));
+    // bajo el piso (la demo podó su log al re-sembrar): un replay tendría un hueco
+    else if (since !== null && since < floor) ws.send(frame({ type: 'resync', seq }));
     else if (since !== null && since < seq) {
       if (events.length > REPLAY_LIMIT) ws.send(frame({ type: 'resync', seq }));
       else for (const event of events) if (event.seq <= seq) ws.send(frame({ type: 'event', event }));
@@ -119,6 +134,60 @@ export class ProjectRoom extends DurableObject<Env> {
     ws.serializeAttachment({ pid, ready: true, seen: seq, session, incarnation } satisfies Attachment);
     // Primer socket de esta encarnación: lo anterior a `seq` ya lo tiene quien está conectado.
     if (last === null || last.incarnation !== incarnation) await this.setSent({ seq, incarnation });
+    if (isDemoProject(pid)) await this.armPulse(pid);
+  }
+
+  /* -------------------------------------------- el pulso de la demo (#74) */
+
+  /** Un navegador saludó la demo: anota el saludo y arma la alarma si no estaba armada. */
+  private async armPulse(pid: string): Promise<void> {
+    await this.ctx.storage.put({ [PULSE.pid]: pid, [PULSE.lastHello]: Date.now() });
+    if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(Date.now() + pulseDelay());
+  }
+
+  /**
+   * Un latido. Solo en una demo, solo si alguien la mira y solo hasta 30 min después del último saludo: si no,
+   * no escribe ni se re-arma (sin miradas no corre ni cuesta; un saludo nuevo lo vuelve a armar).
+   */
+  async alarm(): Promise<void> {
+    const m = await this.ctx.storage.get<string | number>([PULSE.pid, PULSE.lastHello]);
+    const pid = m.get(PULSE.pid);
+    const lastHello = m.get(PULSE.lastHello);
+    if (typeof pid !== 'string' || !isDemoProject(pid)) return;
+    const alive = () => this.ctx.getWebSockets().length > 0 && typeof lastHello === 'number' && Date.now() - lastHello <= PULSE_IDLE_LIMIT_MS;
+    if (!alive()) return;
+    try {
+      await this.beat(pid);
+    } catch (err) {
+      console.error(JSON.stringify({ msg: 'latido falló', pid, err: String(err) }));
+    }
+    if (alive()) await this.ctx.storage.setAlarm(Date.now() + pulseDelay());
+  }
+
+  /** Un paso del equipo; tras PULSE_RESEED_AFTER latidos sin nada que avanzar, la demo vuelve a empezar. */
+  private async beat(pid: string): Promise<void> {
+    const step = (await this.pulseWrite(pid, { kind: 'demoBeat', pid })) as PulseStep | undefined;
+    if (!step) return;
+    let idle = step.kind === 'idle' ? ((await this.ctx.storage.get<number>(PULSE.idle)) ?? 0) + 1 : 0;
+    if (idle >= PULSE_RESEED_AFTER) {
+      await this.pulseWrite(pid, { kind: 'demoReseed', pid, keep: REPLAY_LIMIT });
+      idle = 0;
+    }
+    await this.ctx.storage.put(PULSE.idle, idle);
+  }
+
+  /**
+   * Escribe por el mismo camino que la API (Store → eventos → sockets), firmado como agente (la re-siembra,
+   * como dueño). El broadcast va FUERA de `serial()`: broadcast entra solo a la fila, y anidarlo la traba.
+   */
+  private async pulseWrite(pid: string, op: Extract<WriteOp, { kind: 'demoBeat' | 'demoReseed' }>): Promise<unknown> {
+    const res = await this.env.STORE.get(this.env.STORE.idFromName('db')).write(op);
+    if (!res.ok) {
+      console.error(JSON.stringify({ msg: 'el pulso no pudo escribir', pid, op: op.kind, error: res.error }));
+      return undefined;
+    }
+    if (res.events.length && res.incarnation !== null) await this.broadcast(pid, res.events as DagEvent[], res.incarnation);
+    return res.value;
   }
 
   /** Cierra las páginas ya saludadas que miran otra encarnación que `current`: la de un proyecto que se borró. */
@@ -160,7 +229,22 @@ export class ProjectRoom extends DurableObject<Env> {
         // Una escritura concurrente se adelantó: lo que falta ya está commiteado en el Store, si sigue siendo
         // esta encarnación y el Store lo tiene.
         const state = await liveState(db(this.env), pid, last, REPLAY_LIMIT);
-        toSend = state.incarnation === incarnation ? state.events : [];
+        if (state.incarnation !== incarnation) return;
+        if (last < state.floor) {
+          // lo que falta se podó (la demo volvió a empezar): un replay tendría un hueco, que recarguen
+          for (const ws of sockets) {
+            const att = ws.deserializeAttachment() as Attachment | null;
+            if (!att?.ready || att.incarnation !== incarnation || att.seen >= state.seq) continue;
+            try {
+              ws.send(frame({ type: 'resync', seq: state.seq }));
+            } catch {
+              // socket cerrándose: lo limpia webSocketClose
+            }
+          }
+          await this.setSent({ seq: state.seq, incarnation });
+          return;
+        }
+        toSend = state.events;
         if (!toSend.length) return;
       }
       const ended = await this.endedSessions(sockets);

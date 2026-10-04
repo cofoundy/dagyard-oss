@@ -2,10 +2,13 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { HttpApi } from './data/http';
 import type { AppApi } from './data/session';
+import { initLang } from './i18n';
 import { App } from './ui/App';
 import './styles.css';
 
 async function boot() {
+  // idioma antes del primer pintado: elección guardada > navegador > inglés (#73)
+  initLang();
   let api: AppApi;
   let demo = false;
   // `pnpm dev:fixture`: sin servidor, con el proyecto de ejemplo en memoria. Vite reemplaza la variable

@@ -16,6 +16,7 @@ import type {
   ProjectGraphInput,
   ProjectSnapshot,
 } from '@dagyard/model';
+import { t } from './i18n.js';
 
 const p = encodeURIComponent;
 
@@ -177,7 +178,7 @@ export class DagyardClient {
       });
     } catch (err) {
       const cause = err instanceof Error ? err.message : String(err);
-      throw new ApiRequestError(0, 'network', `no pude conectar con ${this.baseUrl}: ${cause}`);
+      throw new ApiRequestError(0, 'network', t(`could not reach ${this.baseUrl}: ${cause}`, `no pude conectar con ${this.baseUrl}: ${cause}`));
     }
     if (!res.ok) {
       let code = `http_${res.status}`;

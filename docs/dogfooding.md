@@ -61,7 +61,8 @@ node packages/cli/dist/dagyard.mjs sync --github cofoundy/dagyard [--label <l>] 
 Usa la API granular (nunca reemplaza el grafo), así cada cambio llega en vivo y lo curado se respeta:
 
 - **Nodos.** Un issue abierto sin nodo crea `gh-<n>` (título del issue sin el prefijo `algo: `, etapa
-  `--stage` o Construcción, enlace técnico al issue). Los cerrados solo con `--all`; los cerrados como
+  `--stage` o la de construcción, reconocida por id o nombre en cualquier idioma y sin crear etapas nunca,
+  enlace técnico al issue). Los cerrados solo con `--all`; los cerrados como
   «no planeado», nunca. De un nodo que ya existe solo toca el estado y, si está vacío, el enlace: el
   título, la etapa, el equipo y el goal son de la fábrica. Si su enlace apunta a otro issue (otro repo
   con el mismo número), lo salta con un aviso. Las épicas (`epic`) no crean nodo.

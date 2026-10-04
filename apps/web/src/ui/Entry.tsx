@@ -4,13 +4,19 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 import type { SessionApi } from '../data/session';
 import { UnauthorizedError } from '../data/types';
+import { useLang } from '../i18n';
 import { COPY } from './copy';
+import { LangSwitch } from './LangSwitch';
 
-export function Entry({ api, notice, onEnter }: { api: SessionApi; notice?: string; onEnter: () => void }) {
+/** Los avisos de la entrada: se guarda la clave y se lee al pintar, así un cambio de idioma también los traduce. */
+export type EntryNotice = 'entryEmpty' | 'entryBad' | 'entryOffline' | 'entryExpired';
+
+export function Entry({ api, notice, onEnter }: { api: SessionApi; notice?: EntryNotice; onEnter: () => void }) {
   const [token, setToken] = useState('');
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | undefined>(notice);
+  const [error, setError] = useState<EntryNotice | undefined>(notice);
   const input = useRef<HTMLInputElement>(null);
+  useLang();
 
   useEffect(() => {
     input.current?.focus();
@@ -19,7 +25,7 @@ export function Entry({ api, notice, onEnter }: { api: SessionApi; notice?: stri
   async function submit(ev: FormEvent) {
     ev.preventDefault();
     if (!token.trim()) {
-      setError(COPY.entryEmpty);
+      setError('entryEmpty');
       input.current?.focus();
       return;
     }
@@ -30,7 +36,7 @@ export function Entry({ api, notice, onEnter }: { api: SessionApi; notice?: stri
       setToken('');
       onEnter();
     } catch (e) {
-      setError(e instanceof UnauthorizedError ? COPY.entryBad : COPY.entryOffline);
+      setError(e instanceof UnauthorizedError ? 'entryBad' : 'entryOffline');
       setBusy(false);
       input.current?.select();
     }
@@ -39,9 +45,12 @@ export function Entry({ api, notice, onEnter }: { api: SessionApi; notice?: stri
   return (
     <main className="entry">
       <form className="entry-card" onSubmit={submit} noValidate>
-        <div className="word">
-          <i aria-hidden="true" />
-          dagyard
+        <div className="entry-head">
+          <div className="word">
+            <i aria-hidden="true" />
+            dagyard
+          </div>
+          <LangSwitch />
         </div>
         <h1>{COPY.entryTitle}</h1>
         <p className="lead">{COPY.entryLead}</p>
@@ -63,7 +72,7 @@ export function Entry({ api, notice, onEnter }: { api: SessionApi; notice?: stri
         />
         {error && (
           <p className="err" id="clave-err" role="alert">
-            {error}
+            {COPY[error]}
           </p>
         )}
         <button className="go work" type="submit" disabled={busy}>

@@ -26,10 +26,28 @@ export interface Stage {
   name: string;
 }
 
+/**
+ * Idioma de los datos de un proyecto (#77): en qué idioma escribe el CLI las etapas, misiones y opciones por
+ * defecto. Lo fija el proyecto, no el entorno de quien lo toca. Los mensajes de consola siguen a `LANG`.
+ */
+export type Lang = 'en' | 'es';
+export const LANGS: readonly Lang[] = ['en', 'es'];
+/** El de un proyecto nuevo. */
+export const DEFAULT_LANG: Lang = 'en';
+/** Cómo se lee un proyecto guardado antes de que existiera el campo (`dagyard`, las demos). */
+export const LEGACY_LANG: Lang = 'es';
+
+/** El idioma de un proyecto; sin el campo (guardado antes de #77, o un servidor viejo), español. */
+export function projectLang(p: { lang?: Lang | null }): Lang {
+  return p.lang ?? LEGACY_LANG;
+}
+
 export interface Project {
   /** slug, p. ej. `marketplace-reservas` */
   id: string;
   name: string;
+  /** idioma de los datos que escribe el CLI (ver `Lang`) */
+  lang: Lang;
   /** en orden */
   stages: Stage[];
   createdAt: IsoDate;
@@ -208,6 +226,7 @@ export type NodePatch = Partial<Omit<NodeInput, 'id' | 'deps'>>;
 export interface BlockerInput {
   kind: BlockerKind;
   question: string;
+  /** decision: ≥1. review: si falta, el servidor pone REVIEW_OPTIONS en el idioma del proyecto. access: [] */
   options?: string[];
   accessLabel?: string | null;
 }
@@ -230,6 +249,8 @@ export interface MessageInput {
 export interface ProjectInput {
   id?: string;
   name: string;
+  /** default: DEFAULT_LANG */
+  lang?: Lang;
   /** default: DEFAULT_STAGES */
   stages?: StageInput[];
 }
@@ -240,6 +261,8 @@ export interface ProjectInput {
  */
 export interface ProjectGraphInput {
   name: string;
+  /** nuevo: DEFAULT_LANG; existente: si falta, conserva el suyo */
+  lang?: Lang;
   stages?: StageInput[];
   nodes: NodeInput[];
   blockers?: Array<BlockerInput & { nodeId: string }>;
@@ -269,13 +292,39 @@ export interface ApiError {
 
 /* ------------------------------------------------------------------ constantes */
 
-export const DEFAULT_STAGES: readonly Stage[] = [
-  { id: 'descubrimiento', name: 'Descubrimiento' },
-  { id: 'diseno', name: 'Diseño' },
-  { id: 'construccion', name: 'Construcción' },
-  { id: 'pruebas', name: 'Pruebas' },
-  { id: 'lanzamiento', name: 'Lanzamiento' },
-];
+/**
+ * Las etapas de un proyecto nuevo, por idioma. Los ids son los mismos en los dos (solo cambia el nombre, como en la
+ * demo): un cliente que crea un proyecto sin `stages` y usa `construccion` funciona en cualquier idioma.
+ */
+export const DEFAULT_STAGES_BY_LANG: Record<Lang, readonly Stage[]> = {
+  en: [
+    { id: 'descubrimiento', name: 'Discovery' },
+    { id: 'diseno', name: 'Design' },
+    { id: 'construccion', name: 'Build' },
+    { id: 'pruebas', name: 'Testing' },
+    { id: 'lanzamiento', name: 'Launch' },
+  ],
+  es: [
+    { id: 'descubrimiento', name: 'Descubrimiento' },
+    { id: 'diseno', name: 'Diseño' },
+    { id: 'construccion', name: 'Construcción' },
+    { id: 'pruebas', name: 'Pruebas' },
+    { id: 'lanzamiento', name: 'Lanzamiento' },
+  ],
+};
+
+/** Las opciones de una revisión que no trae las suyas (`dagyard block --kind review` sin `--opt`). */
+export const REVIEW_OPTIONS: Record<Lang, readonly string[]> = {
+  en: ['Approve', 'Request changes'],
+  es: ['Aprobar', 'Pedir cambios'],
+};
+
+/** Las españolas (los ids son los de los dos idiomas). */
+export const DEFAULT_STAGES: readonly Stage[] = DEFAULT_STAGES_BY_LANG.es;
+
+export function defaultStages(lang: Lang): readonly Stage[] {
+  return DEFAULT_STAGES_BY_LANG[lang];
+}
 
 export const LIMITS = {
   slug: 64,

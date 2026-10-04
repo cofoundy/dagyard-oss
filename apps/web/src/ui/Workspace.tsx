@@ -1,13 +1,14 @@
 // El espacio de trabajo: elige el proyecto, mantiene el estado vivo (snapshot + eventos) y conecta la
 // escena con el HUD, la ficha y los avisos. Eventos del servidor → reducer → setGraph + pulse + aviso.
 
-import { DEMO_PROJECT_ID } from '@dagyard/model';
+import { DEMO_PROJECT_IDS, demoProjectId } from '@dagyard/model';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type RefObject } from 'react';
 import type { Pulse, SceneHandlers, Sky } from '../scene/contract';
 import { ApiError, type AppApi } from '../data/session';
 import { ProjectStore, type StoreChange, type StoreState } from '../data/store';
 import { UnauthorizedError, type Blocker, type ProjectSummary, type Resolution } from '../data/types';
 import { nodeById, openBlockers, stageIndex, toSceneGraph } from '../data/view';
+import { lang, type Lang } from '../i18n';
 import {
   isLooking,
   newlyOpened,
@@ -30,15 +31,21 @@ const MAX_TOASTS = 3;
 
 /**
  * Proyecto que se abre al entrar: el del enlace (`?p=`), si existe; si no, el que el usuario eligió la última vez; si no
- * eligió (o ya no existe), la demo, que es lo primero que un PM tiene que ver (la lista llega por última actualización,
- * así que su primero sería el último importado). Sin demo, el primero de la lista.
+ * eligió (o ya no existe), la demo en su idioma (#74), que es lo primero que un PM tiene que ver (la lista llega por
+ * última actualización, así que su primero sería el último importado). Si falta la de su idioma, la otra; sin demo, el
+ * primero de la lista.
  */
-export function initialProject(list: readonly ProjectSummary[], stored: string | null, linked: string | null = null): string | null {
+export function initialProject(
+  list: readonly ProjectSummary[],
+  stored: string | null,
+  linked: string | null = null,
+  l: Lang = lang(),
+): string | null {
   const has = (id: string | null) => !!id && list.some((p) => p.id === id);
   if (has(linked)) return linked;
   if (has(stored)) return stored;
-  if (has(DEMO_PROJECT_ID)) return DEMO_PROJECT_ID;
-  return list[0]?.id ?? null;
+  const demo = [demoProjectId(l), ...DEMO_PROJECT_IDS].find(has);
+  return demo ?? list[0]?.id ?? null;
 }
 
 const NO_STATE: StoreState = { snapshot: null, status: 'loading' };

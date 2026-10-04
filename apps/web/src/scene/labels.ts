@@ -1,6 +1,7 @@
 // Etiquetas DOM de la escena: títulos de nodos y encabezados de etapa. La escena trae sus propios estilos (prefijo
 // `sky-`) para no depender de la hoja de la interfaz; lo que se mide para el encuadre es exactamente lo que se pinta.
 import type { NodeStatus } from '../data/types';
+import { onLangChange, t } from '../i18n';
 import { DENSE_LINES, LABEL, type Size, type Sizer } from './framing';
 
 const STYLE_ID = 'dagyard-sky-style';
@@ -60,17 +61,23 @@ const setLines = (el: HTMLElement, v: string) => {
 const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII'];
 export const roman = (i: number) => ROMAN[i] ?? String(i + 1);
 
+type StageHeader = { name: string; done: number; total: number; live: boolean };
+
 export class LabelLayer {
   readonly root: HTMLDivElement;
   private nodes = new Map<string, HTMLDivElement>();
   private stages: HTMLDivElement[] = [];
   private sizes = new Map<string, Size>();
   private headerSizes = new Map<number, Size>();
+  private lastStages: StageHeader[] = [];
+  private offLang: () => void;
 
   constructor(container: HTMLElement) {
     this.root = container.ownerDocument.createElement('div');
     this.root.className = 'sky-root';
     container.appendChild(this.root);
+    // la cuenta de cada etapa («3 de 5 listas») cambia de idioma sin esperar al próximo plan
+    this.offLang = onLangChange(() => this.setStages(this.lastStages));
   }
 
   setPortrait(p: boolean) {
@@ -111,7 +118,8 @@ export class LabelLayer {
     this.nodes.delete(id);
   }
 
-  setStages(list: { name: string; done: number; total: number; live: boolean }[]) {
+  setStages(list: StageHeader[]) {
+    this.lastStages = list;
     while (this.stages.length > list.length) this.stages.pop()!.remove();
     list.forEach((s, i) => {
       let el = this.stages[i];
@@ -123,7 +131,7 @@ export class LabelLayer {
         this.stages[i] = el;
       }
       const name = `${roman(i)} · ${s.name}`;
-      const count = `${s.done} de ${s.total} ${s.total === 1 ? 'lista' : 'listas'}`;
+      const count = t('count.done', { count: s.total, done: s.done, total: s.total });
       const b = el.firstElementChild as HTMLElement, sp = el.lastElementChild as HTMLElement;
       if (b.textContent !== name || sp.textContent !== count) {
         b.textContent = name;
@@ -215,6 +223,7 @@ export class LabelLayer {
   }
 
   dispose() {
+    this.offLang();
     this.root.remove();
     this.nodes.clear();
     this.stages = [];

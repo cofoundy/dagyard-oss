@@ -1,10 +1,13 @@
 // Proyecto de ejemplo en memoria, solo para tests y `pnpm dev:fixture` (el build usa ./http).
-// «Marketplace de reservas» es el grafo del preview (design/preview-constelacion.html): 20 tareas,
-// 5 etapas y 3 pedidos abiertos (una decisión, una revisión y un acceso).
+// Es la demo del servidor en el idioma del PM (#83): `demoProject` de @dagyard/model, «Booking marketplace» o
+// «Marketplace de reservas», el grafo del preview (design/preview-constelacion.html): 20 tareas, 5 etapas y
+// 3 pedidos abiertos (una decisión, una revisión y un acceso). Se le suman informes de ejemplo.
 // `FixtureApi` se porta como el servidor de docs/api.md: emite eventos con `seq`, persiste lo que resuelves
 // durante la sesión del navegador y deja simular comandos del CLI (`dagyard msg|start|done|block|node add`).
 
-import { resolutionSummary } from './adapter';
+import { demoProject, demoProjectId, demoSignature } from '@dagyard/model';
+import { lang, type Lang } from '../i18n';
+import { RESOLVED_BY_YOU, resolutionSummary } from './adapter';
 import { reduce } from './reduce';
 import { ApiError, type AppApi } from './session';
 import {
@@ -45,32 +48,6 @@ interface Seed {
 
 /** Informes de ejemplo: dominio reservado para documentación, nunca una URL real. */
 const REPORT = (slug: string) => `https://example.com/informes/${slug}`;
-
-const MARKETPLACE: Seed[] = [
-  { id: 'entrevistas-a-usuarios', s: 0, t: 'Entrevistas a 8 usuarios', st: 'done', deps: [], team: 'Investigación', msg: 'Listo. El dolor número uno es no saber si hay disponibilidad antes de llamar.', report: REPORT('entrevistas') },
-  { id: 'analisis-de-la-competencia', s: 0, t: 'Análisis de la competencia', st: 'done', deps: [], team: 'Investigación', msg: 'Revisé 6 apps. Ninguna muestra disponibilidad en tiempo real.', report: REPORT('competencia') },
-  { id: 'definir-el-usuario-principal', s: 0, t: 'Definir el usuario principal', st: 'done', deps: ['entrevistas-a-usuarios', 'analisis-de-la-competencia'], team: 'Investigación', msg: 'Elegimos al cliente que reserva desde el celular, entre semana.' },
-  { id: 'flujo-de-registro', s: 1, t: 'Flujo de registro', st: 'done', deps: ['definir-el-usuario-principal'], team: 'Diseño', msg: 'Registro en 2 pasos, con Google o con correo.', report: REPORT('registro') },
-  { id: 'pantalla-de-busqueda', s: 1, t: 'Pantalla de búsqueda', st: 'done', deps: ['definir-el-usuario-principal'], team: 'Diseño', msg: 'Filtros por zona, precio y horario disponible.' },
-  { id: 'modelo-de-comisiones', s: 1, t: 'Modelo de comisiones', st: 'blocked', deps: ['analisis-de-la-competencia'], team: 'Diseño',
-    block: { kind: 'decision', q: '¿A quién le cobramos la comisión?', opts: ['Al proveedor (10 % por reserva)', 'Al cliente (cargo de servicio)'] } },
-  { id: 'diseno-del-pago', s: 1, t: 'Diseño del pago', st: 'blocked', deps: ['pantalla-de-busqueda'], team: 'Diseño', report: REPORT('diseno-del-pago'),
-    block: { kind: 'review', q: 'Terminé el diseño del pago en 3 pantallas. Revísalo antes de que lo construyamos.', opts: ['Aprobar', 'Pedir cambios'] } },
-  { id: 'perfil-del-proveedor', s: 1, t: 'Perfil del proveedor', st: 'working', p: 0.55, deps: ['definir-el-usuario-principal'], team: 'Diseño', msg: 'Armando la galería de fotos y las reseñas. Mañana te lo paso para revisar.' },
-  { id: 'registro-e-inicio-de-sesion', s: 2, t: 'Registro e inicio de sesión', st: 'working', p: 0.68, deps: ['flujo-de-registro'], team: 'Construcción', msg: 'Ya entra con Google. Me falta el correo de bienvenida.' },
-  { id: 'buscador-con-filtros', s: 2, t: 'Buscador con filtros', st: 'working', p: 0.3, deps: ['pantalla-de-busqueda'], team: 'Construcción', msg: 'Los filtros ya responden. Ahora conecto la disponibilidad real.' },
-  { id: 'pagos-con-tarjeta', s: 2, t: 'Pagos con tarjeta', st: 'blocked', deps: [], team: 'Construcción',
-    block: { kind: 'access', q: 'Necesito acceso a la cuenta de la pasarela de pagos para cobrar con tarjeta.', label: 'Clave de la pasarela de pagos' } },
-  { id: 'reservas-y-calendario', s: 2, t: 'Reservas y calendario', st: 'pending', deps: ['buscador-con-filtros', 'perfil-del-proveedor'] },
-  { id: 'avisos-por-whatsapp', s: 2, t: 'Avisos por WhatsApp', st: 'pending', deps: ['registro-e-inicio-de-sesion'] },
-  { id: 'panel-del-proveedor', s: 2, t: 'Panel del proveedor', st: 'pending', deps: ['perfil-del-proveedor', 'modelo-de-comisiones'] },
-  { id: 'prueba-con-usuarios-reales', s: 3, t: 'Prueba con 5 usuarios reales', st: 'pending', deps: ['reservas-y-calendario', 'registro-e-inicio-de-sesion'] },
-  { id: 'prueba-de-pagos', s: 3, t: 'Prueba de pagos de punta a punta', st: 'pending', deps: ['pagos-con-tarjeta', 'diseno-del-pago'] },
-  { id: 'revision-de-velocidad', s: 3, t: 'Revisión de velocidad en celular', st: 'pending', deps: ['buscador-con-filtros'] },
-  { id: 'pagina-de-lanzamiento', s: 4, t: 'Página de lanzamiento', st: 'pending', deps: ['definir-el-usuario-principal'] },
-  { id: 'publicar-en-tiendas', s: 4, t: 'Publicar en App Store y Play Store', st: 'pending', deps: ['prueba-con-usuarios-reales', 'prueba-de-pagos', 'revision-de-velocidad'] },
-  { id: 'anuncio-a-la-lista', s: 4, t: 'Anuncio a la lista de espera', st: 'pending', deps: ['publicar-en-tiendas', 'pagina-de-lanzamiento'] },
-];
 
 const RENOVACION: Seed[] = [
   { id: 'inventario-de-paginas', s: 0, t: 'Inventario de páginas actuales', st: 'done', deps: [], team: 'Investigación', msg: 'Hay 42 páginas; 11 no reciben visitas hace un año.' },
@@ -125,8 +102,57 @@ function buildSnapshot(id: string, name: string, seeds: Seed[], now: number): Sn
   return { project: { id, name }, stages: STAGES.map((s) => ({ ...s })), nodes, edges, blockers, messages, seq: 0 };
 }
 
-export function marketplaceSnapshot(now = Date.now()): Snapshot {
-  return buildSnapshot('marketplace-reservas', 'Marketplace de reservas', MARKETPLACE, now);
+/** Informes de ejemplo sobre la demo (la del servidor no trae): por id de tarea. */
+const DEMO_REPORTS: Record<string, string> = {
+  entrevistas: REPORT('entrevistas'),
+  competencia: REPORT('competencia'),
+  'registro-d': REPORT('registro'),
+  'checkout-d': REPORT('diseno-del-pago'),
+};
+const REVIEW_NOTE: Record<Lang, string> = { en: 'The 3 screens are in the report.', es: 'Te dejé las 3 pantallas en el informe.' };
+const THANKS: Record<Lang, string> = { en: 'Thanks. Picking up where I left off.', es: 'Gracias. Sigo desde donde me quedé.' };
+
+/** La demo en el idioma `l`, con su id del servidor (`booking-marketplace` o `marketplace-reservas`). */
+export function marketplaceSnapshot(now = Date.now(), l: Lang = lang()): Snapshot {
+  const id = demoProjectId(l);
+  const d = demoProject(l);
+  const done = new Set(d.nodes.filter((n) => n.status === 'done').map((n) => n.id!));
+  const nodes: DagNode[] = d.nodes.map((n) => ({
+    id: n.id!,
+    stageId: n.stage,
+    title: n.title,
+    status: n.status ?? 'pending',
+    progress: n.progress ?? 0,
+    team: n.team ?? undefined,
+    goal: n.goal ?? undefined,
+    reportUrl: done.has(n.id!) ? DEMO_REPORTS[n.id!] : undefined,
+  }));
+  const edges = d.nodes.flatMap((n) => (n.deps ?? []).map((from) => ({ from, to: n.id! })));
+  const blockers: Blocker[] = (d.blockers ?? []).map((b, i) => ({
+    id: `b_${id.slice(0, 4)}${i + 1}`,
+    nodeId: b.nodeId,
+    kind: b.kind,
+    question: b.question,
+    options: [...(b.options ?? [])],
+    label: b.accessLabel ?? undefined,
+  }));
+  const messages: Message[] = (d.messages ?? []).map((m, i, all) => ({
+    id: `m_${id.slice(0, 4)}${i + 1}`,
+    nodeId: m.nodeId,
+    from: m.from!,
+    text: m.text,
+    reportUrl: done.has(m.nodeId) ? DEMO_REPORTS[m.nodeId] : undefined,
+    at: minutesAgo(now, (all.length - i) * 37),
+  }));
+  // En la revisión, el agente dejó su informe para que lo leas antes de aprobar.
+  for (const b of blockers) {
+    const report = DEMO_REPORTS[b.nodeId];
+    const team = nodes.find((n) => n.id === b.nodeId)?.team ?? null;
+    if (b.kind === 'review' && report) {
+      messages.push({ id: `m_${id.slice(0, 4)}r`, nodeId: b.nodeId, from: demoSignature(l, team), text: REVIEW_NOTE[l], reportUrl: report, at: minutesAgo(now, 12) });
+    }
+  }
+  return { project: { id, name: d.name }, stages: (d.stages ?? []).map((s) => ({ id: s.id!, name: s.name })), nodes, edges, blockers, messages, seq: 0 };
 }
 
 export function renovacionSnapshot(now = Date.now()): Snapshot {
@@ -165,13 +191,15 @@ export class FixtureApi implements AppApi {
   private readonly latency: number;
   private readonly now: () => number;
   private persisted: Persisted = { session: false, resolved: [] };
+  /** El idioma al arrancar: decide qué demo hay y en qué idioma firma el equipo. */
+  private readonly lang: Lang = lang();
 
   constructor(o: FixtureOptions = {}) {
     this.storage = o.storage !== undefined ? o.storage : safeSessionStorage();
     this.latency = o.latency ?? 0;
     this.now = o.now ?? Date.now;
     const t = this.now();
-    for (const snap of [marketplaceSnapshot(t), renovacionSnapshot(t)]) {
+    for (const snap of [marketplaceSnapshot(t, this.lang), renovacionSnapshot(t)]) {
       this.projects.set(snap.project.id, { snap, log: [], listeners: new Set() });
     }
     this.persisted = this.load();
@@ -255,7 +283,7 @@ export class FixtureApi implements AppApi {
     const message: Message = {
       id: `m_${Math.random().toString(36).slice(2, 10)}`,
       nodeId,
-      from: node.team ? `Equipo de ${node.team}` : 'Agente',
+      from: demoSignature(this.lang, node.team ?? null),
       text: text.slice(0, 280),
       reportUrl,
       at: new Date(this.now()).toISOString(),
@@ -341,7 +369,7 @@ export class FixtureApi implements AppApi {
     const resolved: Blocker = {
       ...b,
       resolution: resolutionSummary({ kind: b.kind, options: b.options, resolution: { choice, note, hasValue: b.kind === 'access' } }),
-      resolvedBy: 'Tú',
+      resolvedBy: RESOLVED_BY_YOU,
       resolvedAt: new Date(this.now()).toISOString(),
     };
     this.emit(p, { type: 'blocker.resolved', blocker: resolved });
@@ -353,8 +381,8 @@ export class FixtureApi implements AppApi {
         message: {
           id: `m_${Math.random().toString(36).slice(2, 10)}`,
           nodeId: node.id,
-          from: node.team ? `Equipo de ${node.team}` : 'Agente',
-          text: 'Gracias. Sigo desde donde me quedé.',
+          from: demoSignature(this.lang, node.team ?? null),
+          text: THANKS[this.lang],
           at: new Date(this.now()).toISOString(),
         },
       });

@@ -61,30 +61,30 @@ export async function snapshot(db: Db, pid: string): Promise<ProjectSnapshot> {
 }
 
 /**
- * Encarnación del proyecto (su `created_at`; null si no existe), su seq y, con `since`, hasta `limit` eventos
- * posteriores: una sola lectura, así los eventos son de esa encarnación.
+ * Encarnación del proyecto (su `created_at`; null si no existe), su seq, su piso (#74: por debajo, los eventos
+ * se podaron) y, con `since`, hasta `limit` eventos posteriores: una sola lectura, así los eventos son de esa
+ * encarnación.
  */
 export async function liveState(
   db: Db,
   pid: string,
   since: number | null,
   limit: number,
-): Promise<{ incarnation: string | null; seq: number; events: DagEvent[] }> {
+): Promise<{ incarnation: string | null; seq: number; floor: number; events: DagEvent[] }> {
   const [p, q, e] = await db.batch<Row>([
-    db.prepare('SELECT created_at FROM projects WHERE id = ?').bind(pid),
+    db.prepare('SELECT created_at, events_floor FROM projects WHERE id = ?').bind(pid),
     db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE project_id = ?').bind(pid),
     db.prepare('SELECT * FROM events WHERE project_id = ? AND seq > ? ORDER BY seq LIMIT ?').bind(pid, since ?? Number.MAX_SAFE_INTEGER, limit),
   ]);
   const incarnation = (p!.results[0]?.created_at as string | undefined) ?? null;
-  return { incarnation, seq: Number(q!.results[0]?.seq ?? 0), events: e!.results.map(toEvent) };
+  const floor = Number(p!.results[0]?.events_floor ?? 0);
+  return { incarnation, seq: Number(q!.results[0]?.seq ?? 0), floor, events: e!.results.map(toEvent) };
 }
 
-export async function eventsSince(db: Db, pid: string, since: number, limit: number): Promise<DagEvent[]> {
-  const { results } = await db
-    .prepare('SELECT * FROM events WHERE project_id = ? AND seq > ? ORDER BY seq LIMIT ?')
-    .bind(pid, since, limit)
-    .all<Row>();
-  return results.map(toEvent);
+/** Hasta `limit` eventos posteriores a `since`; `resync` si `since` está bajo el piso (devolverlos dejaría un hueco). */
+export async function eventsSince(db: Db, pid: string, since: number, limit: number): Promise<{ events: DagEvent[]; resync: boolean }> {
+  const { floor, events } = await liveState(db, pid, since, limit);
+  return since < floor ? { events: [], resync: true } : { events, resync: false };
 }
 
 /* ------------------------------------------------------------------ escrituras */

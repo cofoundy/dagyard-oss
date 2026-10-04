@@ -4,10 +4,12 @@
  */
 import {
   BLOCKER_KINDS,
+  LANGS,
   LIMITS,
   NODE_STATUSES,
   type BlockerInput,
   type BlockerKind,
+  type Lang,
   type MessageInput,
   type NodeInput,
   type NodePatch,
@@ -104,6 +106,12 @@ function stringList(v: unknown, field: string, max: number, maxLen: number): str
   return v.map((x, i) => str(x, `${field}[${i}]`, maxLen)!);
 }
 
+function lang(v: unknown): Lang | undefined {
+  if (v === undefined) return undefined;
+  if (!LANGS.includes(v as Lang)) fail(`lang: uno de ${LANGS.join(', ')}`);
+  return v as Lang;
+}
+
 function stages(v: unknown): StageInput[] | undefined {
   if (v === undefined) return undefined;
   if (!Array.isArray(v) || v.length === 0) return fail('stages: se esperaba una lista con al menos una etapa');
@@ -129,6 +137,8 @@ export function parseProjectInput(body: unknown): Parsed<ProjectInput> {
     const p: ProjectInput = { name: str(o.name, 'name', LIMITS.name)! };
     const id = slug(o.id, 'id', true);
     if (id) p.id = id;
+    const l = lang(o.lang);
+    if (l) p.lang = l;
     const st = stages(o.stages);
     if (st) p.stages = st;
     return p;
@@ -201,10 +211,9 @@ function blockerInput(o: Record<string, unknown>, at: string): BlockerInput {
     b.options = [];
     b.accessLabel = str(o.accessLabel, `${at}accessLabel`, LIMITS.name)!;
   } else {
-    // una revisión sin opciones explícitas es «Aprobar / Pedir cambios»
-    const opts = options && options.length ? options : kind === 'review' ? ['Aprobar', 'Pedir cambios'] : [];
-    if (opts.length < 1) fail(`${at}options: una decisión necesita al menos una opción`);
-    b.options = opts;
+    // una revisión sin opciones explícitas recibe las del idioma del proyecto: las pone el servidor (#77)
+    if (options && options.length) b.options = options;
+    else if (kind !== 'review') fail(`${at}options: una decisión necesita al menos una opción`);
     b.accessLabel = null;
   }
   return b;
@@ -256,6 +265,8 @@ export function parseProjectGraphInput(body: unknown): Parsed<ProjectGraphInput>
   return wrap(() => {
     const o = obj(body, 'body');
     const g: ProjectGraphInput = { name: str(o.name, 'name', LIMITS.name)!, nodes: [] };
+    const l = lang(o.lang);
+    if (l) g.lang = l;
     const st = stages(o.stages);
     if (st) g.stages = st;
     if (!Array.isArray(o.nodes)) fail('nodes: se esperaba una lista');

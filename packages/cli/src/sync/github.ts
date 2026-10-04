@@ -5,6 +5,7 @@
 import { execFile } from 'node:child_process';
 import { LIMITS } from '@dagyard/model';
 import { legibleTitle, oneLine } from '../tasks/parse.js';
+import { t } from '../i18n.js';
 
 export interface GhIssue {
   number: number;
@@ -41,9 +42,11 @@ const defaultExec: Exec = (file, args) =>
     execFile(file, args, { maxBuffer: 256 * 1024 * 1024, encoding: 'utf8' }, (err, stdout, stderr) => {
       if (!err) return resolve(stdout);
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        return reject(new Error('no encontré gh (GitHub CLI): instálalo y corre «gh auth login»'));
+        return reject(new Error(t('gh (GitHub CLI) was not found: install it and run «gh auth login»', 'no encontré gh (GitHub CLI): instálalo y corre «gh auth login»')));
       }
-      reject(new Error(`gh ${args.slice(0, 3).join(' ')} falló: ${oneLine(String(stderr || err.message), 500)}`));
+      const cmd = `gh ${args.slice(0, 3).join(' ')}`;
+      const why = oneLine(String(stderr || err.message), 500);
+      reject(new Error(t(`${cmd} failed: ${why}`, `${cmd} falló: ${why}`)));
     });
   });
 

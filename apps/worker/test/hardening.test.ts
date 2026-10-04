@@ -93,7 +93,7 @@ describe('3 · ciclos e ids se validan dentro de la transacción', () => {
 
   it('la misma tarea creada dos veces a la vez: 201 y 409, nunca 500', async () => {
     const pid = uniquePid();
-    await json(await api('/api/projects', { method: 'POST', body: { id: pid, name: 'Carrera' } }), 201);
+    await json(await api('/api/projects', { method: 'POST', body: { id: pid, name: 'Carrera', lang: 'es' } }), 201);
     const res = await Promise.all([0, 1, 2].map(() => api(`/api/projects/${pid}/nodes`, { method: 'POST', body: { stage: 'diseno', title: 'Doble' } })));
     expect(res.map((r) => r.status).sort()).toEqual([201, 409, 409]);
   });

@@ -1,13 +1,24 @@
-// Todo lo que lee el PM, en un solo lugar: español peruano, tuteo, sin jerga (D10).
+// Todo lo que lee el PM pasa por aquí, y aquí solo hay claves del catálogo (`../i18n/messages.ts`, #73).
+// Cada texto se lee en el momento de pintar (getters), así un cambio de idioma se ve sin recargar.
 
 import type { BlockerKind, NodeStatus } from '../data/types';
+import { isDefaultReviewOptions } from '../data/adapter';
+import { fmtRelative, t, type MessageKey } from '../i18n';
 
-export const STATUS_TEXT: Record<NodeStatus, string> = {
-  done: 'Lista',
-  working: 'En progreso',
-  blocked: 'Te espera',
-  pending: 'Pendiente',
-};
+/** Un objeto cuyos campos leen su clave del catálogo en el idioma actual cada vez que se consultan. */
+function fromCatalog<K extends string>(keys: Record<K, MessageKey>): Readonly<Record<K, string>> {
+  const out = {} as Record<K, string>;
+  for (const [name, key] of Object.entries(keys) as Array<[K, MessageKey]>)
+    Object.defineProperty(out, name, { get: () => t(key), enumerable: true });
+  return out;
+}
+
+export const STATUS_TEXT = fromCatalog<NodeStatus>({
+  done: 'status.done',
+  working: 'status.working',
+  blocked: 'status.blocked',
+  pending: 'status.pending',
+});
 
 /** Clase visual por estado (los tokens del preview). */
 export const STATUS_CLASS: Record<NodeStatus, 'done' | 'working' | 'blocked' | 'queued'> = {
@@ -17,18 +28,25 @@ export const STATUS_CLASS: Record<NodeStatus, 'done' | 'working' | 'blocked' | '
   pending: 'queued',
 };
 
-export const BLOCK_TEXT: Record<BlockerKind, string> = {
-  decision: 'Necesita tu decisión',
-  review: 'Necesita tu revisión',
-  access: 'Necesita un acceso',
-};
+export const BLOCK_TEXT = fromCatalog<BlockerKind>({
+  decision: 'block.decision',
+  review: 'block.review',
+  access: 'block.access',
+});
 
 /** Para avisos: «Modelo de comisiones necesita tu decisión». */
-export const BLOCK_TOAST: Record<BlockerKind, string> = {
-  decision: 'necesita tu decisión',
-  review: 'necesita tu revisión',
-  access: 'necesita un acceso',
-};
+export const BLOCK_TOAST = fromCatalog<BlockerKind>({
+  decision: 'blockToast.decision',
+  review: 'blockToast.review',
+  access: 'blockToast.access',
+});
+
+/** El verbo de una respuesta tuya: «Decidiste», «Revisaste», «Entregaste un acceso». */
+export const ANSWER_VERB = fromCatalog<BlockerKind>({
+  decision: 'answer.decision',
+  review: 'answer.review',
+  access: 'answer.access',
+});
 
 const ROMAN: Array<[number, string]> = [
   [10, 'X'],
@@ -50,97 +68,108 @@ export function stageLabel(index: number, name: string): string {
   return `${roman(index)} · ${name}`;
 }
 
+/** «3 de 5 listas» / «3 of 5 done»; sin tareas, «Sin tareas». */
 export function listas(done: number, total: number): string {
-  return total ? `${done} de ${total} ${total === 1 ? 'lista' : 'listas'}` : 'Sin tareas';
+  return t('count.done', { count: total, done, total });
 }
 
+/** «Nada te espera», «1 te espera», «2 te esperan». */
 export function waitingText(n: number): string {
-  if (!n) return 'Nada te espera';
-  return `${n} ${n === 1 ? 'te espera' : 'te esperan'}`;
+  return t('count.waiting', { count: n });
 }
 
-const MONTHS = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'set', 'oct', 'nov', 'dic'];
-
-/** «hace un momento», «hace 5 min», «hace 2 h», «ayer», «3 oct». */
+/** «hace un momento», «hace 5 min», «hace 2 h», «ayer», «3 oct» — en el idioma actual. */
 export function ago(iso: string | undefined, now = Date.now()): string {
-  if (!iso) return '';
-  const t = Date.parse(iso);
-  if (Number.isNaN(t)) return '';
-  const s = Math.max(0, (now - t) / 1000);
-  if (s < 60) return 'hace un momento';
-  if (s < 3600) return `hace ${Math.floor(s / 60)} min`;
-  if (s < 86_400) return `hace ${Math.floor(s / 3600)} h`;
-  if (s < 172_800) return 'ayer';
-  const d = new Date(t);
-  return `${d.getDate()} ${MONTHS[d.getMonth()]}`;
+  return fmtRelative(iso, now);
 }
 
 export function truncate(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
 }
 
-/** Nombre del dueño de una tarea: «Equipo de Diseño». */
+/** Nombre del dueño de una tarea: «Equipo de Diseño» / «Design team». Si ya lo dice, tal cual. */
 export function teamName(team: string | undefined): string | undefined {
   if (!team) return undefined;
-  return /^equipo\b/i.test(team) ? team : `Equipo de ${team}`;
+  return /^equipo\b/i.test(team) || /\bteam$/i.test(team) ? team : t('team.name', { team });
 }
 
-export const COPY = {
-  entryTitle: 'Tu fábrica, en un cielo',
-  entryLead: 'Pega tu clave de acceso para ver tus proyectos.',
-  entryLabel: 'Clave de acceso',
-  entryPlaceholder: 'Pega tu clave',
-  entryCta: 'Entrar',
-  entryChecking: 'Entrando…',
-  entryBad: 'Esa clave no sirve. Revisa que la hayas copiado completa.',
-  entryEmpty: 'Falta la clave.',
-  entryExpired: 'Tu sesión venció. Vuelve a pegar tu clave.',
-  entryOffline: 'No pude conectarme. Revisa tu internet e intenta de nuevo.',
-  entryFine: 'La clave no se guarda en este navegador: entras una vez y te recuerda.',
-  overview: 'Vista general',
-  loading: 'Cargando el plan…',
-  loadError: 'No pude cargar el plan.',
-  retry: 'Reintentar',
-  noProjects: 'Todavía no hay proyectos. Cuando la fábrica cree uno, aparece aquí.',
-  reconnecting: 'Reconectando…',
-  projectsTitle: 'Tus proyectos',
-  logout: 'Salir',
-  demoNote: 'Proyecto de ejemplo · sin servidor',
-  close: 'Cerrar',
-  needs: 'Necesita',
-  unlocks: 'Cuando esté lista, arranca',
-  notStarted: 'Todavía no empieza. Arranca sola cuando esté listo lo que necesita.',
-  waitsYou: 'espera tu respuesta',
-  report: 'Informe',
-  reportBasalt: 'Informe en Basalt',
-  technical: 'Detalle técnico',
-  open: 'Abrir',
-  yourAnswers: 'Tus respuestas',
-  messages: 'Lo que te escribieron',
-  sending: 'Enviando…',
-  send: 'Enviar',
-  cancel: 'Cancelar',
-  approve: 'Aprobar',
-  requestChanges: 'Pedir cambios',
-  changesLabel: '¿Qué hay que cambiar?',
-  changesPlaceholder: 'Escríbelo en corto; le llega al equipo tal cual.',
-  sendChanges: 'Enviar cambios',
-  unlock: 'Desbloquear',
-  accessPlaceholder: 'Pega el valor',
-  accessMissing: 'Falta el valor',
-  accessFine: 'Se guarda cifrado y solo lo recibe el equipo que lo pidió. No vuelve a mostrarse aquí.',
-  sendError: 'No se pudo enviar. Revisa tu conexión e intenta de nuevo.',
-  alreadyResolved: 'Alguien ya lo resolvió. Te muestro lo último.',
-  teamContinues: 'el equipo sigue',
-  isDone: 'está lista',
-  started: 'arrancó',
-  added: 'se agregó al plan',
-  removed: 'salió del plan',
+/**
+ * Los dos botones de una revisión. Si el pedido trae las opciones por defecto del servidor (o ninguna), se pintan en
+ * el idioma de la interfaz; si el equipo escribió las suyas, van tal cual (lo que escribe un usuario no se traduce).
+ */
+export function reviewLabels(options: readonly string[]): [approve: string, changes: string] {
+  const isDefault = !options.length || isDefaultReviewOptions(options);
+  if (isDefault) return [COPY.approve, COPY.requestChanges];
+  return [options[0] ?? COPY.approve, options[1] ?? COPY.requestChanges];
+}
+
+export const COPY = fromCatalog({
+  entryTitle: 'entry.title',
+  entryLead: 'entry.lead',
+  entryLabel: 'entry.label',
+  entryPlaceholder: 'entry.placeholder',
+  entryCta: 'entry.cta',
+  entryChecking: 'entry.checking',
+  entryBad: 'entry.bad',
+  entryEmpty: 'entry.empty',
+  entryExpired: 'entry.expired',
+  entryOffline: 'entry.offline',
+  entryFine: 'entry.fine',
+  langSwitch: 'lang.switch',
+  overview: 'hud.overview',
+  loading: 'hud.loading',
+  loadError: 'hud.loadError',
+  retry: 'hud.retry',
+  noProjects: 'hud.noProjects',
+  reconnecting: 'hud.reconnecting',
+  projectsTitle: 'hud.projects',
+  logout: 'hud.logout',
+  demoNote: 'hud.demoNote',
+  liveIn: 'hud.liveIn',
+  stagesLabel: 'hud.stages',
+  skyLabel: 'hud.sky',
+  close: 'card.close',
+  needs: 'card.needs',
+  unlocks: 'card.unlocks',
+  notStarted: 'card.notStarted',
+  waitsYou: 'card.waitsYou',
+  report: 'card.report',
+  reportBasalt: 'card.reportBasalt',
+  technical: 'card.technical',
+  open: 'card.open',
+  yourAnswers: 'card.yourAnswers',
+  messages: 'card.messages',
+  sending: 'card.sending',
+  send: 'card.send',
+  cancel: 'card.cancel',
+  approve: 'card.approve',
+  requestChanges: 'card.requestChanges',
+  changesLabel: 'card.changesLabel',
+  changesPlaceholder: 'card.changesPlaceholder',
+  sendChanges: 'card.sendChanges',
+  unlock: 'card.unlock',
+  access: 'card.access',
+  accessPlaceholder: 'card.accessPlaceholder',
+  accessMissing: 'card.accessMissing',
+  accessFine: 'card.accessFine',
+  sendError: 'card.sendError',
+  alreadyResolved: 'card.alreadyResolved',
+  agent: 'answer.agent',
+  teamContinues: 'toast.teamContinues',
+  isDone: 'toast.isDone',
+  started: 'toast.started',
+  added: 'toast.added',
+  removed: 'toast.removed',
   // avisos fuera de la pantalla (#47)
-  noticeTitle: 'Te espera',
-  notifyMe: 'Avisarme',
-  notifyMeHint: 'Te aviso en este navegador cuando algo te espere, aunque estés en otra pestaña.',
-} as const;
+  noticeTitle: 'notice.title',
+  notifyMe: 'notice.notifyMe',
+  notifyMeHint: 'notice.notifyMeHint',
+});
+
+/** «Pedro respondió» / «Pedro answered». */
+export function answeredBy(who: string): string {
+  return t('answer.by', { who });
+}
 
 const BASALT_HOST = 'basalt.cofoundy.ai';
 

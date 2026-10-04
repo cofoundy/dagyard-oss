@@ -1,3 +1,5 @@
+import { t } from './i18n.js';
+
 /** Parser mínimo: `--k v`, `--k=v`, banderas booleanas declaradas, `--opt` repetible y `--` final. */
 export interface ParsedArgs {
   positionals: string[];
@@ -30,14 +32,14 @@ export function parseArgs(argv: string[], booleans: readonly string[]): ParsedAr
     }
     const key = ALIASES[m[1]!] ?? m[1]!;
     if (isBool(key)) {
-      if (m[2] !== undefined) throw new UsageError(`--${key} no lleva valor`);
+      if (m[2] !== undefined) throw new UsageError(t(`--${key} takes no value`, `--${key} no lleva valor`));
       out.bools.add(key);
       continue;
     }
     let value = m[2];
     if (value === undefined) {
       value = argv[++i];
-      if (value === undefined) throw new UsageError(`a --${key} le falta el valor`);
+      if (value === undefined) throw new UsageError(t(`--${key} needs a value`, `a --${key} le falta el valor`));
     }
     (out.flags[key] ??= []).push(value);
   }
@@ -51,6 +53,6 @@ export function flag(a: ParsedArgs, key: string): string | undefined {
 
 export function assertKnownFlags(a: ParsedArgs, allowed: readonly string[]): void {
   for (const k of Object.keys(a.flags)) {
-    if (!allowed.includes(k)) throw new UsageError(`opción desconocida: --${k}`);
+    if (!allowed.includes(k)) throw new UsageError(t(`unknown option: --${k}`, `opción desconocida: --${k}`));
   }
 }

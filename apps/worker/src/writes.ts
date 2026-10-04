@@ -365,6 +365,8 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
     tx.project(pid);
     tx.clearGraph(pid);
     tx.all('DELETE FROM events WHERE project_id = ?', pid);
+    // una clave del proyecto borrado no reproduce sus eventos en uno recreado con el mismo id (#71)
+    tx.all('DELETE FROM idempotency WHERE project_id = ?', pid);
     tx.all('DELETE FROM projects WHERE id = ?', pid);
     return null;
   },

@@ -34,5 +34,9 @@ bloqueante abierto del nodo en `GET /api/projects/:p/blockers/:b/wait`. `import`
 `## `). `deps ∪ blockedBy`, solo ids que existen en el directorio; `—`, `none` o `[]` al inicio = sin
 dependencias, y lo que va entre paréntesis se ignora. `blocked` que espera a otra tarea queda
 Pendiente; solo es «Te espera» si no espera a nadie o si el status nombra a un humano. Etapas por
-`phase` si todas la traen; si no, por profundidad (máximo 12, lo que acepta el modelo). Los títulos
-visibles no llevan `T-xxx` (D10).
+`phase` si todas la traen; si no, por profundidad con nombre humano: «Para empezar», «Después»,
+«Luego», «Más adelante»… y «Al final» (máximo 12, lo que acepta el modelo; nunca «Etapa N»).
+Los títulos visibles pasan por `legibleTitle` (D10, #21): sin `T-xxx` ni `#123`, sin prefijos de
+ruta, archivo o código (`lib/x.ts —`, `SEC —`, `P0.1`), sin nombres de archivo (`verify.sh` →
+`verify`), sin paréntesis (notas y llamadas: `var()` → `var`) y sin MAYÚSCULAS enfáticas (las
+siglas como MCP o CI se quedan). Si el título es `role: x`, se usa la primera frase del `**Issue:**`.

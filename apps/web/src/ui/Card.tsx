@@ -155,7 +155,8 @@ function Answer({ blocker }: { blocker: Blocker }) {
         {blocker.resolvedAt ? ` · ${ago(blocker.resolvedAt)}` : ''}
       </span>
       <p className="q">{blocker.kind === 'access' && blocker.label ? blocker.label : blocker.question}</p>
-      {blocker.resolution && <p className="a">{blocker.resolution}</p>}
+      {/* En un acceso, el verbo ya lo dice todo: el valor nunca se muestra. */}
+      {blocker.resolution && blocker.kind !== 'access' && <p className="a">{blocker.resolution}</p>}
     </div>
   );
 }

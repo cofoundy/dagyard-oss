@@ -92,10 +92,10 @@ export const Brand = forwardRef<HTMLDivElement, BrandProps>(function Brand(
           <>
             {listas(doneCount(snapshot), snapshot.nodes.length)}
             {live.length > 0 && (
-              <>
+              <span className="live">
                 {' · ahora en '}
                 <b>{live.map((s) => `${roman(s.index)} ${s.stage.name}`).join(' · ')}</b>
-              </>
+              </span>
             )}
           </>
         ) : (
@@ -138,8 +138,18 @@ interface RailProps {
 
 export const Rail = forwardRef<HTMLElement, RailProps>(function Rail({ snapshot, selected, onStage }, ref) {
   const stats = stageStats(snapshot);
+  const local = useRef<HTMLElement | null>(null);
+  // En pantallas angostas el carril se desplaza: la etapa elegida siempre queda a la vista.
+  useEffect(() => {
+    local.current?.querySelector<HTMLElement>('.stage.sel')?.scrollIntoView?.({ inline: 'nearest', block: 'nearest', behavior: 'smooth' });
+  }, [selected]);
+  const setRef = (el: HTMLElement | null) => {
+    local.current = el;
+    if (typeof ref === 'function') ref(el);
+    else if (ref) ref.current = el;
+  };
   return (
-    <nav className="hud rail" aria-label="Etapas del proyecto" ref={ref}>
+    <nav className="hud rail" aria-label="Etapas del proyecto" ref={setRef}>
       {stats.map((s) => (
         <button
           key={s.stage.id}

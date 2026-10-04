@@ -72,7 +72,7 @@ canvas.sky { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%
 button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visible { outline: 1px solid var(--work); outline-offset: 2px; }
 
 /* ---------------------------------------------------------------- marca (arriba izquierda) */
-.brand { top: var(--top); left: var(--gutter); display: grid; gap: 6px; max-width: min(60vw, 520px); justify-items: start; }
+.brand { z-index: 5; top: var(--top); left: var(--gutter); display: grid; gap: 6px; max-width: min(60vw, 520px); justify-items: start; }
 .word { font-family: var(--font-mono); font-size: 13px; letter-spacing: .32em; text-transform: lowercase; color: var(--star); display: flex; align-items: center; gap: 10px; }
 .word i { width: 7px; height: 7px; border-radius: 50%; background: var(--work); box-shadow: 0 0 10px var(--work); animation: beat 2.4s ease-in-out infinite; }
 .word i.off { background: var(--amber); box-shadow: 0 0 10px var(--amber); animation-duration: 1.1s; }
@@ -216,9 +216,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, a:focus-visib
   .proj { font-size: 16px; }
   .toasts { top: auto; bottom: calc(84px + env(safe-area-inset-bottom, 0px)); }
   .card { top: auto; bottom: calc(76px + env(safe-area-inset-bottom, 0px)); right: 16px; left: 16px; width: auto; max-height: 52%; transform: translateY(14px); }
-  .stage { flex-basis: 96px; }
+  .stage { flex-basis: 150px; }
+  .now .live { display: none; }
   .note { display: none; }
-  .actions { top: calc(70px + env(safe-area-inset-top, 0px)); right: 16px; }
+  .actions { top: calc(96px + env(safe-area-inset-top, 0px)); right: 16px; }
   .brand { max-width: calc(100vw - 32px); }
   .picker { left: 0; }
 }

@@ -108,7 +108,8 @@ el grafo entero siempre (sus bloqueantes y mensajes se recrean desde el body con
 
 Con cualquier llamante, una tarea declarada `done` que quedaría `blocked` (por un bloqueante abierto
 conservado o del mismo body) responde `409` sin tocar nada, igual que el `PATCH`: no se cierra una tarea
-con una pregunta abierta.
+con una pregunta abierta. Si lo único que la bloquearía es una pregunta que el dueño ya respondió y el
+archivo vuelve a hacer, el `409` lo dice: quítala de `blockers` o no cierres la tarea.
 
 `dagyard import` crea proyectos nuevos con un solo `PUT` exclusivo (`If-None-Match: *`): si el proyecto
 ya existe falla, y el «¿ya existe?» se decide en la misma transacción que escribe, así dos imports a la vez

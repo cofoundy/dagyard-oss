@@ -254,4 +254,18 @@ describe('un PUT no deja una tarea blocked al 100 %', () => {
       expect((await api(`/api/projects/${pid}`)).status).toBe(404);
     }
   });
+  it('agente: «done» repitiendo una pregunta ya respondida → 409 que no pide responderla otra vez', async () => {
+    const pid = uniquePid();
+    const s = await json<ProjectSnapshot>(await put(pid, small()), 200);
+    await resolve(pid, s.blockers[0]!.id, { value: 'sk_live_123' });
+    const resolved = await snap(pid);
+    const g = small();
+    g.nodes = g.nodes.map((n) => (n.id === 'b' ? { ...n, status: 'done' as const } : n));
+    const r = await json(await put(pid, g), 409);
+    expect(r.error.code).toBe('conflict');
+    expect(r.error.message).toMatch(/ya respondió.*«B»/);
+    expect(r.error.message).toMatch(/quítala de blockers o no cierres la tarea/);
+    expect(r.error.message).not.toMatch(/hasta que la responda/);
+    expect((await snap(pid)).seq).toBe(resolved.seq);
+  });
 });

@@ -278,13 +278,21 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
     const fresh = (g.blockers ?? []).filter(
       (b) => !openKeys.has(blockerKey(b.nodeId, b.kind, b.question, JSON.stringify(b.options ?? []), b.accessLabel)),
     );
+    const answeredKeys = new Set(
+      kept.filter((b) => b.status === 'resolved').map((b) => blockerKey(b.node_id, b.kind, b.question, b.options as string, b.access_label)),
+    );
     const blockedBy = new Set([...(g.blockers ?? []).map((b) => b.nodeId), ...keptOpen.map((b) => b.node_id as string)]);
     nodes.forEach((node, i) => {
       if (node.status === 'blocked' && !blockedBy.has(node.id))
         fail('invalid', `nodes[${i}].status: «blocked» lo pone un bloqueante; agrégalo en blockers`);
       // como en PATCH: una tarea con una pregunta abierta no se cierra (quedaría bloqueada al 100 %)
       if (node.status === 'done' && blockedBy.has(node.id)) {
-        const n = keptOpen.filter((b) => b.node_id === node.id).length + fresh.filter((b) => b.nodeId === node.id).length;
+        const mine = fresh.filter((b) => b.nodeId === node.id);
+        const n = keptOpen.filter((b) => b.node_id === node.id).length + mine.length;
+        // todo lo que la bloquearía es re-preguntar lo ya respondido: no hay nada que esperar del dueño
+        const reasked = mine.every((b) => answeredKeys.has(blockerKey(b.nodeId, b.kind, b.question, JSON.stringify(b.options ?? []), b.accessLabel)));
+        if (reasked && mine.length === n)
+          fail('conflict', `nodes[${i}].status: el dueño ya respondió ${n === 1 ? 'la pregunta' : 'las preguntas'} de la tarea «${node.title}» que el archivo vuelve a hacer; ${n === 1 ? 'quítala' : 'quítalas'} de blockers o no cierres la tarea`);
         fail('conflict', `nodes[${i}].status: la tarea «${node.title}» tiene ${pending(n)} para el dueño; no puede quedar «done» hasta que ${n === 1 ? 'la responda' : 'las responda'}`);
       }
       // una tarea con un bloqueante abierto está bloqueada, la declare así o no

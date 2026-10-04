@@ -61,6 +61,13 @@ export async function unseal(secret: string | undefined, sealed: string, aad: st
   return new TextDecoder().decode(pt);
 }
 
+/** HMAC-SHA256 en base64url. La huella de una `Idempotency-Key`: el cuerpo puede traer un secreto (un acceso). */
+export async function hmac(secret: string | undefined, msg: string): Promise<string> {
+  if (!secret) throw new Error('VAULT_KEY no está configurada');
+  const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  return b64(await crypto.subtle.sign('HMAC', key, enc.encode(msg)));
+}
+
 export function randomId(prefix: string): string {
   return prefix + b64(crypto.getRandomValues(new Uint8Array(12))).toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 16);
 }

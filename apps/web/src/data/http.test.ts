@@ -202,6 +202,78 @@ describe('HttpApi', () => {
     expect(events).toHaveLength(0);
   });
 
+  it('tras cerrarse un socket vivo, el primer reintento sale sin espera y los siguientes esperan', async () => {
+    const { api } = make({ 'GET /api/me': json({ role: 'owner' }) });
+    api.subscribe('p', 0, { onEvent: () => {} });
+    await vi.advanceTimersByTimeAsync(0);
+    const ws1 = FakeWS.all[0]!;
+    ws1.open();
+    ws1.frame({ type: 'hello', projectId: 'p', seq: 0 });
+    await vi.advanceTimersByTimeAsync(3000);
+
+    ws1.drop(); // un deploy reinicia el proyecto
+    await vi.advanceTimersByTimeAsync(0);
+    expect(FakeWS.all).toHaveLength(2);
+
+    FakeWS.all[1]!.drop(); // el reintento no llegó a `hello`: ahora sí hay backoff
+    await vi.advanceTimersByTimeAsync(99);
+    expect(FakeWS.all).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(FakeWS.all).toHaveLength(3);
+  });
+
+  it('un servidor caído sigue con backoff desde el primer reintento', async () => {
+    const waits: number[] = [];
+    const api = new HttpApi({
+      fetch: fakeFetch({ 'GET /api/me': json({ role: 'owner' }) }).fn,
+      WebSocket: FakeWS as unknown as typeof WebSocket,
+      origin: 'https://dagyard.test',
+      backoff: (a) => (waits.push(a), 100 * (a + 1)),
+    });
+    api.subscribe('p', 0, { onEvent: () => {} });
+    await vi.advanceTimersByTimeAsync(0);
+    FakeWS.all[0]!.drop(); // nunca llegó a `hello`
+    await vi.advanceTimersByTimeAsync(0);
+    expect(FakeWS.all).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(FakeWS.all).toHaveLength(2);
+    FakeWS.all[1]!.drop();
+    await vi.advanceTimersByTimeAsync(199);
+    expect(FakeWS.all).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(FakeWS.all).toHaveLength(3);
+    expect(waits).toEqual([0, 1]);
+  });
+
+  it('un socket que vive y muere en bucle no martilla: el reintento inmediato vuelve solo tras uno estable', async () => {
+    const { api } = make({ 'GET /api/me': json({ role: 'owner' }) });
+    api.subscribe('p', 0, { onEvent: () => {} });
+    await vi.advanceTimersByTimeAsync(0);
+    const live = (i: number) => {
+      FakeWS.all[i]!.open();
+      FakeWS.all[i]!.frame({ type: 'hello', projectId: 'p', seq: 0 });
+    };
+
+    live(0);
+    await vi.advanceTimersByTimeAsync(3000);
+    FakeWS.all[0]!.drop();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(FakeWS.all).toHaveLength(2); // inmediato
+
+    live(1);
+    FakeWS.all[1]!.drop(); // saluda y muere al toque
+    await vi.advanceTimersByTimeAsync(0);
+    expect(FakeWS.all).toHaveLength(2); // ya no es inmediato
+    await vi.advanceTimersByTimeAsync(100);
+    expect(FakeWS.all).toHaveLength(3);
+
+    live(2);
+    await vi.advanceTimersByTimeAsync(3000); // este sí se quedó: recarga el reintento inmediato
+    FakeWS.all[2]!.drop();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(FakeWS.all).toHaveLength(4);
+  });
+
   it('manda ping y da por muerta una conexión sin frames', async () => {
     const { api } = make({ 'GET /api/me': json({ role: 'owner' }) });
     api.subscribe('p', 0, { onEvent: () => {} });

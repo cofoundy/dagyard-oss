@@ -4,7 +4,7 @@ import type { Db, Row } from './db.js';
 import type { Env } from './env.js';
 import { ApiFailure, notFound } from './http.js';
 import { BLOCKER_COLS, toBlocker, toEdge, toEvent, toMessage, toNode, toProject } from './rows.js';
-import type { WriteOp, WriteValues } from './writes.js';
+import type { Idem, WriteOp, WriteValues } from './writes.js';
 
 /* ------------------------------------------------------------------ lecturas */
 
@@ -75,15 +75,57 @@ export async function eventsSince(db: Db, pid: string, since: number, limit: num
 
 /* ------------------------------------------------------------------ escrituras */
 
+/** Error de la plataforma al hablar con un Durable Object (p. ej. un deploy lo reinició): ver la guía de Cloudflare. */
+type DoError = { retryable?: boolean; overloaded?: boolean };
+const doError = (err: unknown): DoError => (typeof err === 'object' && err !== null ? (err as DoError) : {});
+
+/** El error de la plataforma como respuesta: sobrecarga, o el Durable Object no estuvo disponible. `null` = es otra cosa. */
+export function unavailableFailure(err: unknown): ApiFailure | null {
+  const e = doError(err);
+  if (e.overloaded) return new ApiFailure('overloaded', OVERLOADED);
+  return e.retryable ? new ApiFailure('unavailable', UNAVAILABLE) : null;
+}
+
+const UNAVAILABLE = 'El servidor se está actualizando. Inténtalo de nuevo en unos segundos.';
+const OVERLOADED = 'El servidor está sobrecargado. Espera un poco antes de reintentar.';
+const UNSURE = 'El servidor se reinició a mitad de la escritura y no sé si quedó: revisa antes de repetirla.';
+
+/** Esperas base entre reintentos del RPC al Store (≈1 s en total: lo que tarda en volver tras un deploy). */
+export const STORE_RETRY_MS = [50, 250, 750];
+/** ×0,5 a ×1,5: los Workers que reintentan a la vez no le caen juntos al Store recién levantado. */
+export const jitter = (ms: number) => Math.round(ms * (0.5 + Math.random()));
+
 /**
  * Corre una escritura en el Store (una transacción: ver writes.ts) y reparte sus eventos al
  * Durable Object del proyecto. Un error de dominio llega como dato y se relanza como ApiFailure.
+ * Si el Store se reinicia (un deploy), reintenta solo con `idem` (`Idempotency-Key`), que el Store
+ * registra en la misma transacción. Si no puede reintentar, `503 uncertain`; agotados los intentos,
+ * `503 unavailable`; sobrecargado, `503 overloaded`.
  */
-export async function write<K extends WriteOp['kind']>(env: Env, op: Extract<WriteOp, { kind: K }>): Promise<WriteValues[K]> {
-  const res = await env.STORE.get(env.STORE.idFromName('db')).write(op);
-  if (!res.ok) throw new ApiFailure(res.error.code, res.error.message);
-  await publish(env, op.pid, res.events as DagEvent[]);
-  return res.value as WriteValues[K];
+export async function write<K extends WriteOp['kind']>(
+  env: Env,
+  op: Extract<WriteOp, { kind: K }>,
+  idem?: Idem,
+  retryMs: readonly number[] = STORE_RETRY_MS,
+): Promise<WriteValues[K]> {
+  for (let attempt = 0; ; attempt++) {
+    let res;
+    try {
+      // un stub nuevo por intento: tras una excepción el anterior puede quedar roto
+      res = await env.STORE.get(env.STORE.idFromName('db')).write(op, idem);
+    } catch (err) {
+      const failure = unavailableFailure(err);
+      if (!failure || failure.code === 'overloaded') throw failure ?? err;
+      // sin clave no se sabe si el intento commiteó: reaplicarlo podría duplicarlo o pisar una escritura posterior
+      if (!idem) throw new ApiFailure('uncertain', UNSURE);
+      if (attempt >= retryMs.length) throw failure;
+      await new Promise((r) => setTimeout(r, jitter(retryMs[attempt]!)));
+      continue;
+    }
+    if (!res.ok) throw new ApiFailure(res.error.code, res.error.message);
+    await publish(env, op.pid, res.events as DagEvent[]);
+    return res.value as WriteValues[K];
+  }
 }
 
 /** Reparte a los sockets. Si falla, la escritura ya quedó: los clientes se recuperan con `?since=`. */

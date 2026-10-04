@@ -35,12 +35,13 @@ import {
   requireOwner,
   roleOfToken,
 } from './auth.js';
-import { seal, unseal } from './crypto.js';
+import { hmac, seal, unseal } from './crypto.js';
 import { db as dbOf } from './db.js';
 import type { AppEnv } from './env.js';
 import { ApiFailure, errorResponse, fail, notFound } from './http.js';
 import { toBlocker, toProject } from './rows.js';
-import { eventsSince, getBlockerRow, loadGraph, requireProject, snapshot, write } from './store.js';
+import { eventsSince, getBlockerRow, loadGraph, requireProject, snapshot, unavailableFailure, write } from './store.js';
+import type { WriteOp, WriteValues } from './writes.js';
 
 type C = Context<AppEnv>;
 
@@ -60,6 +61,9 @@ const room = (c: C, pid: string) => c.env.PROJECT_ROOM.get(c.env.PROJECT_ROOM.id
 /** AAD del valor de un acceso: lo amarra a su proyecto y su bloqueante. */
 const accessAad = (pid: string, bid: string) => `${pid}/${bid}`;
 
+/** Una escritura con la clave de idempotencia del pedido, si trae (ver el middleware de `Idempotency-Key`). */
+const run = <K extends WriteOp['kind']>(c: C, op: Extract<WriteOp, { kind: K }>): Promise<WriteValues[K]> => write(c.env, op, c.get('idem'));
+
 function pidParam(c: C): string {
   const pid = c.req.param('pid')!;
   return isSlug(pid) ? pid : notFound(`El proyecto «${pid}»`);
@@ -69,6 +73,9 @@ function pidParam(c: C): string {
 
 app.onError((err, c) => {
   if (err instanceof ApiFailure) return errorResponse(err.code, err.message);
+  // un deploy reinició un Durable Object en medio de una lectura (o está sobrecargado): no es un error nuestro
+  const unavailable = unavailableFailure(err);
+  if (unavailable) return errorResponse(unavailable.code, unavailable.message);
   console.error(JSON.stringify({ msg: 'error no controlado', path: c.req.path, err: String(err), stack: (err as Error).stack }));
   return errorResponse('internal', 'Algo falló de nuestro lado. Inténtalo de nuevo.');
 });
@@ -131,6 +138,24 @@ app.use('/api/*', async (c, next) => {
   await next();
 });
 
+/**
+ * `Idempotency-Key` (opcional, en cualquier escritura): el CLI manda una por invocación y la repite en cada
+ * reintento; la misma clave en el mismo proyecto devuelve lo de la primera vez sin volver a escribir. La
+ * huella es un HMAC del pedido crudo (método, ruta y cuerpo, antes de parsearlo): no cambia entre versiones
+ * del Worker y no guarda en claro el valor de un acceso.
+ */
+app.use('/api/*', async (c, next) => {
+  const key = c.req.header('idempotency-key');
+  if (key !== undefined && c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+    if (!/^[\x21-\x7e]{1,200}$/.test(key)) fail('invalid', 'Idempotency-Key: de 1 a 200 caracteres visibles (p. ej. un uuid)');
+    const url = new URL(c.req.url);
+    // `text()` queda en caché: el `json()` de la ruta parsea estos mismos bytes
+    const fp = await hmac(c.env.VAULT_KEY, `dagyard-idem-v1\n${c.req.method}\n${url.pathname}${url.search}\n${await c.req.text()}`);
+    c.set('idem', { key, fp });
+  }
+  await next();
+});
+
 app.get('/api/me', (c) => c.json({ role: c.get('role') }));
 
 /* ------------------------------------------------------------------ proyectos */
@@ -161,7 +186,7 @@ app.get('/api/projects', async (c) => {
 
 app.post('/api/projects', async (c) => {
   const input = ok(parseProjectInput(await body(c)));
-  const project = await write(c.env, { kind: 'createProject', pid: input.id ?? slugify(input.name), name: input.name, stages: input.stages });
+  const project = await run(c, { kind: 'createProject', pid: input.id ?? slugify(input.name), name: input.name, stages: input.stages });
   return c.json(project, 201);
 });
 
@@ -172,7 +197,7 @@ app.put('/api/projects/:pid', async (c) => {
   const graph = ok(parseProjectGraphInput(await body(c)));
   // `If-None-Match: *` = creación exclusiva: el «¿ya existe?» se decide en la misma transacción que escribe
   const exclusive = c.req.header('if-none-match')?.trim() === '*';
-  await write(c.env, { kind: 'replaceGraph', pid, graph, actor: c.get('role'), exclusive });
+  await run(c, { kind: 'replaceGraph', pid, graph, actor: c.get('role'), exclusive });
   return c.json(await snapshot(dbOf(c.env), pid));
 });
 
@@ -186,7 +211,7 @@ app.patch('/api/projects/:pid', async (c) => {
   if (o.name === undefined && o.stages === undefined) fail('invalid', 'nada que actualizar');
   // reusa el parser de proyecto; el nombre de relleno solo sirve para validar las etapas
   const input = ok(parseProjectInput({ name: o.name ?? 'x', ...(o.stages !== undefined && { stages: o.stages }) }));
-  const project = await write(c.env, {
+  const project = await run(c, {
     kind: 'patchProject',
     pid,
     ...(o.name !== undefined && { name: input.name }),
@@ -199,7 +224,7 @@ app.patch('/api/projects/:pid', async (c) => {
 app.delete('/api/projects/:pid', async (c) => {
   requireOwner(c, 'Borrar un proyecto');
   const pid = pidParam(c);
-  await write(c.env, { kind: 'deleteProject', pid });
+  await run(c, { kind: 'deleteProject', pid });
   await room(c, pid).reset();
   return c.body(null, 204);
 });
@@ -222,18 +247,18 @@ app.get('/api/projects/:pid/events', async (c) => {
 app.post('/api/projects/:pid/nodes', async (c) => {
   const pid = pidParam(c);
   const input = ok(parseNodeInput(await body(c)));
-  return c.json(await write(c.env, { kind: 'addNode', pid, input, actor: c.get('role') }), 201);
+  return c.json(await run(c, { kind: 'addNode', pid, input, actor: c.get('role') }), 201);
 });
 
 app.patch('/api/projects/:pid/nodes/:nid', async (c) => {
   const pid = pidParam(c);
   const patch = ok(parseNodePatch(await body(c)));
-  return c.json(await write(c.env, { kind: 'patchNode', pid, nid: c.req.param('nid'), patch, actor: c.get('role') }));
+  return c.json(await run(c, { kind: 'patchNode', pid, nid: c.req.param('nid'), patch, actor: c.get('role') }));
 });
 
 app.delete('/api/projects/:pid/nodes/:nid', async (c) => {
   const pid = pidParam(c);
-  await write(c.env, { kind: 'removeNode', pid, nid: c.req.param('nid'), actor: c.get('role') });
+  await run(c, { kind: 'removeNode', pid, nid: c.req.param('nid'), actor: c.get('role') });
   return c.body(null, 204);
 });
 
@@ -243,7 +268,7 @@ app.post('/api/projects/:pid/edges', async (c) => {
   const from = b?.from;
   const to = b?.to;
   if (!isSlug(from) || !isSlug(to)) return fail('invalid', 'from y to: ids de tareas');
-  return c.json(await write(c.env, { kind: 'addEdge', pid, from, to, actor: c.get('role') }), 201);
+  return c.json(await run(c, { kind: 'addEdge', pid, from, to, actor: c.get('role') }), 201);
 });
 
 app.delete('/api/projects/:pid/edges', async (c) => {
@@ -251,7 +276,7 @@ app.delete('/api/projects/:pid/edges', async (c) => {
   const from = c.req.query('from');
   const to = c.req.query('to');
   if (!isSlug(from) || !isSlug(to)) return fail('invalid', 'from y to: ids de tareas');
-  await write(c.env, { kind: 'removeEdge', pid, from, to, actor: c.get('role') });
+  await run(c, { kind: 'removeEdge', pid, from, to, actor: c.get('role') });
   return c.body(null, 204);
 });
 
@@ -260,7 +285,7 @@ app.delete('/api/projects/:pid/edges', async (c) => {
 app.post('/api/projects/:pid/nodes/:nid/blockers', async (c) => {
   const pid = pidParam(c);
   const input = ok(parseBlockerInput(await body(c)));
-  return c.json(await write(c.env, { kind: 'openBlocker', pid, nid: c.req.param('nid'), input, actor: c.get('role') }), 201);
+  return c.json(await run(c, { kind: 'openBlocker', pid, nid: c.req.param('nid'), input, actor: c.get('role') }), 201);
 });
 
 async function requireBlockerRow(c: C, pid: string) {
@@ -275,11 +300,12 @@ app.post('/api/projects/:pid/blockers/:bid/resolve', async (c) => {
   const pid = pidParam(c);
   // kind y opciones no cambian nunca: sirven para validar el body fuera de la transacción
   const prev = toBlocker(await requireBlockerRow(c, pid));
-  if (prev.status === 'resolved') fail('conflict', 'Ese bloqueante ya está resuelto');
+  // con clave, el reintento de una resolución que ya quedó lo responde el Store con lo guardado
+  if (prev.status === 'resolved' && !c.get('idem')) fail('conflict', 'Ese bloqueante ya está resuelto');
   const r = ok(parseResolveInput(await body(c), prev));
   // cifrar es async, así que va antes; la verificación de que sigue abierto va dentro de la transacción
   const sealed = r.value !== null ? await seal(c.env.VAULT_KEY, r.value, accessAad(pid, prev.id)) : null;
-  const blocker = await write(c.env, { kind: 'resolveBlocker', pid, bid: prev.id, expectKind: prev.kind, choice: r.choice, note: r.note, sealed });
+  const blocker = await run(c, { kind: 'resolveBlocker', pid, bid: prev.id, expectKind: prev.kind, choice: r.choice, note: r.note, sealed });
   return c.json(blocker);
 });
 
@@ -306,7 +332,7 @@ app.get('/api/projects/:pid/blockers/:bid/wait', async (c) => {
 app.post('/api/projects/:pid/nodes/:nid/messages', async (c) => {
   const pid = pidParam(c);
   const input = ok(parseMessageInput(await body(c)));
-  return c.json(await write(c.env, { kind: 'postMessage', pid, nid: c.req.param('nid'), input, actor: c.get('role') }), 201);
+  return c.json(await run(c, { kind: 'postMessage', pid, nid: c.req.param('nid'), input, actor: c.get('role') }), 201);
 });
 
 /* ------------------------------------------------------------------ tiempo real */

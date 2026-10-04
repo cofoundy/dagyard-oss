@@ -506,9 +506,39 @@ const ops: { [K in WriteOp['kind']]: (tx: Tx, op: Extract<WriteOp, { kind: K }>)
   },
 };
 
-/** Corre una escritura completa sobre el SQL del Store. Lanza `ApiFailure` para revertir. */
-export function runWrite(sql: SqlStorage, op: WriteOp): { value: WriteValues[keyof WriteValues]; events: DagEvent[] } {
+/**
+ * Clave de idempotencia (header `Idempotency-Key`) y huella del pedido que la trae (HMAC del método, la
+ * ruta y el cuerpo crudo: no depende de cómo una versión del Worker lo parsee).
+ */
+export interface Idem {
+  key: string;
+  fp: string;
+}
+
+/** Cuánto se recuerda una clave: de sobra para los reintentos de una misma invocación. */
+export const IDEM_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Corre una escritura completa sobre el SQL del Store. Lanza `ApiFailure` para revertir. Con `idem`, la
+ * clave se registra en la misma transacción que la escritura: si ya estaba (el reintento de una escritura
+ * que sí quedó), devuelve el valor y los eventos guardados sin volver a escribir.
+ */
+export function runWrite(sql: SqlStorage, op: WriteOp, idem?: Idem): { value: WriteValues[keyof WriteValues]; events: DagEvent[] } {
   const tx = new Tx(sql);
+  if (idem) {
+    const prev = tx.one('SELECT fp, value, events FROM idempotency WHERE project_id = ? AND key = ?', op.pid, idem.key);
+    if (prev) {
+      if (prev.fp !== idem.fp) fail('conflict', 'Esa Idempotency-Key ya se usó con otra escritura; usa una clave nueva por escritura');
+      return { value: JSON.parse(prev.value as string), events: JSON.parse(prev.events as string) };
+    }
+  }
   const value = (ops[op.kind] as (tx: Tx, op: WriteOp) => WriteValues[keyof WriteValues])(tx, op);
+  if (idem) {
+    tx.all('DELETE FROM idempotency WHERE created_at < ?', new Date(Date.parse(tx.now) - IDEM_TTL_MS).toISOString());
+    tx.all(
+      'INSERT INTO idempotency (project_id, key, fp, value, events, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      op.pid, idem.key, idem.fp, JSON.stringify(value), JSON.stringify(tx.events), tx.now,
+    );
+  }
   return { value, events: tx.events };
 }

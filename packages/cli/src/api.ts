@@ -59,21 +59,42 @@ export class ApiRequestError extends Error {
   }
 }
 
+/**
+ * Esperas base entre intentos ante un `503 unavailable` o un corte de red (≈1,2 s: lo que dura el corte de
+ * un deploy). Cada una lleva jitter de ×0,5 a ×1,5, así que nunca suman más de 1,8 s.
+ */
+export const RETRY_DELAYS_MS = [300, 900];
+const jitter = (ms: number) => Math.round(ms * (0.5 + Math.random()));
+
+/**
+ * ¿Repetir es seguro y útil? Un corte de red o un `503` del Worker que no escribió (`unavailable`) o que no
+ * llegó al Worker (sin cuerpo de error). `overloaded` (reintentar empeora) y `uncertain` (la escritura pudo
+ * quedar sin su clave) no se repiten.
+ */
+const transient = (err: ApiRequestError) => err.status === 0 || (err.status === 503 && (err.code === 'unavailable' || err.code === 'http_503'));
+
 export interface ClientOptions {
   baseUrl: string;
   key: string;
   fetch?: typeof fetch;
+  /** esperas entre reintentos; `[]` = sin reintentos */
+  retryDelaysMs?: readonly number[];
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export class DagyardClient {
   private readonly baseUrl: string;
   private readonly key: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly retryDelaysMs: readonly number[];
+  private readonly sleep: (ms: number) => Promise<void>;
 
   constructor(opts: ClientOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
     this.key = opts.key;
     this.fetchImpl = opts.fetch ?? fetch;
+    this.retryDelaysMs = opts.retryDelaysMs ?? RETRY_DELAYS_MS;
+    this.sleep = opts.sleep ?? ((ms) => new Promise<void>((r) => setTimeout(r, ms)));
   }
 
   /** `exclusive`: creación exclusiva (`If-None-Match: *`); si el proyecto ya existe, 409 sin tocarlo. */
@@ -124,6 +145,10 @@ export class DagyardClient {
     return (await res.json()) as T;
   }
 
+  /**
+   * Una invocación de la API. Toda escritura lleva una `Idempotency-Key` nueva, la misma en cada reintento:
+   * así reintentar un `503 unavailable` o un corte de red (la escritura pudo quedar) nunca la duplica.
+   */
   private async request(method: string, path: string, body?: unknown, extra: Record<string, string> = {}): Promise<Response> {
     const headers: Record<string, string> = {
       ...extra,
@@ -131,6 +156,18 @@ export class DagyardClient {
       accept: 'application/json',
     };
     if (body !== undefined) headers['content-type'] = 'application/json';
+    if (method !== 'GET' && method !== 'HEAD') headers['idempotency-key'] = crypto.randomUUID();
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.attempt(method, path, headers, body);
+      } catch (err) {
+        if (!(err instanceof ApiRequestError) || !transient(err) || attempt >= this.retryDelaysMs.length) throw err;
+        await this.sleep(jitter(this.retryDelaysMs[attempt]!));
+      }
+    }
+  }
+
+  private async attempt(method: string, path: string, headers: Record<string, string>, body?: unknown): Promise<Response> {
     let res: Response;
     try {
       res = await this.fetchImpl(`${this.baseUrl}${path}`, {

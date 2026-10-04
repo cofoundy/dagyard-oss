@@ -4,7 +4,7 @@
  */
 import { execFile } from 'node:child_process';
 import { LIMITS } from '@dagyard/model';
-import { oneLine } from '../tasks/parse.js';
+import { legibleTitle, oneLine } from '../tasks/parse.js';
 
 export interface GhIssue {
   number: number;
@@ -98,6 +98,19 @@ export function cleanTitle(raw: string): string {
   const bare = line.replace(PREFIX, '') || line;
   const capped = bare.replace(/\p{L}/u, (c) => c.toLocaleUpperCase('es'));
   return oneLine(capped, LIMITS.title);
+}
+
+/** «desde #35», «(ver #12)», «tras #8»: referencias a otros issues, jerga para un PM. */
+const REF_PHRASE = /\s*\(?\s*(?:(?:desde|tras|después de|según|por|ver|véase|see|since|after|from|per)\s+)?#\d+\s*\)?/giu;
+
+/**
+ * El título de una tarea nueva: `cleanTitle` sin las referencias a otros issues y luego `legibleTitle`
+ * del import (D10, #21: sin rutas, sin paréntesis, sin MAYÚSCULAS enfáticas). Nunca vacío.
+ */
+export function issueNodeTitle(raw: string, n: number): string {
+  const bare = cleanTitle(raw).replace(REF_PHRASE, ' ');
+  const t = legibleTitle(oneLine(bare, 10_000) || raw);
+  return t && t !== 'Tarea' ? t : `Issue ${n}`;
 }
 
 /** Lista `#3`, `#3 y #4`, `#3, #4 and #5`. */

@@ -217,6 +217,18 @@ describe('sync: nodos nuevos', () => {
     expect(r.stdout).toContain('Sincronicé 2 issues: 2 nuevas · 0 actualizadas · 0 sin cambios');
   });
 
+  it('el título nuevo pasa por legibleTitle: sin «desde #35», sin rutas ni MAYÚSCULAS enfáticas', async () => {
+    ghIssues = [
+      issue(38, 'cli: el resumen del import siempre dice «0 te esperan» desde #35'),
+      issue(39, 'web: la ficha muestra T-402 en lib/x.ts — MAYÚSCULAS'),
+      issue(40, 'Arreglo (ver #12) del panel'),
+    ];
+    await sync();
+    expect(nodes.get('gh-38')?.title).toBe('El resumen del import siempre dice «0 te esperan»');
+    expect(nodes.get('gh-39')?.title).toBe('La ficha muestra T-402 en x — mayúsculas');
+    expect(nodes.get('gh-40')?.title).not.toMatch(/#\d/);
+  });
+
   it('los PRs del listado no son issues', async () => {
     ghIssues = [issue(1, 'Algo'), issue(2, 'feat: un PR', { isPull: true })];
     const r = await sync();
@@ -268,6 +280,27 @@ describe('sync: nodos nuevos', () => {
     await sync(['--label', 'agent-ready']);
     expect(sourceCalls).toEqual([{ repo: 'cofoundy/dagyard', label: 'agent-ready' }]);
     expect([...nodes.keys()]).toEqual(['gh-1']);
+  });
+});
+
+describe('sync: épicas', () => {
+  it('un issue con la etiqueta epic no crea nodo ni aristas hacia él, y no cuenta', async () => {
+    ghIssues = [issue(44, 'epic: dogfood', { labels: ['epic'] }), issue(45, 'Parte uno', { body: 'Parte de #44.' })];
+    const r = await sync();
+    expect([...nodes.keys()]).toEqual(['gh-45']);
+    expect(edges).toEqual([]);
+    expect(r.stdout).toContain('Sincronicé 1 issues: 1 nuevas · 0 actualizadas · 0 sin cambios');
+  });
+
+  it('si la épica ya es un nodo, se actualiza como cualquier otro (enlace, estado, aristas)', async () => {
+    nodes.set('gh-44', node('gh-44', { title: 'Dogfood' }));
+    ghIssues = [
+      issue(44, 'epic: dogfood', { labels: ['epic'], state: 'closed', stateReason: 'completed' }),
+      issue(45, 'Parte uno', { body: 'Parte de #44.' }),
+    ];
+    await sync();
+    expect(nodes.get('gh-44')).toMatchObject({ title: 'Dogfood', status: 'done', link: 'https://github.com/cofoundy/dagyard/issues/44' });
+    expect(edges.map((e) => `${e.from}>${e.to}`)).toEqual(['gh-45>gh-44']);
   });
 });
 
@@ -424,6 +457,29 @@ describe('sync: founder-input → decisión', () => {
     expect(blockers).toHaveLength(1);
     expect(writes()).toHaveLength(0);
     expect(r.stdout).toContain('0 nuevas · 0 actualizadas · 1 sin cambios');
+  });
+
+  it('si el nodo ya tiene CUALQUIER decisión (abierta o resuelta, con otro texto), no abre otra', async () => {
+    nodes.set('gh-7', node('gh-7', { link: 'x', status: 'working' }));
+    nodes.set('gh-25', node('gh-25', { link: 'x', status: 'blocked' }));
+    blockers.push(blocker('gh-7', 'Pregunta curada por la fábrica', 'resolved'));
+    blockers.push(blocker('gh-25', '¿Abrimos el código ya?', 'open'));
+    ghIssues = [
+      issue(7, '¿Compramos dagyard.run? (default: todavía no)', { labels: ['founder-input'], body: '- **A:** no\n- **B:** sí' }),
+      issue(25, '¿Cuándo abrimos el código?', { labels: ['founder-input'] }),
+    ];
+    const r = await sync();
+    expect(blockers).toHaveLength(2);
+    expect(writes()).toHaveLength(0);
+    expect(r.stdout).toContain('0 nuevas · 0 actualizadas · 2 sin cambios');
+  });
+
+  it('un bloqueante que no es decisión (revisión o acceso) no cuenta: la decisión se abre', async () => {
+    nodes.set('gh-7', node('gh-7', { link: 'x', status: 'working' }));
+    blockers.push({ ...blocker('gh-7', 'Revisa el flujo', 'resolved'), kind: 'review' });
+    ghIssues = [issue(7, '¿Seguimos?', { labels: ['founder-input'] })];
+    await sync();
+    expect(blockers.filter((b) => b.kind === 'decision')).toHaveLength(1);
   });
 
   it('un issue cerrado no abre pregunta', async () => {

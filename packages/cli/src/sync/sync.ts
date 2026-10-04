@@ -7,15 +7,16 @@
  * - Nodo nuevo: solo issues abiertos (con `all` también los cerrados como completados, ya Listos).
  * - El estado solo avanza: cerrado (completado) → `done`; abierto con un PR abierto que lo cierra y nodo
  *   `pending` → `working`. Con un bloqueante abierto el servidor responde 409: aviso, no error.
- * - Aristas solo si ambos nodos existen; nunca borra. `founder-input` → bloqueante `decision`, sin
- *   re-preguntar lo que ya tiene (abierto o resuelto, contrato #31).
+ * - La etiqueta `epic` no crea nodo; si ya existe, se sincroniza normal.
+ * - Aristas solo si ambos nodos existen; nunca borra. `founder-input` → bloqueante `decision`, solo si el
+ *   nodo no tiene ninguna decisión (abierta o resuelta, con cualquier texto: contrato #31).
  */
 import type { Blocker, BlockerInput, DagNode, Edge, NodeInput, NodePatch, NodeStatus, Stage } from '@dagyard/model';
 import { LIMITS, slugify, wouldCreateCycle } from '@dagyard/model';
 import { ApiRequestError, type DagyardClient } from '../api.js';
 import { UsageError } from '../args.js';
 import { oneLine } from '../tasks/parse.js';
-import { cleanTitle, closingRefs, dependencyRefs, parseOptions, type GhIssue, type GithubSource } from './github.js';
+import { cleanTitle, closingRefs, dependencyRefs, issueNodeTitle, parseOptions, type GhIssue, type GithubSource } from './github.js';
 
 export type SyncApi = Pick<DagyardClient, 'snapshot' | 'addNode' | 'updateNode' | 'addEdge' | 'openBlocker'>;
 
@@ -44,6 +45,8 @@ export interface SyncReport {
 }
 
 export const FOUNDER_LABEL = 'founder-input';
+/** Una épica no es una tarea: no se crea (si ya existe como nodo, se sincroniza como cualquier otro). */
+export const EPIC_LABEL = 'epic';
 const DEFAULT_STAGE = 'construccion';
 const RANK: Record<NodeStatus, number> = { pending: 0, working: 1, blocked: 1, done: 2 };
 const STATUS_HUMAN: Record<NodeStatus, string> = { pending: 'Pendiente', working: 'En progreso', blocked: 'Te espera', done: 'Lista' };
@@ -97,10 +100,11 @@ export async function syncGithub(api: SyncApi, source: GithubSource, projectId: 
     const completed = issue.state === 'closed' && issue.stateReason !== 'not_planned';
     if (!existing) {
       if (issue.state === 'closed' && (!opts.all || !completed)) continue;
+      if (issue.labels.includes(EPIC_LABEL)) continue;
       const input: NodeInput = {
         id,
         stage,
-        title: cleanTitle(issue.title) || `Issue #${issue.number}`,
+        title: issueNodeTitle(issue.title, issue.number),
         status: completed ? 'done' : withPr.has(issue.number) ? 'working' : 'pending',
         link: issue.url,
       };
@@ -189,9 +193,10 @@ export async function syncGithub(api: SyncApi, source: GithubSource, projectId: 
     const id = nodeIdOf(issue.number);
     const node = nodes.get(id);
     if (!node || node.status === 'done') continue;
+    // cualquier decisión previa, abierta o resuelta y con el texto que sea (la fábrica la cura a mano), basta:
+    // nunca se re-pregunta (contrato #31)
+    if (snap.blockers.some((b) => b.nodeId === id && b.kind === 'decision')) continue;
     const question = oneLine(cleanTitle(issue.title), LIMITS.question);
-    const raw = oneLine(issue.title, LIMITS.question);
-    if (snap.blockers.some((b) => b.nodeId === id && (b.question === question || b.question === raw))) continue;
     const options = parseOptions(issue.body);
     const input: BlockerInput = { kind: 'decision', question, options: options.length ? options : ['Sí', 'No'] };
     if (!dry && (await soft(`no pude abrir la pregunta de ${id}`, () => api.openBlocker(projectId, id, input))) === undefined) continue;

@@ -1,7 +1,7 @@
 // Etiquetas DOM de la escena: títulos de nodos y encabezados de etapa. La escena trae sus propios estilos (prefijo
 // `sky-`) para no depender de la hoja de la interfaz; lo que se mide para el encuadre es exactamente lo que se pinta.
 import type { NodeStatus } from '../data/types';
-import { LABEL, type Size, type Sizer } from './framing';
+import { DENSE_LINES, LABEL, type Size, type Sizer } from './framing';
 
 const STYLE_ID = 'dagyard-sky-style';
 
@@ -20,8 +20,12 @@ const CSS = `
 .sky-lbl.working { color: #9fd3ff; }
 .sky-lbl.blocked { color: #ffb547; }
 .sky-lbl.hover { color: #f4eee2; z-index: 1; }
-/* vista general densa: el título se recorta a dos líneas; completo al pasar el mouse, enfocar o volar a su etapa */
-.sky-lbl.clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+/* vista general densa: el título se recorta a --sky-lines líneas (dos; una en celulares bajos, #58) con elipsis;
+   completo al pasar el mouse, enfocar o volar a su etapa */
+.sky-lbl.clamp {
+  display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis;
+  -webkit-line-clamp: var(--sky-lines, ${DENSE_LINES}); line-clamp: var(--sky-lines, ${DENSE_LINES});
+}
 .sky-portrait .sky-lbl { font-size: 12px; }
 .sky-stage {
   display: grid; justify-items: center; gap: 4px; white-space: nowrap; text-align: center;
@@ -44,6 +48,14 @@ export function injectStyles(doc: Document): () => void {
   doc.head.appendChild(el);
   return () => el.remove();
 }
+
+/** Variable CSS con las líneas del recorte; sin ella, `DENSE_LINES`. */
+const LINES_VAR = '--sky-lines';
+const setLines = (el: HTMLElement, v: string) => {
+  if (el.style.getPropertyValue(LINES_VAR) === v) return;
+  if (v) el.style.setProperty(LINES_VAR, v);
+  else el.style.removeProperty(LINES_VAR);
+};
 
 const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII'];
 export const roman = (i: number) => ROMAN[i] ?? String(i + 1);
@@ -136,10 +148,13 @@ export class LabelLayer {
           const el = this.nodes.get(id);
           if (!el) return { w: 0, h: 0 };
           const was = el.classList.contains('clamp');
+          const wasLines = el.style.getPropertyValue(LINES_VAR);
           el.classList.toggle('clamp', !!lines);
+          if (lines) el.style.setProperty(LINES_VAR, String(lines));
           el.style.maxWidth = `${maxWidth}px`;
           s = { w: Math.ceil(el.offsetWidth), h: Math.ceil(el.offsetHeight) };
           el.classList.toggle('clamp', was);
+          setLines(el, wasLines);
           this.sizes.set(key, s);
         }
         return s;
@@ -176,10 +191,16 @@ export class LabelLayer {
     el.style.opacity = opacity.toFixed(3);
   }
 
-  /** Recorta (o no) el título de un nodo a dos líneas: la vista general densa lo recorta salvo que se pida verlo. */
-  setClamp(id: string, on: boolean) {
+  /**
+   * Recorta (o no) el título de un nodo: la vista general lo recorta a `maxLines` del encuadre salvo que se pida verlo.
+   * Un número es la cantidad de líneas (1 en celulares bajos, #58); `true`, las dos de siempre; `false`/`undefined`, entero.
+   */
+  setClamp(id: string, lines: boolean | number | undefined) {
     const el = this.nodes.get(id);
-    if (el && el.classList.contains('clamp') !== on) el.classList.toggle('clamp', on);
+    if (!el) return;
+    const on = !!lines;
+    if (el.classList.contains('clamp') !== on) el.classList.toggle('clamp', on);
+    setLines(el, typeof lines === 'number' && lines !== DENSE_LINES ? String(lines) : '');
   }
 
   setHover(id: string | null) {

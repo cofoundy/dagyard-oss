@@ -132,7 +132,34 @@ const NARROW: { name: string; vp: Viewport; safe: SafeArea }[] = [
   { name: '430×932 (HUD alto)', vp: { width: 430, height: 932 }, safe: { top: 170, right: 16, bottom: 96, left: 16 } },
   { name: '360×780 (HUD alto)', vp: { width: 360, height: 780 }, safe: { top: 170, right: 16, bottom: 96, left: 16 } },
   { name: '360×780 (HUD 142/79)', vp: { width: 360, height: 780 }, safe: { top: 142, right: 16, bottom: 79, left: 16 } },
+  // #58: a 375×667 (iPhone SE) ni con títulos a dos líneas entraban todos (18/20); el último respaldo es una línea
+  { name: '375×667 (HUD 142/79)', vp: { width: 375, height: 667 }, safe: { top: 142, right: 16, bottom: 79, left: 16 } },
 ];
+
+// #58: los cinco viewports del issue; solo el más bajo (375×667) llega al respaldo de una línea
+const ISSUE_58: { name: string; vp: Viewport; safe: SafeArea; lines?: number }[] = [
+  { ...NARROW[4]!, lines: 1 }, // 375×667 (142/79)
+  { ...NARROW[2]!, lines: 2 }, // 360×780 (170/96): sigue a dos líneas
+  CASES[3]!, // 390×844 (142/79)
+  NARROW[0]!, // 430×932 (142/79)
+  CASES[0]!, // 1440×900
+];
+
+describe('#58: respaldo de una línea en el celular más bajo', () => {
+  it.each(ISSUE_58)('a $name, 20/20 títulos y el recorte justo', ({ vp, safe, lines }) => {
+    const sol = solveOverview(g, vp, safe, estimateSizer(g, orientationFor(vp.width, vp.height) === 'portrait'));
+    expect(sol.visible.size).toBe(20);
+    expect(sol.maxLines).toBe(lines);
+  });
+
+  it('el recorte a una línea mide una línea (lo que se mide es lo que se pinta)', () => {
+    const sz = estimateSizer(g, true);
+    // un título largo recortado a una línea mide una línea; a dos, dos
+    const long = g.nodes.reduce((a, b) => (b.title.length > a.title.length ? b : a));
+    expect(clampSizer(sz, 1).node(long.id, 90).h).toBe(15);
+    expect(clampSizer(sz, 2).node(long.id, 90).h).toBe(30);
+  });
+});
 
 describe.each(NARROW)('celular angosto: la demo se ve entera a $name', ({ vp, safe }) => {
   const full = estimateSizer(g, true);

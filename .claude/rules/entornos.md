@@ -7,6 +7,8 @@
 
 **Regla de deploy** (carrera medida por dogfood el 2026-10-04 16:12Z: dos sitios desplegaron con 6 s de diferencia y ganó el sha más viejo): despliega solo desde un checkout en `origin/main` HEAD recién traído (`git fetch && git checkout --detach origin/main`); después, `/api/health` tiene que dar el sha de `origin/main` en varias llamadas seguidas (durante ~30 s el borde puede alternar entre la versión vieja y la nueva). Si no, vuelve a traer y redespliega. Nunca despliegues desde tu rama.
 
+El account id de Cloudflare de arriba no es un secreto (Cloudflare lo trata como identificador; sin un token no da acceso) y queda en el repo público a propósito.
+
 Secrets del Worker (`wrangler secret bulk`): `OWNER_TOKEN`, `AGENT_KEY`, `VAULT_KEY`; sus valores viven en
 `~/.config/dagyard/{owner-token,agent-key,vault-key}` (chmod 600). Nunca en un commit, issue ni en Basalt.
 El token de Cloudflare del entorno no tiene permiso de D1: el estado vive en Durable Objects con SQLite (#9).

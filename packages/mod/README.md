@@ -18,13 +18,15 @@ porque escribe en la misma API.
 
 ## Instalación (un paso)
 
+Desde la raíz de tu clon del repo:
+
 ```bash
-claude plugin marketplace add ~/cofoundy/products/dagyard/packages/mod && claude plugin install dagyard@dagyard
+claude plugin marketplace add "$PWD/packages/mod" && claude plugin install dagyard@dagyard
 ```
 
 Queda instalado para todas tus sesiones y se lee desde esta carpeta: un `git pull` del repo lo
 actualiza (en una sesión abierta, `/reload-plugins`). Para probarlo sin instalar:
-`claude --plugin-dir ~/cofoundy/products/dagyard/packages/mod`.
+`claude --plugin-dir "$PWD/packages/mod"`.
 
 Quitarlo: `claude plugin uninstall dagyard@dagyard && claude plugin marketplace remove dagyard`.
 
